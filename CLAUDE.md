@@ -1,7 +1,18 @@
 # Project Goals and Context
 
 ## Overview
-We're developing A2 training functionality within the finetrainers framework. A2 is not a separate model but rather a specialized training approach built on top of the Wan video diffusion model for "Elements-to-Video" (E2V) tasks. The A2 folder contains working inference code, but we need to create compatible training code within the finetrainers framework as a new training type.
+We're implementing Elements-to-Video (E2V) training within the finetrainers framework. This will enable training Wan models using the A2 approach, which specializes in generating videos from multiple reference images (elements).
+
+**Important Clarification:** A2 is NOT a new model architecture. It is a specialized training approach and inference pipeline that leverages Wan's existing image-to-video capabilities. The base Wan model already has all the architectural components needed for image conditioning - A2 simply uses these in a specific way for E2V tasks.
+
+The A2 folder contains working inference code that demonstrates how E2V generation works. Our task is to create compatible training code within the finetrainers framework as a new training type.
+
+E2V training is distinctive because it:
+1. Uses multiple reference images (person, object, background) as inputs
+2. Processes these images through both CLIP (semantic) and VAE (spatial) pathways
+3. Combines these features to condition the video generation process
+
+The core Wan model architecture remains unchanged - we're simply adding a new training methodology and data processing pipeline.
 
 ## Key Components
 
@@ -19,13 +30,13 @@ We're developing A2 training functionality within the finetrainers framework. A2
    - Provides a complete training infrastructure we can leverage
 
 ### Project Goals
-- Create A2 training code as a new training type in the finetrainers framework
+- Create E2V training code as a new training type in the finetrainers framework
 - Leverage the existing Wan model without creating a separate model type
 - Extend the training framework to handle Elements-to-Video (E2V) data
 - Ensure minimal changes while maintaining full compatibility with Wan
 
 ### Technical Requirements
-1. A2 Training Approach Specifics:
+1. E2V Training Approach Specifics:
    - **Multiple Reference Image Handling**: Process and condition on multiple images
      - Person/character reference image
      - Object reference image
@@ -34,19 +45,20 @@ We're developing A2 training functionality within the finetrainers framework. A2
      - Semantic features (via CLIP) for global representation
      - Spatial features (via VAE) for local details and temporal conditioning
    - **Key Integration Points**:
-     - Uses custom `WanAttnProcessor2_0` with support for image attention
-     - Combines multiple references via concatenation in the channel dimension
+     - Uses specialized implementation of Wan's existing image-to-video functionality
+     - Combines multiple references via concatenation in the channel dimension (like control training)
      - Adds masking for frame conditioning similar to control training
+     - Leverages existing WanControlModelSpecification without modifications
 
 2. Finetrainers Integration Points:
    - Use the existing Wan model specification (WanModelSpecification)
    - Build on control_trainer pattern which already handles channel concatenation
    - Add E2V specific dataset handling for multiple reference images
-   - Extend configuration for A2-specific parameters (like number and type of references)
+   - Extend configuration for E2V-specific parameters (like number and type of references)
    - Create specialized preprocessors for handling CLIP and VAE encoding paths
 
 3. Compatibility Considerations:
-   - A2 and Wan share the identical transformer architecture
+   - E2V (via A2) and Wan share the identical transformer architecture
    - All differences are in data preprocessing and conditioning, not the architecture
    - Need to ensure consistency between training and inference pipelines
    - Special handling needed for combined condition latents
@@ -134,7 +146,7 @@ We'll extend the existing training.json format to support E2V training with mini
 
 The `visualization` section enables saving intermediate representations during training:
 
-- **Integration Point**: Inside the `_train` method of `A2Trainer`, after forward and loss computation
+- **Integration Point**: Inside the `_train` method of `E2VTrainer`, after forward and loss computation
 - **Access Point**: Similar to checkpointing mechanism but for visualization data
 - **Available Data**:
   - `input_latents`: Original input latents
@@ -163,8 +175,8 @@ Key features of this configuration:
 8. Global VAE combine mode setting
 
 ## Implementation Strategy
-1. **A2 Trainer Development**:
-   - Create new `a2_trainer` module alongside existing training types
+1. **E2V Trainer Development**:
+   - Create new `e2v_trainer` module alongside existing training types
    - Develop specialized dataset handling for multiple reference images
    - Implement processors for the E2V conditioning approach
    - Modify the forward pass to handle the dual-path (CLIP + VAE) conditioning
@@ -179,7 +191,7 @@ Key features of this configuration:
    - Support variable numbers of reference images (1-3) as in A2 inference code
 
 3. **Training Configuration**:
-   - Add A2-specific training types to configuration
+   - Add E2V-specific training types to configuration
    - Create flexible configuration options for reference image types and naming patterns
    - Design training.json to support dynamic suffix mapping
    - Support various combination modes (as seen in inference code)
@@ -191,9 +203,9 @@ Key features of this configuration:
    - Create test cases with various naming patterns to verify flexibility
    - Test handling of missing reference elements
 
-## Data Processing Pipeline for A2 Training
+## Data Processing Pipeline for E2V Training
 
-### Reference Image Processing in A2
+### Reference Image Processing in E2V
 
 1. **VAE Spatial Pathway**:
    - Reference images are resized to match video dimensions (target_resolution)
@@ -218,32 +230,35 @@ Key features of this configuration:
    - Together they enable accurate preservation of reference elements
 
 ## Key Files to Create/Modify
-- `finetrainers/trainer/a2_trainer/` - New training type implementation
-- `finetrainers/trainer/a2_trainer/config.py` - Configuration for A2 training
-- `finetrainers/trainer/a2_trainer/trainer.py` - A2 training loop
-- `finetrainers/trainer/a2_trainer/data.py` - Data handling for multiple references
+- `finetrainers/trainer/e2v_trainer/` - New training type implementation
+- `finetrainers/trainer/e2v_trainer/config.py` - Configuration for E2V training
+- `finetrainers/trainer/e2v_trainer/trainer.py` - E2V training loop
+- `finetrainers/trainer/e2v_trainer/data.py` - Data handling for multiple references
 - `finetrainers/data/` - Add E2V dataset implementation
-- `finetrainers/processors/clip.py` - Add/modify CLIP processor for image embeddings
-- `finetrainers/config.py` - Add A2 training types
-- `tests/trainer/test_a2_trainer.py` - Tests for the new implementation
+- `finetrainers/processors/multi_reference.py` - New processor for E2V conditioning
+- `finetrainers/config.py` - Add E2V training types
+- `tests/trainer/test_e2v_trainer.py` - Tests for the new implementation
 
 ## Implementation Analysis from Code Review
-After reviewing the code, we've confirmed:
+After extensively reviewing both the A2 and Wan codebases, we've confirmed:
 
-1. **Architectural Consistency**:
-   - The A2Model class in `transformer_a2.py` extends Wan with identical parameters
-   - Core transformer blocks and processing are unchanged
-   - Primary differences are in data preparation and cross-attention handling
+1. **Architectural Identity**:
+   - A2 is NOT a new model architecture; it's a specialized use of Wan
+   - Wan already fully supports image-to-video (I2V) generation with the same components
+   - The base Wan model includes `WanI2VCrossAttention` and image embedding support
+   - A2 provides a specialized implementation focused on multiple reference handling
 
 2. **Data Processing Insights**:
    - A2 concatenates multiple reference images with padding in VAE space
-   - Uses CLIP vision encoder for semantic conditioning
+   - Uses CLIP vision encoder for semantic conditioning (already supported in Wan)
    - Applies masking for specific frames similar to control training
+   - The innovation is in HOW references are processed, not in adding new capability types
 
 3. **Integration Approach**:
-   - We should follow the control_trainer pattern, which already has channel concatenation
-   - The implementation should be a new training type rather than a new model
-   - Code should be modular so most components can be reused with minimal changes
+   - We should follow the control_trainer pattern, which already handles channel concatenation
+   - The implementation should be a new training TYPE rather than a new model
+   - Code should leverage Wan's existing image conditioning architecture
+   - Focus on data handling for multiple reference images
 
 ## Framework Reference Guide
 
@@ -254,9 +269,9 @@ The framework organizes training approaches as distinct "types" rather than diff
 
 - **Reference**: `finetrainers/trainer/__init__.py` imports both `SFTTrainer` and `ControlTrainer` as different training types for the same models.
 
-- **Concept**: Each training type implements a specific approach to fine-tuning but uses the same underlying model architecture. Our A2 training follows this pattern.
+- **Concept**: Each training type implements a specific approach to fine-tuning but uses the same underlying model architecture. Our E2V training follows this pattern.
 
-- **Application**: Create `a2_trainer` alongside existing types, not as a model variant.
+- **Application**: Create `e2v_trainer` alongside existing types, not as a model variant.
 
 #### 2. Model Specification Pattern
 Models are defined through specification classes that handle model loading and conditioning:
@@ -312,9 +327,10 @@ Configurations cascade from general to specific:
 ## Development Guidelines
 
 ### Core Principles
-- The WAN model IS the A2 model - no new model implementation is needed
-- A2 is a training paradigm focused on multiple reference conditioning
-- Maintain compatibility with existing inference code in A2/ directory
+- The WAN model IS the A2 model - A2 uses Wan's architecture with NO new parameter types
+- Wan already supports image-to-video (I2V) capabilities that A2 leverages
+- A2 is a training paradigm and data processing pipeline focused on multiple reference conditioning
+- Maintain compatibility with existing inference code in A2/ directory while using Wan's core components
 
 ### Code Quality Standards
 - **Minimal Code**: Use surgical precision - 10 lines is better than 100 
@@ -334,21 +350,21 @@ Configurations cascade from general to specific:
 ## Key Files to Create/Modify
 
 ### 1. Training Type Implementation
-- `finetrainers/trainer/a2_trainer/__init__.py` - Export trainer and configs
-- `finetrainers/trainer/a2_trainer/config.py` - Define A2Trainer configurations extending BaseArgs
-- `finetrainers/trainer/a2_trainer/trainer.py` - A2Trainer implementation using WanControlModelSpecification
-- `finetrainers/trainer/a2_trainer/data.py` - IterableE2VDataset and ValidationE2VDataset
+- `finetrainers/trainer/e2v_trainer/__init__.py` - Export trainer and configs
+- `finetrainers/trainer/e2v_trainer/config.py` - Define E2VTrainer configurations extending BaseArgs
+- `finetrainers/trainer/e2v_trainer/trainer.py` - E2VTrainer implementation using WanControlModelSpecification
+- `finetrainers/trainer/e2v_trainer/data.py` - IterableE2VDataset and ValidationE2VDataset
 
 ### 2. Configuration Updates
-- `finetrainers/config.py` - Add A2 training types to TrainingType enum
-- `finetrainers/trainer/__init__.py` - Import and expose A2Trainer
+- `finetrainers/config.py` - Add E2V training types to TrainingType enum
+- `finetrainers/trainer/__init__.py` - Import and expose E2VTrainer
 
 ### 3. Processors
 - `finetrainers/processors/multi_reference.py` - New processor for E2V conditioning
 - `finetrainers/processors/__init__.py` - Import and expose new processor
 
 ### 4. Testing
-- `tests/trainer/test_a2_trainer.py` - Tests for the new implementation
+- `tests/trainer/test_e2v_trainer.py` - Tests for the new implementation
 - `tests/data/test_e2v_dataset.py` - Tests for dataset implementation
 
 This implementation approach:
