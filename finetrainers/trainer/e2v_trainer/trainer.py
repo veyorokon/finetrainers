@@ -24,7 +24,7 @@ from finetrainers.config import TrainingType
 from finetrainers.patches import load_lora_weights
 from finetrainers.state import State, TrainState
 
-from .config import E2VFullRankConfig, E2VLowRankConfig
+from .config import E2VFullRankConfig, E2VLowRankConfig, E2VType
 from .data import IterableE2VDataset, ValidationE2VDataset
 
 
@@ -315,6 +315,26 @@ class E2VTrainer:
                     "frame_conditioning_index": self.args.frame_conditioning_index,
                     "frame_conditioning_concatenate_mask": self.args.frame_conditioning_concatenate_mask,
                 }
+            
+            # Validate dataset configuration
+            e2v_config = ds_config.get("e2v_config", {})
+            
+            # Validate elements
+            elements = e2v_config.get("elements", [])
+            if not elements:
+                raise ValueError("At least one element must be specified in the dataset configuration")
+            
+            # Validate processors
+            processors = e2v_config.get("processors", {})
+            if not processors:
+                raise ValueError("Processors configuration is required in the dataset configuration")
+            
+            if "vae" not in processors:
+                raise ValueError("VAE processor configuration is required")
+                
+            if e2v_config.get("e2v_type") in [E2VType.CLIP.value, E2VType.DUAL.value]:
+                if "clip" not in processors:
+                    raise ValueError("CLIP processor configuration is required for CLIP or DUAL e2v_type")
         
         # Create the training dataset
         train_dataset = data.create_dataset(self.args.dataset_configs, is_train=True)
@@ -344,6 +364,39 @@ class E2VTrainer:
         
         # For validation
         if self.args.validation_configs:
+            # Validate validation configs
+            for ds_config in self.args.validation_configs:
+                # Add E2V configuration if not already present
+                if "e2v_config" not in ds_config:
+                    ds_config["e2v_config"] = {
+                        "e2v_type": self.args.e2v_type,
+                        "elements": getattr(self.args, "elements", []),
+                        "processors": getattr(self.args, "processors", {}),
+                        "frame_conditioning_type": self.args.frame_conditioning_type,
+                        "frame_conditioning_index": self.args.frame_conditioning_index,
+                        "frame_conditioning_concatenate_mask": self.args.frame_conditioning_concatenate_mask,
+                    }
+                
+                # Validate dataset configuration
+                e2v_config = ds_config.get("e2v_config", {})
+                
+                # Validate elements
+                elements = e2v_config.get("elements", [])
+                if not elements:
+                    raise ValueError("At least one element must be specified in the validation configuration")
+                
+                # Validate processors
+                processors = e2v_config.get("processors", {})
+                if not processors:
+                    raise ValueError("Processors configuration is required in the validation configuration")
+                
+                if "vae" not in processors:
+                    raise ValueError("VAE processor configuration is required in validation")
+                    
+                if e2v_config.get("e2v_type") in [E2VType.CLIP.value, E2VType.DUAL.value]:
+                    if "clip" not in processors:
+                        raise ValueError("CLIP processor configuration is required for CLIP or DUAL e2v_type in validation")
+            
             validation_dataset = data.create_dataset(self.args.validation_configs, is_train=False)
             
             self.validation_dataset = ValidationE2VDataset(

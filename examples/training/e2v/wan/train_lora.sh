@@ -1,5 +1,5 @@
 #!/bin/bash
-#tmux new-session -d -s e2v_train 'bash /workspace/finetrainers/examples/training/e2v/wan/train_deepspeed.sh > /workspace/e2v_log.txt 2>&1' 
+#tmux new-session -d -s e2v_train 'bash /workspace/finetrainers/examples/training/e2v/wan/train_lora.sh > /workspace/e2v_log.txt 2>&1' 
 
 set -e -x
 
@@ -23,8 +23,8 @@ NUM_GPUS=4
 CUDA_VISIBLE_DEVICES="0"
 
 # Dataset configurations - use project-relative paths (relative to the project root)
-TRAINING_DATASET_CONFIG="examples/training/e2v/wan/sample_config.json"
-VALIDATION_DATASET_FILE="examples/training/e2v/wan/sample_config.json" # Replace with actual validation file
+TRAINING_DATASET_CONFIG="examples/training/e2v/wan/training.json"
+VALIDATION_DATASET_FILE="examples/training/e2v/wan/validation.json" # Replace with actual validation file
 
 # Model arguments
 model_cmd=(
@@ -98,8 +98,8 @@ validation_cmd=(
 
 # Miscellaneous arguments
 miscellaneous_cmd=(
-  --tracker_name "finetrainers-e2v-wan-deepspeed"
-  --output_dir "examples/training/e2v/wan/output/e2v_wan_deepspeed"
+  --tracker_name "finetrainers-e2v-wan-lora"
+  --output_dir "examples/training/e2v/wan/output/e2v_wan_lora"
   --init_timeout 600
   --nccl_timeout 600
   --report_to "wandb"

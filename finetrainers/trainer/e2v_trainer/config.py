@@ -87,18 +87,18 @@ class E2VConfig(ConfigMixin):
     """Base configuration for E2V training."""
 
     e2v_type: str = E2VType.DUAL
-    elements: List[ElementConfig]
-    processors: Dict[str, Union[VaeProcessorConfig, ClipProcessorConfig]]
+    elements: List[ElementConfig] = []  # Default to empty list
+    processors: Dict[str, Union[VaeProcessorConfig, ClipProcessorConfig]] = {}  # Default to empty dict
     frame_conditioning_type: str = FrameConditioningType.FULL
     frame_conditioning_index: int = 0
     frame_conditioning_concatenate_mask: bool = True
 
     def validate_args(self, args):
+        # Only validate e2v_type during CLI parsing
         assert self.e2v_type in E2VType.__members__.values(), f"Invalid E2V type: {self.e2v_type}"
-        assert len(self.elements) > 0, "At least one element must be specified"
-        assert "vae" in self.processors, "VAE processor configuration is required"
-        if self.e2v_type in [E2VType.CLIP, E2VType.DUAL]:
-            assert "clip" in self.processors, "CLIP processor configuration is required"
+        
+        # Skip detailed validation during initial arg parsing
+        # Full validation will happen in the trainer after dataset config is loaded
     
     def map_args(self, argparse_args, mapped_args):
         # Map CLI args to this config
