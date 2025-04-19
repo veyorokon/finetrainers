@@ -1,0 +1,37 @@
+Looking more closely at the code, I noticed a few additional concerns or issues that should be addressed to fully align with the
+  framework's patterns:
+
+  1. Initialization of Trainable Parameters:
+    - The E2V trainer handles LoRA initialization differently from SFT/Control trainers
+    - We should align with their approach of using PyTorch runtime casting types for mixed precision training
+  2. Missing _init Methods:
+    - SFT and Control trainers use methods like _init_logging(), _init_trackers(), and _init_directories_and_repositories()
+    - Our implementation should add these methods for consistency
+  3. Model Preparation Differences:
+    - The framework has a pattern for preparing the model that's not fully matched
+    - Control/SFT trainers use _move_components_to_device() method that we should adopt
+  4. Inconsistent Tensor Parallel Handling:
+    - Our implementation doesn't handle tensor parallelism in the same way
+    - Should align with the framework's pattern for distributed training initialization
+  5. Training vs Run Method Structure:
+    - SFT/Control trainers use the run() method as the main entry point with proper cleanup
+    - We should organize our methods to follow this pattern consistently
+  6. Error Handling and Cleanup:
+    - Our implementation does less error handling and cleanup than other trainers
+    - Should add consistent try/finally blocks to match framework patterns
+  7. Dataset Preparation:
+    - When loading from JSON, our implementation doesn't handle streaming and precomputation flags consistently
+    - Should align more closely with how other trainers process these options
+  8. Activation Checkpointing:
+    - Our implementation doesn't handle activation checkpointing in the same way as SFT/Control trainers
+    - Should add better support for this optimization technique
+  9. Tracker Integration:
+    - WandB tracking integration is inconsistent with framework patterns
+    - Should use the same pattern for tracker initialization and access
+  10. Model Loading/Saving:
+    - The pattern for loading/saving models should be aligned more closely with other trainers
+    - Especially how LoRA adapters are handled compared to full models
+
+  These issues are mostly structural and organizational rather than functional bugs. They would make the code more maintainable and
+  consistent with the rest of the framework. Addressing them would improve code quality and ensure that future framework changes will work
+  seamlessly with the E2V trainer.
