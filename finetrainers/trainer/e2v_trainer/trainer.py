@@ -265,7 +265,7 @@ class E2VTrainer:
             
             # Save the arguments used for this training run
             with open(os.path.join(self.args.output_dir, "training_args.json"), "w") as f:
-                json.dump(vars(self.args), f, indent=2)
+                json.dump(self.args.to_dict(), f, indent=2)
                 
             logger.info(f"Created output directory: {self.args.output_dir}")
             
