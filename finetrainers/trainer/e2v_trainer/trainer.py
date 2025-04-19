@@ -90,6 +90,7 @@ class E2VTrainer:
         
         # Initialize logging, directories, and repositories
         self._init_logging()
+        self._init_trackers()
         self._init_directories_and_repositories()
 
         # Perform any patches that might be necessary for training to work as expected
@@ -165,31 +166,26 @@ class E2VTrainer:
             self._cleanup()
 
     def _init_distributed(self) -> None:
-        # Set up distributed training
-        if self.args.distributed_type is None:
-            if self.args.deepspeed_config:
-                self.args.distributed_type = "deepspeed"
-            elif torch.cuda.device_count() > 1:
-                self.args.distributed_type = "multi_gpu"
+        world_size = int(os.environ.get("WORLD_SIZE", torch.cuda.device_count()))
 
-        # Create parallel state
-        parallel_state = parallel.create_parallel_state(
-            distributed_type=self.args.distributed_type,
-            deepspeed_config_file=self.args.deepspeed_config,
-            num_gpu_processes=self.args.num_processes,
-            mixed_precision=self.args.mixed_precision,
+        # TODO(aryan): handle other backends
+        backend_cls: parallel.ParallelBackendType = parallel.get_parallel_backend_cls(self.args.parallel_backend)
+        self.state.parallel_backend = backend_cls(
+            world_size=world_size,
+            pp_degree=self.args.pp_degree,
+            dp_degree=self.args.dp_degree,
+            dp_shards=self.args.dp_shards,
+            cp_degree=self.args.cp_degree,
+            tp_degree=self.args.tp_degree,
+            backend="nccl",
+            timeout=self.args.init_timeout,
+            logging_dir=self.args.logging_dir,
+            output_dir=self.args.output_dir,
             gradient_accumulation_steps=self.args.gradient_accumulation_steps,
-            use_bf16=self.args.use_bf16,
-            seed=self.args.seed,
-            set_torch_seed=self.args.set_torch_seed,
-            devices=self.args.devices_map,
-            torch_compile=self.args.torch_compile,
-            use_fp8=self.args.use_fp8,
-            set_cudnn=self.args.set_cudnn,
         )
-        self.state.parallel_backend = parallel_state
-        self.state.is_local_main_process = parallel_state.is_local_main_process
-        self.state.is_world_process_zero = parallel_state.is_world_process_zero
+
+        if self.args.seed is not None:
+            self.state.parallel_backend.enable_determinism(self.args.seed)
 
     def _init_config_options(self) -> None:
         # Set up configuration options
