@@ -233,26 +233,30 @@ class E2VTrainer:
         """Initialize model trackers like WandB."""
         parallel_backend = self.state.parallel_backend
         
-        if self.args.report_to_wandb and parallel_backend.is_main_process:
-            import wandb
-            
-            wandb_config = {
-                "project": self.args.wandb_project or "e2v-trainer",
-                "name": self.args.run_name,
-                "id": self.args.wandb_run_id,
-                "resume": "allow" if self.args.resume_from_checkpoint else "never",
-                "config": vars(self.args),
-            }
-            
-            if self.args.wandb_entity:
-                wandb_config["entity"] = self.args.wandb_entity
-                
-            if self.args.wandb_api_key:
-                os.environ["WANDB_API_KEY"] = self.args.wandb_api_key
-                
-            self.tracker = wandb.init(**wandb_config)
+        # Follow the same pattern as other trainers for consistency
+        trackers = [self.args.report_to]
+        experiment_name = getattr(self.args, "tracker_name", None) or "finetrainers-experiment"
+        parallel_backend.initialize_trackers(
+            trackers, 
+            experiment_name=experiment_name, 
+            config=self._get_training_info(), 
+            log_dir=self.args.logging_dir
+        )
+        
+    def _get_training_info(self) -> Dict[str, Any]:
+        """Get training information for logging."""
+        info = self.args.to_dict()
+
+        # Removing flow matching arguments when not using flow-matching objective
+        diffusion_args = info.get("diffusion_arguments", {})
+        scheduler_name = self.scheduler.__class__.__name__ if self.scheduler is not None else ""
+        if scheduler_name != "FlowMatchEulerDiscreteScheduler":
+            filtered_diffusion_args = {k: v for k, v in diffusion_args.items() if "flow" not in k}
         else:
-            self.tracker = None
+            filtered_diffusion_args = diffusion_args
+
+        info.update({"diffusion_arguments": filtered_diffusion_args})
+        return info
     
     def _init_directories_and_repositories(self) -> None:
         """Initialize output directories and repositories."""
