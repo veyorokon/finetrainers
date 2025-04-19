@@ -205,7 +205,42 @@ Key features of this configuration:
 
 ## Data Processing Pipeline for E2V Training
 
-### Reference Image Processing in E2V
+### Complete Pipeline Outline
+
+```
+Load Data
+└─> Reference Images + Target Video
+    ├─> CLIP Pathway (Semantic Features)
+    │   ├─> Preprocess Images (resize to clip_resolution)
+    │   ├─> Run CLIP Vision Encoder 
+    │   ├─> Extract Embeddings (penultimate layer)
+    │   ├─> Project to Match Text Embedding Dimensions
+    │   ├─> Concatenate Multiple Reference Embeddings
+    │   └─> Feed as Keys/Values to Cross-Attention
+    │       └─> Used in Transformer via encoder_hidden_states_image
+    │ 
+    └─> VAE Pathway (Spatial Features)
+        ├─> Preprocess Images (resize to target_resolution)
+        ├─> Arrange in Sequence by Position Parameter
+        ├─> Apply Repetition (vae_repeat for each image)
+        ├─> Create Mini-Video of References
+        ├─> Add Zero Padding to Match Video Frame Count
+        ├─> Encode through VAE
+        ├─> Create Frame Mask (1s for reference frames, 0s elsewhere)
+        ├─> Concatenate Mask + Encoded Latents (channel dimension)
+        └─> Combine with Noisy Video Latents
+            └─> Pass Combined Tensor to Transformer via patch_embedding
+
+Target Video Processing
+├─> Encode Video through VAE
+├─> Apply Noise (Flow Matching)
+└─> Concatenate with Condition Latents from VAE Pathway
+    └─> Forward Through Model with Both Condition Types
+        ├─> Process Latents with Modified Patch Embedding
+        └─> Cross-Attention with CLIP Embeddings
+```
+
+### Reference Image Processing Details
 
 1. **VAE Spatial Pathway**:
    - Reference images are resized to match video dimensions (target_resolution)
