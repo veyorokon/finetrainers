@@ -1,8 +1,8 @@
 import math
-from typing import Optional, Union
+from typing import Optional
 
 import torch
-from diffusers import CogVideoXDDIMScheduler, FlowMatchEulerDiscreteScheduler
+from diffusers import FlowMatchEulerDiscreteScheduler
 from diffusers.training_utils import compute_loss_weighting_for_sd3
 
 
@@ -63,26 +63,22 @@ def compute_density_for_timestep_sampling(
     return u
 
 
-def get_scheduler_alphas(scheduler: Union[CogVideoXDDIMScheduler, FlowMatchEulerDiscreteScheduler]) -> torch.Tensor:
+def get_scheduler_alphas(scheduler: FlowMatchEulerDiscreteScheduler) -> torch.Tensor:
     if isinstance(scheduler, FlowMatchEulerDiscreteScheduler):
         return None
-    elif isinstance(scheduler, CogVideoXDDIMScheduler):
-        return scheduler.alphas_cumprod.clone()
     else:
         raise ValueError(f"Unsupported scheduler type {type(scheduler)}")
 
 
-def get_scheduler_sigmas(scheduler: Union[CogVideoXDDIMScheduler, FlowMatchEulerDiscreteScheduler]) -> torch.Tensor:
+def get_scheduler_sigmas(scheduler: FlowMatchEulerDiscreteScheduler) -> torch.Tensor:
     if isinstance(scheduler, FlowMatchEulerDiscreteScheduler):
         return scheduler.sigmas.clone()
-    elif isinstance(scheduler, CogVideoXDDIMScheduler):
-        return scheduler.timesteps.clone().float() / float(scheduler.config.num_train_timesteps)
     else:
         raise ValueError(f"Unsupported scheduler type {type(scheduler)}")
 
 
 def prepare_sigmas(
-    scheduler: Union[CogVideoXDDIMScheduler, FlowMatchEulerDiscreteScheduler],
+    scheduler: FlowMatchEulerDiscreteScheduler,
     sigmas: torch.Tensor,
     batch_size: int,
     num_train_timesteps: int,
@@ -104,10 +100,6 @@ def prepare_sigmas(
             generator=generator,
         )
         indices = (weights * num_train_timesteps).long()
-    elif isinstance(scheduler, CogVideoXDDIMScheduler):
-        # TODO(aryan): Currently, only uniform sampling is supported. Add more sampling schemes.
-        weights = torch.rand(size=(batch_size,), device=device, generator=generator)
-        indices = (weights * num_train_timesteps).long()
     else:
         raise ValueError(f"Unsupported scheduler type {type(scheduler)}")
 
@@ -115,30 +107,24 @@ def prepare_sigmas(
 
 
 def prepare_loss_weights(
-    scheduler: Union[CogVideoXDDIMScheduler, FlowMatchEulerDiscreteScheduler],
+    scheduler: FlowMatchEulerDiscreteScheduler,
     alphas: Optional[torch.Tensor] = None,
     sigmas: Optional[torch.Tensor] = None,
     flow_weighting_scheme: str = "none",
 ) -> torch.Tensor:
     if isinstance(scheduler, FlowMatchEulerDiscreteScheduler):
         return compute_loss_weighting_for_sd3(sigmas=sigmas, weighting_scheme=flow_weighting_scheme)
-    elif isinstance(scheduler, CogVideoXDDIMScheduler):
-        # SNR is computed as (alphas / (1 - alphas)), but for some reason CogVideoX uses 1 / (1 - alphas).
-        # TODO(aryan): Experiment if using alphas / (1 - alphas) gives better results.
-        return 1 / (1 - alphas)
     else:
         raise ValueError(f"Unsupported scheduler type {type(scheduler)}")
 
 
 def prepare_target(
-    scheduler: Union[CogVideoXDDIMScheduler, FlowMatchEulerDiscreteScheduler],
+    scheduler: FlowMatchEulerDiscreteScheduler,
     noise: torch.Tensor,
     latents: torch.Tensor,
 ) -> torch.Tensor:
     if isinstance(scheduler, FlowMatchEulerDiscreteScheduler):
         target = noise - latents
-    elif isinstance(scheduler, CogVideoXDDIMScheduler):
-        target = latents
     else:
         raise ValueError(f"Unsupported scheduler type {type(scheduler)}")
 

@@ -11,7 +11,7 @@ class CogView4GLMProcessor(ProcessorMixin):
     Processor for the GLM family of models. This processor is used to encode text inputs and return the embeddings
     and attention masks for the input text.
 
-    This processor is specific to CogView4 but can be used with any other model.
+    This processor can be used with any model that uses GLM embeddings.
 
     Args:
         output_names (`List[str]`):

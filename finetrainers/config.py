@@ -2,20 +2,10 @@ from enum import Enum
 from typing import Type
 
 from .models import ModelSpecification
-from .models.cogvideox import CogVideoXModelSpecification
-from .models.cogview4 import CogView4ControlModelSpecification, CogView4ModelSpecification
-from .models.flux import FluxModelSpecification
-from .models.hunyuan_video import HunyuanVideoModelSpecification
-from .models.ltx_video import LTXVideoModelSpecification
 from .models.wan import WanControlModelSpecification, WanModelSpecification
 
 
 class ModelType(str, Enum):
-    COGVIDEOX = "cogvideox"
-    COGVIEW4 = "cogview4"
-    FLUX = "flux"
-    HUNYUAN_VIDEO = "hunyuan_video"
-    LTX_VIDEO = "ltx_video"
     WAN = "wan"
 
 
@@ -30,30 +20,7 @@ class TrainingType(str, Enum):
 
 
 SUPPORTED_MODEL_CONFIGS = {
-    # TODO(aryan): autogenerate this
-    # SFT
-    ModelType.COGVIDEOX: {
-        TrainingType.LORA: CogVideoXModelSpecification,
-        TrainingType.FULL_FINETUNE: CogVideoXModelSpecification,
-    },
-    ModelType.COGVIEW4: {
-        TrainingType.LORA: CogView4ModelSpecification,
-        TrainingType.FULL_FINETUNE: CogView4ModelSpecification,
-        TrainingType.CONTROL_LORA: CogView4ControlModelSpecification,
-        TrainingType.CONTROL_FULL_FINETUNE: CogView4ControlModelSpecification,
-    },
-    ModelType.FLUX: {
-        TrainingType.LORA: FluxModelSpecification,
-        TrainingType.FULL_FINETUNE: FluxModelSpecification,
-    },
-    ModelType.HUNYUAN_VIDEO: {
-        TrainingType.LORA: HunyuanVideoModelSpecification,
-        TrainingType.FULL_FINETUNE: HunyuanVideoModelSpecification,
-    },
-    ModelType.LTX_VIDEO: {
-        TrainingType.LORA: LTXVideoModelSpecification,
-        TrainingType.FULL_FINETUNE: LTXVideoModelSpecification,
-    },
+    # SFT and Control
     ModelType.WAN: {
         TrainingType.LORA: WanModelSpecification,
         TrainingType.FULL_FINETUNE: WanModelSpecification,

@@ -19,11 +19,6 @@ from finetrainers import BaseArgs, SFTTrainer, TrainingType, get_logger
 os.environ["WANDB_MODE"] = "disabled"
 os.environ["FINETRAINERS_LOG_LEVEL"] = "INFO"
 
-from ..models.cogvideox.base_specification import DummyCogVideoXModelSpecification  # noqa
-from ..models.cogview4.base_specification import DummyCogView4ModelSpecification  # noqa
-from ..models.flux.base_specification import DummyFluxModelSpecification  # noqa
-from ..models.hunyuan_video.base_specification import DummyHunyuanVideoModelSpecification  # noqa
-from ..models.ltx_video.base_specification import DummyLTXVideoModelSpecification  # noqa
 from ..models.wan.base_specification import DummyWanModelSpecification  # noqa
 
 
@@ -173,52 +168,6 @@ class SFTTrainerFullFinetuneTestsMixin___Accelerate(SFTTrainerFastTestsMixin):
         self._test_training(args)
 
 
-class SFTTrainerCogVideoXLoRATests___Accelerate(SFTTrainerLoRATestsMixin___Accelerate, unittest.TestCase):
-    model_specification_cls = DummyCogVideoXModelSpecification
-
-
-class SFTTrainerCogVideoXFullFinetuneTests___Accelerate(
-    SFTTrainerFullFinetuneTestsMixin___Accelerate, unittest.TestCase
-):
-    model_specification_cls = DummyCogVideoXModelSpecification
-
-
-class SFTTrainerCogView4LoRATests___Accelerate(SFTTrainerLoRATestsMixin___Accelerate, unittest.TestCase):
-    model_specification_cls = DummyCogView4ModelSpecification
-
-
-class SFTTrainerCogView4FullFinetuneTests___Accelerate(
-    SFTTrainerFullFinetuneTestsMixin___Accelerate, unittest.TestCase
-):
-    model_specification_cls = DummyCogView4ModelSpecification
-
-
-class SFTTrainerFluxLoRATests___Accelerate(SFTTrainerLoRATestsMixin___Accelerate, unittest.TestCase):
-    model_specification_cls = DummyFluxModelSpecification
-
-
-class SFTTrainerFluxFullFinetuneTests___Accelerate(SFTTrainerFullFinetuneTestsMixin___Accelerate, unittest.TestCase):
-    model_specification_cls = DummyFluxModelSpecification
-
-
-class SFTTrainerHunyuanVideoLoRATests___Accelerate(SFTTrainerLoRATestsMixin___Accelerate, unittest.TestCase):
-    model_specification_cls = DummyHunyuanVideoModelSpecification
-
-
-class SFTTrainerHunyuanVideoFullFinetuneTests___Accelerate(
-    SFTTrainerFullFinetuneTestsMixin___Accelerate, unittest.TestCase
-):
-    model_specification_cls = DummyHunyuanVideoModelSpecification
-
-
-class SFTTrainerLTXVideoLoRATests___Accelerate(SFTTrainerLoRATestsMixin___Accelerate, unittest.TestCase):
-    model_specification_cls = DummyLTXVideoModelSpecification
-
-
-class SFTTrainerLTXVideoFullFinetuneTests___Accelerate(
-    SFTTrainerFullFinetuneTestsMixin___Accelerate, unittest.TestCase
-):
-    model_specification_cls = DummyLTXVideoModelSpecification
 
 
 class SFTTrainerWanLoRATests___Accelerate(SFTTrainerLoRATestsMixin___Accelerate, unittest.TestCase):
@@ -437,44 +386,6 @@ class SFTTrainerFullFinetuneTestsMixin___PTD(SFTTrainerFastTestsMixin):
         self._test_training(args)
 
 
-class SFTTrainerCogVideoXLoRATests___PTD(SFTTrainerLoRATestsMixin___PTD, unittest.TestCase):
-    model_specification_cls = DummyCogVideoXModelSpecification
-
-
-class SFTTrainerCogVideoXFullFinetuneTests___PTD(SFTTrainerFullFinetuneTestsMixin___PTD, unittest.TestCase):
-    model_specification_cls = DummyCogVideoXModelSpecification
-
-
-class SFTTrainerCogView4LoRATests___PTD(SFTTrainerLoRATestsMixin___PTD, unittest.TestCase):
-    model_specification_cls = DummyCogView4ModelSpecification
-
-
-class SFTTrainerCogView4FullFinetuneTests___PTD(SFTTrainerFullFinetuneTestsMixin___PTD, unittest.TestCase):
-    model_specification_cls = DummyCogView4ModelSpecification
-
-
-class SFTTrainerFluxLoRATests___PTD(SFTTrainerLoRATestsMixin___PTD, unittest.TestCase):
-    model_specification_cls = DummyFluxModelSpecification
-
-
-class SFTTrainerFluxFullFinetuneTests___PTD(SFTTrainerFullFinetuneTestsMixin___PTD, unittest.TestCase):
-    model_specification_cls = DummyFluxModelSpecification
-
-
-class SFTTrainerHunyuanVideoLoRATests___PTD(SFTTrainerLoRATestsMixin___PTD, unittest.TestCase):
-    model_specification_cls = DummyHunyuanVideoModelSpecification
-
-
-class SFTTrainerHunyuanVideoFullFinetuneTests___PTD(SFTTrainerFullFinetuneTestsMixin___PTD, unittest.TestCase):
-    model_specification_cls = DummyHunyuanVideoModelSpecification
-
-
-class SFTTrainerLTXVideoLoRATests___PTD(SFTTrainerLoRATestsMixin___PTD, unittest.TestCase):
-    model_specification_cls = DummyLTXVideoModelSpecification
-
-
-class SFTTrainerLTXVideoFullFinetuneTests___PTD(SFTTrainerFullFinetuneTestsMixin___PTD, unittest.TestCase):
-    model_specification_cls = DummyLTXVideoModelSpecification
 
 
 class SFTTrainerWanLoRATests___PTD(SFTTrainerLoRATestsMixin___PTD, unittest.TestCase):
