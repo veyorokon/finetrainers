@@ -12,7 +12,7 @@ export TORCH_NCCL_ENABLE_MONITORING=0
 export FINETRAINERS_LOG_LEVEL="INFO"
 
 # Finetrainers supports multiple backends for distributed training
-BACKEND="deepspeed"
+BACKEND="accelerate"
 
 # In this setting, we're using 4 GPUs for DeepSpeed training
 NUM_GPUS=4
