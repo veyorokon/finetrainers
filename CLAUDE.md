@@ -357,3 +357,6 @@ This implementation approach:
 - Leverages WanControlModelSpecification without modification
 - Maintains clean separation of concerns
 - Creates focused, purpose-specific new files
+
+### Additional Context:
+- The a2.txt paper is the technical document that highlights E2V training
