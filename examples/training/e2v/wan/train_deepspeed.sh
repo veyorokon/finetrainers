@@ -3,6 +3,10 @@
 
 set -e -x
 
+# Global project path - set this to your project root
+PROJECT_PATH="/workspace/finetrainers"
+
+# Environment variables
 # export TORCH_LOGS="+dynamo,recompiles,graph_breaks"
 # export TORCHDYNAMO_VERBOSE=1
 export WANDB_MODE="offline"
@@ -16,11 +20,11 @@ BACKEND="accelerate"
 
 # In this setting, we're using 4 GPUs for DeepSpeed training
 NUM_GPUS=4
-CUDA_VISIBLE_DEVICES="0,1,2,3"
+CUDA_VISIBLE_DEVICES="0"
 
-# Check the JSON files for the expected JSON format
-TRAINING_DATASET_CONFIG="./sample_config.json"
-VALIDATION_DATASET_FILE="./sample_config.json" # Replace with actual validation file
+# Dataset configurations - use project-relative paths (relative to the project root)
+TRAINING_DATASET_CONFIG="examples/training/e2v/wan/sample_config.json"
+VALIDATION_DATASET_FILE="examples/training/e2v/wan/sample_config.json" # Replace with actual validation file
 
 # Model arguments
 model_cmd=(
@@ -95,7 +99,7 @@ validation_cmd=(
 # Miscellaneous arguments
 miscellaneous_cmd=(
   --tracker_name "finetrainers-e2v-wan-deepspeed"
-  --output_dir "./output/e2v_wan_deepspeed"
+  --output_dir "examples/training/e2v/wan/output/e2v_wan_deepspeed"
   --init_timeout 600
   --nccl_timeout 600
   --report_to "wandb"
@@ -104,7 +108,7 @@ miscellaneous_cmd=(
 
 # DeepSpeed configuration
 deepspeed_cmd=(
-  --deepspeed_config "/workspace/finetrainers/accelerate_configs/deepspeed.yaml"
+  --deepspeed_config "accelerate_configs/deepspeed.yaml"
 )
 
 # Set CUDA devices and execute with torchrun
