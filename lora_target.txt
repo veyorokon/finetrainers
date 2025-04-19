@@ -1,0 +1,29 @@
+1. Style/Content LoRA (SFT) vs Conditioning LoRA
+
+  Style/Content LoRA (SFT Training):
+  --target_modules "blocks.*(to_q|to_k|to_v|to_out.0)"
+  - Targets primarily attention blocks (query, key, value, output projections)
+  - Focuses on modifying the content generation aspects
+  - Doesn't include feed-forward networks (FF.net)
+
+  Conditioning LoRA (Control Training):
+  --target_modules "blocks.*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
+  - Targets both attention blocks AND feed-forward networks
+  - Includes FF.net layers which are critical for conditioning information
+  - More comprehensive targeting to handle additional conditioning information
+
+  What This Means for Your Implementation
+
+  1. For New Conditioning Type:
+    - Use the more comprehensive pattern that includes FF.net layers:
+  --target_modules "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
+    - This pattern ensures the model can properly process and integrate the conditioning information across both attention mechanisms and
+  feed-forward pathways
+    - The FF.net layers are crucial for conditioning as they help transform the feature representations
+  2. For Style LoRA:
+    - Use the more focused pattern targeting just attention layers:
+  --target_modules "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0)"
+    - This is sufficient for style modifications as most style elements are captured in the attention mechanisms
+
+  The E2V implementation uses the conditioning-type pattern since it needs to process multiple reference images as conditioning inputs,
+  just like control training does with control signals.

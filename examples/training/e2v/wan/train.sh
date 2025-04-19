@@ -1,81 +1,145 @@
 #!/bin/bash
 
-# Elements-to-Video (E2V) Training Script Example for Wan Model
+set -e -x
 
-# ===== Model Configuration =====
-MODEL_DIR="/dev/shm/models"
-MODEL_NAME="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
-PRETRAINED_MODEL_PATH="$MODEL_DIR/Wan2.1-T2V-1.3B-Diffusers"
+# export TORCH_LOGS="+dynamo,recompiles,graph_breaks"
+# export TORCHDYNAMO_VERBOSE=1
+export WANDB_MODE="offline"
+export NCCL_P2P_DISABLE=1
+export NCCL_IB_DISABLE=1
+export TORCH_NCCL_ENABLE_MONITORING=0
+export FINETRAINERS_LOG_LEVEL="INFO"
 
-# ===== Training Configuration =====
-TRAINING_TYPE="e2v-lora"
-OUTPUT_DIR="./output/e2v_wan_lora"
-CONFIG_FILE="./sample_config.json"
-SEED=42
+# Finetrainers supports multiple backends for distributed training
+BACKEND="ptd"  # Can be changed to "accelerate" or other backends
 
-# ===== Optimization Configuration =====
-TRAIN_BATCH_SIZE=1
-GRADIENT_ACCUMULATION_STEPS=4
-MAX_TRAIN_STEPS=10000
-LR=5e-5
-LR_SCHEDULER="constant"
-LR_WARMUP_STEPS=100
-MIXED_PRECISION="bf16"
-DATALOADER_NUM_WORKERS=4
-CLIP_GRAD_NORM=1.0
+# In this setting, we're using 1 GPU for basic training
+NUM_GPUS=1
+CUDA_VISIBLE_DEVICES="0"
 
-# ===== LoRA Configuration =====
-RANK=64
-LORA_ALPHA=$RANK
-TARGET_MODULES="(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
+# Check the JSON files for the expected JSON format
+TRAINING_DATASET_CONFIG="./sample_config.json"
+VALIDATION_DATASET_FILE="./sample_config.json" # Replace with actual validation file
 
-# ===== E2V Specific Configuration =====
-E2V_TYPE="dual"
-FRAME_CONDITIONING_TYPE="full"
-FRAME_CONDITIONING_CONCATENATE_MASK=true
+# Model arguments
+model_cmd=(
+  --model_name "wan"
+  --pretrained_model_name_or_path "/dev/shm/models/Wan2.1-T2V-1.3B-Diffusers"
+)
 
-# ===== Checkpoint Configuration =====
-CHECKPOINT_SAVE_STEPS=1000
-CHECKPOINT_SAVE_TOTAL_LIMIT=5
+# E2V arguments
+e2v_cmd=(
+  --e2v_type "dual"
+  --frame_conditioning_type "full"
+  --frame_conditioning_concatenate_mask
+)
 
-# ===== Validation Configuration =====
-VALIDATION_STEPS=500
-MAX_VALIDATION_BATCHES=3
+# LoRA arguments
+lora_cmd=(
+  --rank 64
+  --lora_alpha 64
+  --target_modules "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
+)
 
-# ===== Optional: Multi-GPU Configuration =====
-# Uncomment these for distributed training
-# export CUDA_VISIBLE_DEVICES=0,1,2,3
-# DISTRIBUTED_TYPE="multi_gpu"
-# NUM_PROCESSES=4
+# Dataset arguments
+dataset_cmd=(
+  --dataset_config "$TRAINING_DATASET_CONFIG"
+  --dataset_shuffle_buffer_size 32
+)
 
-# --------------------------------------
-# Run the training
-# --------------------------------------
-python ../../../train.py \
-    --model_name="$MODEL_NAME" \
-    --pretrained_model_name_or_path="$PRETRAINED_MODEL_PATH" \
-    --training_type="$TRAINING_TYPE" \
-    --output_dir="$OUTPUT_DIR" \
-    --dataset_configs="$CONFIG_FILE" \
-    --train_batch_size="$TRAIN_BATCH_SIZE" \
-    --gradient_accumulation_steps="$GRADIENT_ACCUMULATION_STEPS" \
-    --max_train_steps="$MAX_TRAIN_STEPS" \
-    --lr="$LR" \
-    --lr_scheduler="$LR_SCHEDULER" \
-    --lr_warmup_steps="$LR_WARMUP_STEPS" \
-    --mixed_precision="$MIXED_PRECISION" \
-    --dataloader_num_workers="$DATALOADER_NUM_WORKERS" \
-    --clip_grad_norm="$CLIP_GRAD_NORM" \
-    --rank="$RANK" \
-    --lora_alpha="$LORA_ALPHA" \
-    --target_modules="$TARGET_MODULES" \
-    --e2v_type="$E2V_TYPE" \
-    --frame_conditioning_type="$FRAME_CONDITIONING_TYPE" \
-    ${FRAME_CONDITIONING_CONCATENATE_MASK:+--frame_conditioning_concatenate_mask} \
-    --checkpoint_save_steps="$CHECKPOINT_SAVE_STEPS" \
-    --checkpoint_save_total_limit="$CHECKPOINT_SAVE_TOTAL_LIMIT" \
-    --validation_steps="$VALIDATION_STEPS" \
-    --max_validation_batches="$MAX_VALIDATION_BATCHES" \
-    --seed="$SEED" \
-    ${DISTRIBUTED_TYPE:+--distributed_type="$DISTRIBUTED_TYPE"} \
-    ${NUM_PROCESSES:+--num_processes="$NUM_PROCESSES"}
+# Dataloader arguments
+dataloader_cmd=(
+  --dataloader_num_workers 4
+)
+
+# Diffusion arguments
+diffusion_cmd=(
+  --flow_weighting_scheme "logit_normal"
+)
+
+# Training arguments
+training_cmd=(
+  --training_type "e2v-lora"
+  --seed 42
+  --batch_size 1
+  --train_steps 10000
+  --gradient_accumulation_steps 4
+  --gradient_checkpointing
+  --checkpointing_steps 1000
+  --checkpointing_limit 5
+  # --resume_from_checkpoint 3000
+  --enable_slicing
+  --enable_tiling
+)
+
+# Optimizer arguments
+optimizer_cmd=(
+  --optimizer "adamw"
+  --lr 5e-5
+  --lr_scheduler "constant"
+  --lr_warmup_steps 100
+  --lr_num_cycles 1
+  --beta1 0.9
+  --beta2 0.99
+  --weight_decay 1e-4
+  --epsilon 1e-8
+  --max_grad_norm 1.0
+)
+
+# Validation arguments
+validation_cmd=(
+  --validation_dataset_file "$VALIDATION_DATASET_FILE"
+  --validation_steps 500
+  --max_validation_batches 3
+)
+
+# Miscellaneous arguments
+miscellaneous_cmd=(
+  --tracker_name "finetrainers-e2v-wan-lora"
+  --output_dir "./output/e2v_wan_lora"
+  --init_timeout 600
+  --nccl_timeout 600
+  --report_to "wandb"
+  --mixed_precision "bf16"
+)
+
+# Set CUDA devices and execute the training script
+export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
+
+if [ "$NUM_GPUS" -gt 1 ]; then
+  # Multi-GPU execution with torchrun
+  torchrun \
+    --standalone \
+    --nnodes=1 \
+    --nproc_per_node=$NUM_GPUS \
+    --rdzv_backend c10d \
+    --rdzv_endpoint="localhost:29501" \
+    ../../../train.py \
+      --parallel_backend "$BACKEND" \
+      "${model_cmd[@]}" \
+      "${e2v_cmd[@]}" \
+      "${lora_cmd[@]}" \
+      "${dataset_cmd[@]}" \
+      "${dataloader_cmd[@]}" \
+      "${diffusion_cmd[@]}" \
+      "${training_cmd[@]}" \
+      "${optimizer_cmd[@]}" \
+      "${validation_cmd[@]}" \
+      "${miscellaneous_cmd[@]}"
+else
+  # Single-GPU execution
+  python ../../../train.py \
+    --parallel_backend "$BACKEND" \
+    "${model_cmd[@]}" \
+    "${e2v_cmd[@]}" \
+    "${lora_cmd[@]}" \
+    "${dataset_cmd[@]}" \
+    "${dataloader_cmd[@]}" \
+    "${diffusion_cmd[@]}" \
+    "${training_cmd[@]}" \
+    "${optimizer_cmd[@]}" \
+    "${validation_cmd[@]}" \
+    "${miscellaneous_cmd[@]}"
+fi
+
+echo -ne "-------------------- Finished executing script --------------------\n\n"
