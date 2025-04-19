@@ -11,7 +11,7 @@ from PIL import Image
 import finetrainers.functional as FF
 from finetrainers.data import VideoArtifact
 from finetrainers.logging import get_logger
-from finetrainers.processors import ClipProcessor, ProcessorMixin
+from finetrainers.processors import ProcessorMixin
 from finetrainers.typing import ArtifactType
 
 from .config import E2VType, ElementConfig, FrameConditioningType
