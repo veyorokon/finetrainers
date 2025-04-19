@@ -106,10 +106,46 @@ We'll extend the existing training.json format to support E2V training with mini
           "clip_process": "letterbox" 
         }
       ],
-      "vae_combine": "before"
+      "vae_combine": "before",
+      "visualization": {
+        "enabled": true,
+        "output_dir": "visualizations/{run_id}",
+        "frequency": 100,
+        "processors": [
+          {
+            "type": "latent_save",
+            "data": ["input_latents", "predicted_latents"],
+            "format": "pt"
+          },
+          {
+            "type": "vae_decode",
+            "data": ["input_latents", "predicted_latents"],
+            "frames": [0, -1],
+            "format": "png"
+          }
+        ]
+      }
     }
   ]
 }
+```
+
+### Visualization Configuration
+
+The `visualization` section enables saving intermediate representations during training:
+
+- **Integration Point**: Inside the `_train` method of `A2Trainer`, after forward and loss computation
+- **Access Point**: Similar to checkpointing mechanism but for visualization data
+- **Available Data**:
+  - `input_latents`: Original input latents
+  - `noisy_latents`: Latents with noise applied
+  - `conditioned_latents`: Latents with conditioning
+  - `predicted_latents`: Model predictions
+  - `reference_images`: Original reference images
+  
+This approach leverages the training loop where all necessary data is already available, requiring minimal code changes. Each processor is defined by a `type` (the method to call) with all other fields passed as kwargs, keeping the implementation concise and extensible. 
+
+The `frequency` parameter controls how often visualizations are generated (every N steps), minimizing performance impact while providing useful debugging information.
 ```
 
 Key features of this configuration:
@@ -183,10 +219,24 @@ After reviewing the code, we've confirmed:
    - The implementation should be a new training type rather than a new model
    - Code should be modular so most components can be reused with minimal changes
 
-## Remember
+## Development Guidelines
+
+### Core Principles
 - The WAN model IS the A2 model - no new model implementation is needed
 - A2 is a training paradigm focused on multiple reference conditioning
-- Follow the pattern of existing training types (SFT, Control) 
-- Leverage the control training code for channel concatenation features
-- Maintain compatibility with inference code in A2/ directory
-- Always run lint and typecheck commands to ensure code quality
+- Maintain compatibility with existing inference code in A2/ directory
+
+### Code Quality Standards
+- **Minimal Code**: Use surgical precision - 10 lines is better than 100 
+- **No Implicit Defaults**: Fail explicitly rather than using hidden default values
+- **Framework Adherence**: Do not break existing framework patterns or functionality
+- **Clean Separation**: Keep concerns separated and modules focused
+- **No Code Pollution**: Avoid unnecessary verbosity and complexity
+- **Error Handling**: Fail fast and explicitly when inputs are invalid
+- **Testing**: Always run lint and typecheck commands to ensure code quality
+
+### Implementation Approach
+- Follow existing patterns from SFT and Control trainers
+- Reuse code where appropriate, extend where necessary
+- Minimize changes to core framework
+- Prioritize readability and maintainability over cleverness
