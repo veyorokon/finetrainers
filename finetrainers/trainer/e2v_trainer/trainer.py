@@ -261,27 +261,13 @@ class E2VTrainer:
     def _init_directories_and_repositories(self) -> None:
         """Initialize output directories and repositories."""
         if self.state.parallel_backend.is_main_process:
-            os.makedirs(self.args.output_dir, exist_ok=True)
-            
-            # Save the arguments used for this training run
-            with open(os.path.join(self.args.output_dir, "training_args.json"), "w") as f:
-                json.dump(self.args.to_dict(), f, indent=2)
-                
-            logger.info(f"Created output directory: {self.args.output_dir}")
-            
-            # Special handling for E2V-specific args
-            if hasattr(self.args, "elements") or hasattr(self.args, "processors"):
-                e2v_config = {
-                    "e2v_type": getattr(self.args, "e2v_type", "dual"),
-                    "elements": getattr(self.args, "elements", []),
-                    "processors": getattr(self.args, "processors", {}),
-                    "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
-                    "frame_conditioning_index": getattr(self.args, "frame_conditioning_index", 0),
-                    "frame_conditioning_concatenate_mask": getattr(self.args, "frame_conditioning_concatenate_mask", True),
-                }
-                
-                with open(os.path.join(self.args.output_dir, "e2v_config.json"), "w") as f:
-                    json.dump(e2v_config, f, indent=2)
+            self.args.output_dir = Path(self.args.output_dir)
+            self.args.output_dir.mkdir(parents=True, exist_ok=True)
+            self.state.output_dir = Path(self.args.output_dir)
+
+            if self.args.push_to_hub:
+                repo_id = self.args.hub_model_id or Path(self.args.output_dir).name
+                self.state.repo_id = create_repo(token=self.args.hub_token, repo_id=repo_id, exist_ok=True).repo_id
 
     def _prepare_models(self) -> None:
         """Prepare models for training following framework patterns."""
