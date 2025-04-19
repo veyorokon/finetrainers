@@ -1,15 +1,15 @@
 #!/bin/bash
 
-# Elements-to-Video (E2V) Training Script Example for Wan Model
+# Elements-to-Video (E2V) DeepSpeed Training Script Example for Wan Model
 
 # ===== Model Configuration =====
 MODEL_DIR="/dev/shm/models"
-MODEL_NAME="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+MODEL_NAME="Wan-AI/Wan2.1-T2V-1.3B-Diffusers" 
 PRETRAINED_MODEL_PATH="$MODEL_DIR/Wan2.1-T2V-1.3B-Diffusers"
 
 # ===== Training Configuration =====
-TRAINING_TYPE="e2v-lora"
-OUTPUT_DIR="./output/e2v_wan_lora"
+TRAINING_TYPE="e2v-lora"  # Change to e2v-full-finetune for full fine-tuning
+OUTPUT_DIR="./output/e2v_wan_deepspeed"
 CONFIG_FILE="./sample_config.json"
 SEED=42
 
@@ -18,11 +18,10 @@ TRAIN_BATCH_SIZE=1
 GRADIENT_ACCUMULATION_STEPS=4
 MAX_TRAIN_STEPS=10000
 LR=5e-5
-LR_SCHEDULER="constant"
-LR_WARMUP_STEPS=100
+LR_SCHEDULER="cosine"
+LR_WARMUP_STEPS=500
 MIXED_PRECISION="bf16"
 DATALOADER_NUM_WORKERS=4
-CLIP_GRAD_NORM=1.0
 
 # ===== LoRA Configuration =====
 RANK=64
@@ -42,11 +41,11 @@ CHECKPOINT_SAVE_TOTAL_LIMIT=5
 VALIDATION_STEPS=500
 MAX_VALIDATION_BATCHES=3
 
-# ===== Optional: Multi-GPU Configuration =====
-# Uncomment these for distributed training
-# export CUDA_VISIBLE_DEVICES=0,1,2,3
-# DISTRIBUTED_TYPE="multi_gpu"
-# NUM_PROCESSES=4
+# ===== DeepSpeed Configuration =====
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+DISTRIBUTED_TYPE="deepspeed"
+NUM_PROCESSES=4
+DEEPSPEED_CONFIG="../../../accelerate_configs/deepspeed.yaml"
 
 # --------------------------------------
 # Run the training
@@ -65,7 +64,6 @@ python ../../../train.py \
     --lr_warmup_steps="$LR_WARMUP_STEPS" \
     --mixed_precision="$MIXED_PRECISION" \
     --dataloader_num_workers="$DATALOADER_NUM_WORKERS" \
-    --clip_grad_norm="$CLIP_GRAD_NORM" \
     --rank="$RANK" \
     --lora_alpha="$LORA_ALPHA" \
     --target_modules="$TARGET_MODULES" \
@@ -77,5 +75,6 @@ python ../../../train.py \
     --validation_steps="$VALIDATION_STEPS" \
     --max_validation_batches="$MAX_VALIDATION_BATCHES" \
     --seed="$SEED" \
-    ${DISTRIBUTED_TYPE:+--distributed_type="$DISTRIBUTED_TYPE"} \
-    ${NUM_PROCESSES:+--num_processes="$NUM_PROCESSES"}
+    --distributed_type="$DISTRIBUTED_TYPE" \
+    --num_processes="$NUM_PROCESSES" \
+    --deepspeed_config="$DEEPSPEED_CONFIG"
