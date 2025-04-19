@@ -301,13 +301,24 @@ class E2VTrainer:
         self.lr_scheduler = optimizer.create_scheduler(self.args.lr_scheduler, **scheduler_args)
 
     def _prepare_dataset(self) -> None:
-        logger.info("Preparing datasets")
+        logger.info("Initializing dataset and dataloader")
 
-        # Process E2V configuration for dataset
-        for ds_config in self.args.dataset_configs:
-            # Add E2V configuration if not already present
-            if "e2v_config" not in ds_config:
-                ds_config["e2v_config"] = {
+        # Load dataset config directly from JSON file, matching other trainers
+        with open(self.args.dataset_config, "r") as file:
+            dataset_configs = json.load(file)["datasets"]
+        logger.info(f"Training configured to use {len(dataset_configs)} datasets")
+
+        datasets = []
+        for config in dataset_configs:
+            data_root = config.pop("data_root", None)
+            dataset_file = config.pop("dataset_file", None)
+            dataset_type = config.pop("dataset_type")
+            caption_options = config.pop("caption_options", {})
+            
+            # Get or create E2V specific configuration
+            e2v_config = config.get("e2v_config", {})
+            if not e2v_config:
+                e2v_config = {
                     "e2v_type": self.args.e2v_type,
                     "elements": getattr(self.args, "elements", []),
                     "processors": getattr(self.args, "processors", {}),
@@ -315,33 +326,49 @@ class E2VTrainer:
                     "frame_conditioning_index": self.args.frame_conditioning_index,
                     "frame_conditioning_concatenate_mask": self.args.frame_conditioning_concatenate_mask,
                 }
+                config["e2v_config"] = e2v_config
             
-            # Validate dataset configuration
-            e2v_config = ds_config.get("e2v_config", {})
-            
-            # Validate elements
+            # Validate E2V specific configuration
             elements = e2v_config.get("elements", [])
             if not elements:
-                raise ValueError("At least one element must be specified in the dataset configuration")
+                raise ValueError(f"At least one element must be specified in the E2V configuration for {data_root or dataset_file}")
             
-            # Validate processors
             processors = e2v_config.get("processors", {})
             if not processors:
-                raise ValueError("Processors configuration is required in the dataset configuration")
+                raise ValueError(f"Processors configuration is required in the E2V configuration for {data_root or dataset_file}")
             
             if "vae" not in processors:
-                raise ValueError("VAE processor configuration is required")
+                raise ValueError(f"VAE processor configuration is required in {data_root or dataset_file}")
                 
             if e2v_config.get("e2v_type") in [E2VType.CLIP.value, E2VType.DUAL.value]:
                 if "clip" not in processors:
-                    raise ValueError("CLIP processor configuration is required for CLIP or DUAL e2v_type")
+                    raise ValueError(f"CLIP processor configuration is required for CLIP or DUAL e2v_type in {data_root or dataset_file}")
+
+            if data_root is not None and dataset_file is not None:
+                raise ValueError("Both data_root and dataset_file cannot be provided in the same dataset config.")
+
+            # Initialize dataset using framework pattern
+            dataset_name_or_root = data_root or dataset_file
+            dataset = data.initialize_dataset(
+                dataset_name_or_root, dataset_type, streaming=True, infinite=True, _caption_options=caption_options
+            )
+
+            if not dataset._precomputable_once and self.args.precomputation_once:
+                raise ValueError(
+                    f"Dataset {dataset_name_or_root} does not support precomputing all embeddings at once."
+                )
+
+            logger.info(f"Initialized dataset: {dataset_name_or_root}")
+            dataset = self.state.parallel_backend.prepare_dataset(dataset)
+            dataset = data.wrap_iterable_dataset_for_preprocessing(dataset, dataset_type, config)
+            datasets.append(dataset)
+
+        # Combine datasets with framework's approach
+        dataset = data.combine_datasets(datasets, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True)
         
-        # Create the training dataset
-        train_dataset = data.create_dataset(self.args.dataset_configs, is_train=True)
-        
-        # Create E2V dataset wrapper
-        self.train_dataset = IterableE2VDataset(
-            train_dataset, 
+        # Wrap with E2V dataset
+        dataset = IterableE2VDataset(
+            dataset, 
             {
                 "e2v_type": self.args.e2v_type,
                 "elements": getattr(self.args, "elements", []),
@@ -355,20 +382,38 @@ class E2VTrainer:
             vae=self.vae
         )
         
-        # Setup data loader
-        self.train_dataloader = data.create_dataloader(
-            self.train_dataset,
-            batch_size=self.args.train_batch_size,
-            num_workers=self.args.dataloader_num_workers,
+        # Create dataloader using framework pattern
+        dataloader = self.state.parallel_backend.prepare_dataloader(
+            dataset, 
+            batch_size=self.args.train_batch_size, 
+            num_workers=self.args.dataloader_num_workers, 
+            pin_memory=self.args.pin_memory
         )
         
+        # Use the same variable names as other trainers
+        self.dataset = dataset
+        self.dataloader = dataloader
+        
         # For validation
-        if self.args.validation_configs:
-            # Validate validation configs
-            for ds_config in self.args.validation_configs:
-                # Add E2V configuration if not already present
-                if "e2v_config" not in ds_config:
-                    ds_config["e2v_config"] = {
+        if self.args.validation_dataset_file:
+            logger.info("Initializing validation dataset")
+            
+            # Load validation dataset config
+            with open(self.args.validation_dataset_file, "r") as file:
+                validation_configs = json.load(file)["datasets"]
+            logger.info(f"Validation configured to use {len(validation_configs)} datasets")
+            
+            validation_datasets = []
+            for config in validation_configs:
+                data_root = config.pop("data_root", None)
+                dataset_file = config.pop("dataset_file", None)
+                dataset_type = config.pop("dataset_type")
+                caption_options = config.pop("caption_options", {})
+                
+                # Get or create E2V specific configuration
+                e2v_config = config.get("e2v_config", {})
+                if not e2v_config:
+                    e2v_config = {
                         "e2v_type": self.args.e2v_type,
                         "elements": getattr(self.args, "elements", []),
                         "processors": getattr(self.args, "processors", {}),
@@ -376,30 +421,43 @@ class E2VTrainer:
                         "frame_conditioning_index": self.args.frame_conditioning_index,
                         "frame_conditioning_concatenate_mask": self.args.frame_conditioning_concatenate_mask,
                     }
+                    config["e2v_config"] = e2v_config
                 
-                # Validate dataset configuration
-                e2v_config = ds_config.get("e2v_config", {})
-                
-                # Validate elements
+                # Validate E2V specific configuration
                 elements = e2v_config.get("elements", [])
                 if not elements:
-                    raise ValueError("At least one element must be specified in the validation configuration")
+                    raise ValueError(f"At least one element must be specified in the validation configuration for {data_root or dataset_file}")
                 
-                # Validate processors
                 processors = e2v_config.get("processors", {})
                 if not processors:
-                    raise ValueError("Processors configuration is required in the validation configuration")
+                    raise ValueError(f"Processors configuration is required in the validation configuration for {data_root or dataset_file}")
                 
                 if "vae" not in processors:
-                    raise ValueError("VAE processor configuration is required in validation")
+                    raise ValueError(f"VAE processor configuration is required in validation for {data_root or dataset_file}")
                     
                 if e2v_config.get("e2v_type") in [E2VType.CLIP.value, E2VType.DUAL.value]:
                     if "clip" not in processors:
-                        raise ValueError("CLIP processor configuration is required for CLIP or DUAL e2v_type in validation")
+                        raise ValueError(f"CLIP processor configuration is required for CLIP or DUAL e2v_type in validation for {data_root or dataset_file}")
+                
+                if data_root is not None and dataset_file is not None:
+                    raise ValueError("Both data_root and dataset_file cannot be provided in the same validation config.")
+                
+                # Initialize validation dataset
+                dataset_name_or_root = data_root or dataset_file
+                validation_dataset = data.initialize_dataset(
+                    dataset_name_or_root, dataset_type, streaming=True, infinite=False, _caption_options=caption_options
+                )
+                
+                logger.info(f"Initialized validation dataset: {dataset_name_or_root}")
+                validation_dataset = self.state.parallel_backend.prepare_dataset(validation_dataset)
+                validation_dataset = data.wrap_iterable_dataset_for_preprocessing(validation_dataset, dataset_type, config)
+                validation_datasets.append(validation_dataset)
             
-            validation_dataset = data.create_dataset(self.args.validation_configs, is_train=False)
+            # Combine validation datasets
+            validation_dataset = data.combine_datasets(validation_datasets, buffer_size=1, shuffle=False)
             
-            self.validation_dataset = ValidationE2VDataset(
+            # Wrap with E2V validation dataset
+            validation_dataset = ValidationE2VDataset(
                 validation_dataset,
                 {
                     "e2v_type": self.args.e2v_type,
@@ -414,58 +472,82 @@ class E2VTrainer:
                 vae=self.vae
             )
             
-            self.validation_dataloader = data.create_dataloader(
-                self.validation_dataset,
+            # Create validation dataloader
+            validation_dataloader = self.state.parallel_backend.prepare_dataloader(
+                validation_dataset,
                 batch_size=self.args.eval_batch_size,
                 num_workers=self.args.dataloader_num_workers,
+                pin_memory=self.args.pin_memory
             )
+            
+            # Use consistent variable names
+            self.validation_dataset = validation_dataset
+            self.validation_dataloader = validation_dataloader
         else:
+            logger.info("No validation dataset provided")
             self.validation_dataset = None
             self.validation_dataloader = None
 
     def _prepare_checkpointing(self) -> None:
-        from finetrainers.trackers import CheckpointManager, WandbTracker
+        parallel_backend = self.state.parallel_backend
         
-        checkpointing_config = {
-            "output_dir": self.args.output_dir,
-            "save_strategy": self.args.checkpoint_save_strategy,
-            "save_steps": self.args.checkpoint_save_steps,
-            "save_total_limit": self.args.checkpoint_save_total_limit,
-            "save_on_cuda": self.args.checkpoint_save_on_cuda,
-            "save_with_optimizer": self.args.checkpoint_save_with_optimizer,
-            "model_parallel_backend": self.state.parallel_backend,
-            "is_main_process": self.state.is_world_process_zero,
-        }
-        
-        self.checkpointer = CheckpointManager(**checkpointing_config)
-        
-        # WandB Tracking
-        if self.args.report_to_wandb and self.state.is_world_process_zero:
-            tracker_args = {
-                "project": self.args.wandb_project or "e2v-trainer",
-                "name": self.args.run_name,
-                "id": self.args.wandb_run_id,
-                "resume": "auto" if self.args.resume_from_checkpoint else "never",
-                "api_key": self.args.wandb_api_key,
-                "entity": self.args.wandb_entity,
-                "config": {**vars(self.args)},  # Logging all args
-            }
+        def save_model_hook(state_dict: Dict[str, Any]) -> None:
+            state_dict = utils.get_unwrapped_model_state_dict(state_dict)
+            if parallel_backend.is_main_process:
+                if self.args.training_type == TrainingType.E2V_LORA:
+                    state_dict = get_peft_model_state_dict(self.transformer, state_dict)
+                    # fmt: off
+                    metadata = {
+                        "r": self.args.rank,
+                        "lora_alpha": self.args.lora_alpha,
+                        "init_lora_weights": True,
+                        "target_modules": self.args.target_modules,
+                    }
+                    metadata = {"lora_config": json.dumps(metadata, indent=4)}
+                    # fmt: on
+                    self.model_specification._save_lora_weights(
+                        self.args.output_dir, state_dict, self.scheduler, metadata
+                    )
+                elif self.args.training_type == TrainingType.E2V_FULL_FINETUNE:
+                    self.model_specification._save_model(
+                        self.args.output_dir, self.transformer, state_dict, self.scheduler
+                    )
+            parallel_backend.wait_for_everyone()
             
-            self.tracker = WandbTracker(**tracker_args)
-        else:
-            self.tracker = None
+        # Use the parallel backend's checkpointer
+        enable_state_checkpointing = self.args.checkpointing_steps > 0
+        self.checkpointer = parallel_backend.get_checkpointer(
+            dataloader=self.dataloader,
+            model_parts=[self.transformer],
+            optimizers=self.optimizer,
+            schedulers=self.lr_scheduler,
+            states={"train_state": self.state.train_state},
+            checkpointing_steps=self.args.checkpointing_steps,
+            checkpointing_limit=self.args.checkpointing_limit,
+            output_dir=self.args.output_dir,
+            enable=enable_state_checkpointing,
+            _callback_fn=save_model_hook,
+        )
+        
+        # Handle resuming from checkpoint
+        resume_from_checkpoint = self.args.resume_from_checkpoint
+        if resume_from_checkpoint == "latest":
+            resume_from_checkpoint = -1
+        if resume_from_checkpoint is not None:
+            self.checkpointer.load(resume_from_checkpoint)
 
     def _train(self) -> None:
         logger.info("Starting training")
         
-        train_dataloader = self.train_dataloader
+        parallel_backend = self.state.parallel_backend
+        train_state = self.state.train_state
         
         # Number of update steps
-        num_update_steps_per_epoch = math.ceil(len(train_dataloader) / self.state.gradient_accumulation_steps)
+        num_update_steps_per_epoch = math.ceil(len(self.dataloader) / self.state.gradient_accumulation_steps)
         num_train_epochs = math.ceil(self.args.max_train_steps / num_update_steps_per_epoch)
         
-        total_batch_size = self.args.train_batch_size * self.state.parallel_backend.world_size * self.state.gradient_accumulation_steps
-        logger.info(f"  Num examples = {len(train_dataloader)}")
+        total_batch_size = self.args.train_batch_size * parallel_backend.world_size * self.state.gradient_accumulation_steps
+        logger.info(f"  Num examples = {len(self.dataloader)}")
         logger.info(f"  Num epochs = {num_train_epochs}")
         logger.info(f"  Batch size per device = {self.args.train_batch_size}")
         logger.info(f"  Total train batch size (w. parallel & accumulation) = {total_batch_size}")
@@ -477,20 +559,18 @@ class E2VTrainer:
         self.state.train_state.global_step = 0
         self.state.train_state.max_steps = self.args.max_train_steps
         
-        # Resume from checkpoint if needed
-        if self.args.resume_from_checkpoint:
-            self._resume_from_checkpoint()
+        # Resume from checkpoint is handled in the _prepare_checkpointing method
         
         progress_bar = tqdm(
-            range(self.state.train_state.global_step, self.args.max_train_steps),
+            range(train_state.global_step, self.args.max_train_steps),
             disable=not self.state.is_local_main_process,
             desc="Training steps",
         )
         
-        for epoch in range(self.state.train_state.epoch, num_train_epochs):
-            for step, batch in enumerate(train_dataloader):
+        for epoch in range(train_state.epoch, num_train_epochs):
+            for step, batch in enumerate(self.dataloader):
                 # Skip steps already performed
-                if self.state.train_state.global_step > 0 and epoch == self.state.train_state.epoch and step < self.state.train_state.steps_in_epoch:
+                if train_state.global_step > 0 and epoch == train_state.epoch and step < train_state.steps_in_epoch:
                     continue
                 
                 with self.state.parallel_backend.accumulate():
@@ -512,35 +592,41 @@ class E2VTrainer:
                         self._update_parameters()
                         
                         progress_bar.update(1)
-                        self.state.train_state.global_step += 1
-                        self.state.train_state.steps_in_epoch = step + 1
+                        train_state.global_step += 1
+                        train_state.steps_in_epoch = step + 1
                         
-                        if self.tracker is not None:
-                            self.tracker.log({
+                        # Log metrics
+                        if parallel_backend.is_main_process:
+                            metrics = {
                                 "loss": loss.detach().item(),
                                 "lr": self.lr_scheduler.get_last_lr()[0],
-                                "step": self.state.train_state.global_step,
+                                "step": train_state.global_step,
                                 "epoch": epoch,
-                            })
+                            }
+                            logger.info(f"Step {train_state.global_step}: loss = {metrics['loss']:.4f}, lr = {metrics['lr']:.6f}")
+                            
+                            # Log to trackers
+                            if hasattr(self, "tracker") and self.tracker is not None:
+                                self.tracker.log(metrics)
                         
                         # Run validation
-                        if self.args.validation_steps > 0 and self.state.train_state.global_step % self.args.validation_steps == 0:
+                        if self.args.validation_steps > 0 and train_state.global_step % self.args.validation_steps == 0:
                             self._validate()
                         
                         # Create checkpoint
-                        if self.checkpointer.should_save(self.state.train_state.global_step):
-                            self._create_checkpoint()
+                        if self.checkpointer.should_save(train_state.global_step):
+                            self.checkpointer.save()
                 
                 # Check if we've reached max steps
-                if self.state.train_state.global_step >= self.args.max_train_steps:
+                if train_state.global_step >= self.args.max_train_steps:
                     break
             
-            self.state.train_state.epoch = epoch + 1
-            self.state.train_state.steps_in_epoch = 0
+            train_state.epoch = epoch + 1
+            train_state.steps_in_epoch = 0
         
         # Make sure we create a final checkpoint
-        if self.state.train_state.global_step != 0:
-            self._create_checkpoint()
+        if train_state.global_step != 0:
+            self.checkpointer.save()
             
             # Upload to Hugging Face Hub if specified
             if self.args.push_to_hub and self.state.is_world_process_zero:
@@ -651,8 +737,13 @@ class E2VTrainer:
             return
         
         logger.info("Running validation")
+        parallel_backend = self.state.parallel_backend
+        train_state = self.state.train_state
         
         with torch.no_grad():
+            total_val_loss = 0.0
+            val_steps = 0
+            
             for i, batch in enumerate(self.validation_dataloader):
                 # Only process a few batches
                 if i >= self.args.max_validation_batches:
@@ -663,16 +754,34 @@ class E2VTrainer:
                 
                 # Forward pass
                 loss = self._forward_pass(batch)
+                total_val_loss += loss.detach().item()
+                val_steps += 1
+            
+            # Calculate average validation loss
+            if val_steps > 0:
+                avg_val_loss = total_val_loss / val_steps
                 
-                if self.tracker is not None:
-                    self.tracker.log({
-                        "val_loss": loss.detach().item(),
-                        "step": self.state.train_state.global_step,
-                    })
+                # Log validation metrics
+                if parallel_backend.is_main_process:
+                    logger.info(f"Validation loss: {avg_val_loss:.4f}")
+                    
+                    metrics = {
+                        "val_loss": avg_val_loss,
+                        "step": train_state.global_step,
+                    }
+                    
+                    # Log to trackers
+                    if hasattr(self, "tracker") and self.tracker is not None:
+                        self.tracker.log(metrics)
                 
-                # Generate sample if requested
-                if self.args.validation_generate_samples and i == 0:
-                    self._generate_samples(batch)
+                # Generate sample if requested and we have validation data
+                if self.args.validation_generate_samples and self.validation_dataloader is not None:
+                    try:
+                        batch = next(iter(self.validation_dataloader))
+                        batch = self._move_batch_to_device(batch)
+                        self._generate_samples(batch)
+                    except (StopIteration, Exception) as e:
+                        logger.warning(f"Failed to generate validation sample: {e}")
     
     def _generate_samples(self, batch):
         """Generate video samples using the current model."""
@@ -680,89 +789,6 @@ class E2VTrainer:
         # Would need to create a proper pipeline that supports E2V generation
         pass
     
-    def _create_checkpoint(self):
-        """Create a checkpoint of the current model."""
-        if not self.state.is_world_process_zero:
-            return
-        
-        logger.info(f"Creating checkpoint at step {self.state.train_state.global_step}")
-        
-        ckpt_dir = os.path.join(self.args.output_dir, f"checkpoint-{self.state.train_state.global_step}")
-        os.makedirs(ckpt_dir, exist_ok=True)
-        
-        # Save training state
-        torch.save(self.state.train_state, os.path.join(ckpt_dir, "train_state.bin"))
-        
-        # Save transformer
-        if isinstance(self.args, E2VLowRankConfig):
-            # Save adapter weights for LoRA
-            if self.state.parallel_backend.is_fsdp:
-                # Special handling for FSDP+LoRA
-                pass  # Implement this when needed
-            else:
-                adapter_weights = get_peft_model_state_dict(self.transformer)
-                torch.save(adapter_weights, os.path.join(ckpt_dir, "adapter_model.bin"))
-        else:
-            # Save full transformer (non-LoRA)
-            self.checkpointer.save(
-                state_dict=self.transformer.state_dict(), 
-                config=self.transformer.config, 
-                component_name="transformer",
-                save_dir=ckpt_dir
-            )
-        
-        # Save optimizer and scheduler if requested
-        if self.args.checkpoint_save_with_optimizer:
-            torch.save(self.optimizer.state_dict(), os.path.join(ckpt_dir, "optimizer.bin"))
-            torch.save(self.lr_scheduler.state_dict(), os.path.join(ckpt_dir, "scheduler.bin"))
-    
-    def _resume_from_checkpoint(self):
-        """Resume training from checkpoint."""
-        logger.info(f"Resuming from checkpoint {self.args.resume_from_checkpoint}")
-        
-        ckpt_dir = None
-        if self.args.resume_from_checkpoint != "latest":
-            ckpt_dir = os.path.join(self.args.output_dir, self.args.resume_from_checkpoint)
-        else:
-            # Find latest checkpoint
-            dirs = [
-                os.path.join(self.args.output_dir, d)
-                for d in os.listdir(self.args.output_dir)
-                if os.path.isdir(os.path.join(self.args.output_dir, d)) and d.startswith("checkpoint-")
-            ]
-            dirs.sort(key=lambda d: int(d.split("-")[-1]))
-            if len(dirs) > 0:
-                ckpt_dir = dirs[-1]
-            else:
-                logger.warning("No checkpoints found, starting from scratch.")
-                return
-        
-        # Load training state
-        if os.path.exists(os.path.join(ckpt_dir, "train_state.bin")):
-            self.state.train_state = torch.load(os.path.join(ckpt_dir, "train_state.bin"))
-        
-        # Load transformer
-        if isinstance(self.args, E2VLowRankConfig):
-            # Load adapter weights for LoRA
-            if os.path.exists(os.path.join(ckpt_dir, "adapter_model.bin")):
-                self.transformer.load_state_dict(torch.load(os.path.join(ckpt_dir, "adapter_model.bin")), strict=False)
-        else:
-            # Load full transformer
-            if self.state.parallel_backend.is_fsdp:
-                # Special handling for FSDP
-                pass  # Implement this when needed
-            else:
-                load_lora_weights(
-                    self.transformer,
-                    ckpt_dir,
-                )
-        
-        # Load optimizer and scheduler if possible
-        if self.args.resume_optimizer_from_checkpoint:
-            if os.path.exists(os.path.join(ckpt_dir, "optimizer.bin")):
-                self.optimizer.load_state_dict(torch.load(os.path.join(ckpt_dir, "optimizer.bin")))
-            if os.path.exists(os.path.join(ckpt_dir, "scheduler.bin")):
-                self.lr_scheduler.load_state_dict(torch.load(os.path.join(ckpt_dir, "scheduler.bin")))
     
     def _upload_to_hub(self):
         """Upload the final model to Hugging Face Hub."""
