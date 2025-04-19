@@ -7,6 +7,7 @@ from .glm import CogView4GLMProcessor
 from .llama import LlamaProcessor
 from .t5 import T5Processor
 from .text import CaptionEmbeddingDropoutProcessor, CaptionTextDropoutProcessor
+from .e2v import VAEPathwayProcessor, CLIPPathwayProcessor
 
 
 class CopyProcessor(ProcessorMixin):

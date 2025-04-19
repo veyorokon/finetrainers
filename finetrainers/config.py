@@ -17,15 +17,21 @@ class TrainingType(str, Enum):
     # Control
     CONTROL_LORA = "control-lora"
     CONTROL_FULL_FINETUNE = "control-full-finetune"
+    
+    # E2V
+    E2V_LORA = "e2v-lora"
+    E2V_FULL_FINETUNE = "e2v-full-finetune"
 
 
 SUPPORTED_MODEL_CONFIGS = {
-    # SFT and Control
+    # SFT, Control, and E2V
     ModelType.WAN: {
         TrainingType.LORA: WanModelSpecification,
         TrainingType.FULL_FINETUNE: WanModelSpecification,
         TrainingType.CONTROL_LORA: WanControlModelSpecification,
         TrainingType.CONTROL_FULL_FINETUNE: WanControlModelSpecification,
+        TrainingType.E2V_LORA: WanControlModelSpecification,
+        TrainingType.E2V_FULL_FINETUNE: WanControlModelSpecification,
     },
 }
 

@@ -1,0 +1,83 @@
+{
+  "datasets": [
+    {
+      "data_root": "path/to/e2v/dataset", 
+      "dataset_type": "e2v",
+      "target_resolution": [480, 854],
+      "auto_frame_buckets": true,
+      "reshape_mode": "bicubic",
+      "remove_common_llm_caption_prefixes": true,
+      
+      "elements": [
+        {
+          "name": "main_subject", 
+          "suffixes": ["_dog.png", "_person.png", "_mask.png"],
+          "required": true,
+          "vae": {
+            "repeat": 4, 
+            "position": 0
+          },
+          "clip": {
+            "preprocess": "center_crop"
+          }
+        },
+        {
+          "name": "secondary",
+          "suffixes": ["_object.png", "_toy.png"],
+          "required": false,
+          "vae": {
+            "repeat": 4, 
+            "position": 1
+          },
+          "clip": {
+            "preprocess": "pad_white"
+          }
+        },
+        {
+          "name": "environment",
+          "suffixes": ["_background.png", "_scene.png"],
+          "required": false,
+          "vae": {
+            "repeat": 4, 
+            "position": 2
+          },
+          "clip": {
+            "preprocess": "letterbox"
+          }
+        }
+      ],
+      
+      "processors": {
+        "vae": {
+          "resolution": [480, 854],
+          "combine": "before",
+          "default_preprocess": "resize",
+          "frame_conditioning": "full",
+          "frame_index": 0,
+          "concatenate_mask": true
+        },
+        "clip": {
+          "resolution": [512, 512],
+          "default_preprocess": "center_crop"
+        }
+      },
+      
+      "visualization": {
+        "enabled": true,
+        "output_dir": "visualizations/{run_id}",
+        "frequency": 100,
+        "processors": [
+          {
+            "type": "latent_save",
+            "data": ["input_latents", "predicted_latents"]
+          },
+          {
+            "type": "vae_decode",
+            "data": ["input_latents", "predicted_latents"],
+            "frames": [0, -1]
+          }
+        ]
+      }
+    }
+  ]
+}
