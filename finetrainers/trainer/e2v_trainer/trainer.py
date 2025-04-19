@@ -127,7 +127,7 @@ class E2VTrainer:
             self._prepare_checkpointing()
             
             # Log memory usage before training
-            if self.state.is_world_process_zero:
+            if self.state.parallel_backend.is_main_process:
                 utils.memory.log_memory_stats()
                 
             # Step 6: Run training loop
@@ -135,7 +135,7 @@ class E2VTrainer:
             self._train()
             
             # Log memory usage after training
-            if self.state.is_world_process_zero:
+            if self.state.parallel_backend.is_main_process:
                 utils.memory.log_memory_stats()
                 
             # Log training time
@@ -210,7 +210,7 @@ class E2VTrainer:
             
     def _init_logging(self) -> None:
         """Initialize logging functionality."""
-        if self.state.is_world_process_zero:
+        if self.state.parallel_backend.is_main_process:
             logger.info(f"E2V training: {self.args.training_type}")
             logger.info(f"Output directory: {self.args.output_dir}")
             
@@ -250,7 +250,7 @@ class E2VTrainer:
     
     def _init_directories_and_repositories(self) -> None:
         """Initialize output directories and repositories."""
-        if self.state.is_world_process_zero:
+        if self.state.parallel_backend.is_main_process:
             os.makedirs(self.args.output_dir, exist_ok=True)
             
             # Save the arguments used for this training run
@@ -777,7 +777,7 @@ class E2VTrainer:
         
         progress_bar = tqdm(
             range(train_state.global_step, self.args.max_train_steps),
-            disable=not self.state.is_local_main_process,
+            disable=not self.state.parallel_backend.is_local_main_process,
             desc="Training steps",
         )
         
@@ -843,7 +843,7 @@ class E2VTrainer:
             self.checkpointer.save()
             
             # Upload to Hugging Face Hub if specified
-            if self.args.push_to_hub and self.state.is_world_process_zero:
+            if self.args.push_to_hub and self.state.parallel_backend.is_main_process:
                 self._upload_to_hub()
     
     def _forward_pass(self, batch):
@@ -1006,7 +1006,7 @@ class E2VTrainer:
     
     def _upload_to_hub(self):
         """Upload the final model to Hugging Face Hub."""
-        if not self.state.is_world_process_zero:
+        if not self.state.parallel_backend.is_main_process:
             return
         
         logger.info("Uploading model to Hugging Face Hub")
@@ -1052,7 +1052,7 @@ class E2VTrainer:
                 torch.cuda.ipc_collect()
                 
                 # Log final memory stats
-                if self.state.is_world_process_zero:
+                if self.state.parallel_backend.is_main_process:
                     utils.memory.log_memory_stats()
         except Exception as e:
             logger.warning(f"Error cleaning GPU memory: {e}")
