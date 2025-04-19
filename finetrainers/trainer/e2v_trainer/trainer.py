@@ -217,11 +217,17 @@ class E2VTrainer:
             # Log some important args
             logger.info(f"Training batch size: {self.args.train_batch_size}")
             logger.info(f"Gradient accumulation steps: {self.args.gradient_accumulation_steps}")
-            logger.info(f"E2V Type: {self.args.e2v_type}")
+            
+            # Use getattr for e2v_type which might not be directly in BaseArgs
+            e2v_type = getattr(self.args, "e2v_type", "dual")  # Default to "dual"
+            logger.info(f"E2V Type: {e2v_type}")
             
             if self.args.training_type == TrainingType.E2V_LORA:
-                logger.info(f"LoRA rank: {self.args.rank}")
-                logger.info(f"LoRA alpha: {self.args.lora_alpha}")
+                # Use getattr for LoRA parameters that might not be directly in BaseArgs
+                lora_rank = getattr(self.args, "rank", 64)  # Default to 64
+                lora_alpha = getattr(self.args, "lora_alpha", 64)  # Default to 64
+                logger.info(f"LoRA rank: {lora_rank}")
+                logger.info(f"LoRA alpha: {lora_alpha}")
     
     def _init_trackers(self) -> None:
         """Initialize model trackers like WandB."""
@@ -262,12 +268,12 @@ class E2VTrainer:
             # Special handling for E2V-specific args
             if hasattr(self.args, "elements") or hasattr(self.args, "processors"):
                 e2v_config = {
-                    "e2v_type": self.args.e2v_type,
+                    "e2v_type": getattr(self.args, "e2v_type", "dual"),
                     "elements": getattr(self.args, "elements", []),
                     "processors": getattr(self.args, "processors", {}),
-                    "frame_conditioning_type": self.args.frame_conditioning_type,
-                    "frame_conditioning_index": self.args.frame_conditioning_index,
-                    "frame_conditioning_concatenate_mask": self.args.frame_conditioning_concatenate_mask,
+                    "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
+                    "frame_conditioning_index": getattr(self.args, "frame_conditioning_index", 0),
+                    "frame_conditioning_concatenate_mask": getattr(self.args, "frame_conditioning_concatenate_mask", True),
                 }
                 
                 with open(os.path.join(self.args.output_dir, "e2v_config.json"), "w") as f:
@@ -533,12 +539,12 @@ class E2VTrainer:
             e2v_config = config.get("e2v_config", {})
             if not e2v_config:
                 e2v_config = {
-                    "e2v_type": self.args.e2v_type,
+                    "e2v_type": getattr(self.args, "e2v_type", "dual"),
                     "elements": getattr(self.args, "elements", []),
                     "processors": getattr(self.args, "processors", {}),
-                    "frame_conditioning_type": self.args.frame_conditioning_type,
-                    "frame_conditioning_index": self.args.frame_conditioning_index,
-                    "frame_conditioning_concatenate_mask": self.args.frame_conditioning_concatenate_mask,
+                    "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
+                    "frame_conditioning_index": getattr(self.args, "frame_conditioning_index", 0),
+                    "frame_conditioning_concatenate_mask": getattr(self.args, "frame_conditioning_concatenate_mask", True),
                 }
                 config["e2v_config"] = e2v_config
             
@@ -584,12 +590,12 @@ class E2VTrainer:
         dataset = IterableE2VDataset(
             dataset, 
             {
-                "e2v_type": self.args.e2v_type,
+                "e2v_type": getattr(self.args, "e2v_type", "dual"),
                 "elements": getattr(self.args, "elements", []),
                 "processors": getattr(self.args, "processors", {}),
-                "frame_conditioning_type": self.args.frame_conditioning_type,
-                "frame_conditioning_index": self.args.frame_conditioning_index,
-                "frame_conditioning_concatenate_mask": self.args.frame_conditioning_concatenate_mask,
+                "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
+                "frame_conditioning_index": getattr(self.args, "frame_conditioning_index", 0),
+                "frame_conditioning_concatenate_mask": getattr(self.args, "frame_conditioning_concatenate_mask", True),
             },
             device=self.state.parallel_backend.device,
             clip_processor=getattr(self, "image_encoder", None),
@@ -628,12 +634,12 @@ class E2VTrainer:
                 e2v_config = config.get("e2v_config", {})
                 if not e2v_config:
                     e2v_config = {
-                        "e2v_type": self.args.e2v_type,
+                        "e2v_type": getattr(self.args, "e2v_type", "dual"),
                         "elements": getattr(self.args, "elements", []),
                         "processors": getattr(self.args, "processors", {}),
-                        "frame_conditioning_type": self.args.frame_conditioning_type,
-                        "frame_conditioning_index": self.args.frame_conditioning_index,
-                        "frame_conditioning_concatenate_mask": self.args.frame_conditioning_concatenate_mask,
+                        "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
+                        "frame_conditioning_index": getattr(self.args, "frame_conditioning_index", 0),
+                        "frame_conditioning_concatenate_mask": getattr(self.args, "frame_conditioning_concatenate_mask", True),
                     }
                     config["e2v_config"] = e2v_config
                 
@@ -674,12 +680,12 @@ class E2VTrainer:
             validation_dataset = ValidationE2VDataset(
                 validation_dataset,
                 {
-                    "e2v_type": self.args.e2v_type,
+                    "e2v_type": getattr(self.args, "e2v_type", "dual"),
                     "elements": getattr(self.args, "elements", []),
                     "processors": getattr(self.args, "processors", {}),
-                    "frame_conditioning_type": self.args.frame_conditioning_type,
-                    "frame_conditioning_index": self.args.frame_conditioning_index,
-                    "frame_conditioning_concatenate_mask": self.args.frame_conditioning_concatenate_mask,
+                    "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
+                    "frame_conditioning_index": getattr(self.args, "frame_conditioning_index", 0),
+                    "frame_conditioning_concatenate_mask": getattr(self.args, "frame_conditioning_concatenate_mask", True),
                 },
                 device=self.state.parallel_backend.device,
                 clip_processor=getattr(self, "image_encoder", None),
