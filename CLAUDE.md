@@ -86,61 +86,112 @@ We'll extend the existing training.json format to support E2V training with mini
 
 ```json
 {
-  "datasets": [
-    {
-      "data_root": "path/to/e2v/dataset", 
-      "dataset_type": "e2v",
-      "target_resolution": [480, 704],
-      "auto_frame_buckets": true,
-      "clip_resolution": [512, 512],
-      "reshape_mode": "bicubic",
-      "remove_common_llm_caption_prefixes": true,
-      "elements": [
-        {
-          "name": "main_subject", 
-          "suffixes": ["_dog.png", "_person.png", "_mask.png"],
-          "vae_repeat": 1,
-          "position": 0,
-          "clip_process": "center_crop"
-        },
-        {
-          "name": "secondary",
-          "suffixes": ["_object.png", "_toy.png"],
-          "vae_repeat": 4, 
-          "position": 1,
-          "clip_process": "pad_white"
-        },
-        {
-          "name": "environment",
-          "suffixes": ["_background.png", "_scene.png"],
-          "vae_repeat": 4,
-          "position": 2,
-          "clip_process": "letterbox" 
-        }
-      ],
-      "vae_combine": "before",
-      "visualization": {
-        "enabled": true,
-        "output_dir": "visualizations/{run_id}",
-        "frequency": 100,
-        "processors": [
+    "datasets": [
+      {
+        "data_root": "path/to/e2v/dataset",
+        "dataset_type": "e2v",
+        "target_resolution": [480, 854],
+        "auto_frame_buckets": true,
+        "reshape_mode": "bicubic",
+        "remove_common_llm_caption_prefixes": true,
+
+        "elements": [
           {
-            "type": "latent_save",
-            "data": ["input_latents", "predicted_latents"],
-            "format": "pt"
+            "name": "main_subject",
+            "suffixes": ["_dog.png", "_person.png", "_mask.png"],
+            "required": true,
+            "vae": {
+              "repeat": 4,
+              "position": 0
+            },
+            "clip": {
+              "preprocess": "center_crop"
+            }
           },
           {
-            "type": "vae_decode",
-            "data": ["input_latents", "predicted_latents"],
-            "frames": [0, -1],
-            "format": "png"
+            "name": "secondary",
+            "suffixes": ["_object.png", "_toy.png"],
+            "required": false,
+            "vae": {
+              "repeat": 4,
+              "position": 1
+            },
+            "clip": {
+              "preprocess": "pad_white"
+            }
+          },
+          {
+            "name": "environment",
+            "suffixes": ["_background.png", "_scene.png"],
+            "required": false,
+            "vae": {
+              "repeat": 4,
+              "position": 2
+            },
+            "clip": {
+              "preprocess": "letterbox"
+            }
           }
-        ]
+        ],
+
+        "processors": {
+          "vae": {
+            "resolution": [480, 854],
+            "combine": "before",
+            "default_preprocess": "resize",
+            "frame_conditioning": "full",
+            "frame_index": 0,
+            "concatenate_mask": true
+          },
+          "clip": {
+            "resolution": [512, 512],
+            "default_preprocess": "center_crop"
+          }
+        },
+
+        "visualization": {
+          "enabled": true,
+          "output_dir": "visualizations/{run_id}",
+          "frequency": 100,
+          "processors": [
+            {
+              "type": "latent_save",
+              "data": ["input_latents", "predicted_latents"]
+            },
+            {
+              "type": "vae_decode",
+              "data": ["input_latents", "predicted_latents"],
+              "frames": [0, -1]
+            }
+          ]
+        }
       }
-    }
-  ]
-}
+    ]
+  }
 ```
+1. Clean Separation of Concerns:
+  - Elements define what inputs to use and their basic properties
+  - Processors define how to handle different pathways globally
+  - Each element can override processor settings as needed
+2. Framework-Friendly Structure:
+  - Direct mapping to processor names via the "processors" object
+  - Simple element-processor parameter override pattern
+  - Clear pathway for extending with new processor types
+3. Control Compatibility:
+  - Added control-specific parameters to the VAE processor
+  - Includes frame_conditioning, frame_index, and concatenate_mask
+  - Easily extensible for other processor-specific parameters
+4. Simplified Element Configuration:
+  - Direct mapping of processor names to element properties
+  - Clean, flat structure for element-specific overrides
+  - Straightforward ability to set processor to null/false to disable
+
+This structure is both concise and expressive, making it easy to extend with new processor types while maintaining a clean,
+understandable configuration. I particularly like the use of "processors" as a top-level configuration object, which makes it very clear
+how different processing pathways are configured.
+
+This approach aligns perfectly with our framework design and provides a clear path for implementing the E2V training pipeline.
+
 
 ### Visualization Configuration
 

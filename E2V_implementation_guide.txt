@@ -1,0 +1,522 @@
+⏺ E2V Framework Implementation Guide
+
+  Overview
+
+  This document outlines the implementation approach for the Elements-to-Video (E2V) training within the finetrainers framework. Our
+  approach aligns with existing framework patterns while providing the specialized functionality needed for E2V training.
+
+  1. Framework Integration Strategy
+
+  Configuration Structure
+
+  {
+    "datasets": [
+      {
+        "data_root": "path/to/e2v/dataset",
+        "dataset_type": "e2v",
+        "target_resolution": [480, 854],
+        "auto_frame_buckets": true,
+        "reshape_mode": "bicubic",
+        "remove_common_llm_caption_prefixes": true,
+
+        "elements": [
+          {
+            "name": "main_subject",
+            "suffixes": ["_dog.png", "_person.png", "_mask.png"],
+            "required": true,
+            "vae": {
+              "repeat": 4,
+              "position": 0
+            },
+            "clip": {
+              "preprocess": "center_crop"
+            }
+          },
+          {
+            "name": "secondary",
+            "suffixes": ["_object.png", "_toy.png"],
+            "required": false,
+            "vae": {
+              "repeat": 4,
+              "position": 1
+            },
+            "clip": {
+              "preprocess": "pad_white"
+            }
+          }
+        ],
+
+        "processors": {
+          "vae": {
+            "resolution": [480, 854],
+            "combine": "before",
+            "default_preprocess": "resize",
+            "frame_conditioning": "full",
+            "frame_index": 0,
+            "concatenate_mask": true
+          },
+          "clip": {
+            "resolution": [512, 512],
+            "default_preprocess": "center_crop"
+          }
+        },
+
+        "visualization": {
+          "enabled": true,
+          "output_dir": "visualizations/{run_id}",
+          "frequency": 100,
+          "processors": [
+            {
+              "type": "latent_save",
+              "data": ["input_latents", "predicted_latents"]
+            },
+            {
+              "type": "vae_decode",
+              "data": ["input_latents", "predicted_latents"],
+              "frames": [0, -1]
+            }
+          ]
+        }
+      }
+    ]
+  }
+
+Here's why our current JSON format works well:
+
+1. Good Balance of Clarity and Conciseness:
+- The format is easy to understand at a glance
+- Element configuration is grouped logically
+- Processor settings are clearly separated
+2. Maps Well to Framework:
+- While not identical to the framework's internal classes, there's a clear mapping
+- Each JSON section corresponds to a specific framework component
+- Conversion can be handled cleanly in the config parsing code
+3. Extensibility:
+- New elements can be added easily
+- New processor types can be added without changing the structure
+- Additional parameters can be added to elements or processors
+
+1. Keep the Concise JSON Format:
+- Maintain the current structure which is user-friendly
+- It's more important for configuration to be human-readable
+2. Add Conversion Logic:
+- Create mapping functions in the configuration classes
+- map_from_json methods can convert our JSON to framework objects
+- This keeps complexity in code rather than in configuration files
+3. Document Expected Parameters:
+- Clearly document which parameters are required vs. optional
+- Document the default values for each parameter
+- Provide examples of common configurations
+
+  2. Framework Components
+
+  Config Classes
+
+  class E2VType(str, Enum):
+      """Enum for E2V processing types."""
+      VAE = "vae"
+      CLIP = "clip"
+      DUAL = "dual"  # Both pathways enabled
+
+  class FrameConditioningType(str, Enum):
+      """Reused from control training."""
+      INDEX = "index"
+      PREFIX = "prefix"
+      RANDOM = "random"
+      FIRST_AND_LAST = "first_and_last"
+      FULL = "full"
+
+  class ElementConfig(ConfigMixin):
+      """Configuration for a single element."""
+      name: str
+      suffixes: List[str]
+      required: bool = False
+      vae: Dict[str, Any] = {"repeat": 1, "position": 0}
+      clip: Union[Dict[str, Any], bool] = {"preprocess": "center_crop"}
+
+      def validate_args(self, args):
+          assert isinstance(self.name, str), "Element name must be a string"
+          assert isinstance(self.suffixes, list), "Suffixes must be a list"
+          assert all(isinstance(s, str) for s in self.suffixes), "All suffixes must be strings"
+
+  class ProcessorConfig(ConfigMixin):
+      """Base configuration for processors."""
+      resolution: List[int]
+      default_preprocess: str = "resize"
+
+      def validate_args(self, args):
+          assert len(self.resolution) == 2, "Resolution must be [height, width]"
+
+  class VaeProcessorConfig(ProcessorConfig):
+      """Configuration for VAE pathway."""
+      combine: str = "before"
+      frame_conditioning: str = FrameConditioningType.FULL
+      frame_index: int = 0
+      concatenate_mask: bool = True
+
+  class ClipProcessorConfig(ProcessorConfig):
+      """Configuration for CLIP pathway."""
+      default_preprocess: str = "center_crop"
+
+  class E2VLowRankConfig(ConfigMixin):
+      """Configuration for E2V training with LoRA."""
+      elements: List[ElementConfig]
+      processors: Dict[str, Union[VaeProcessorConfig, ClipProcessorConfig]]
+      rank: int = 64
+      lora_alpha: int = 64
+      target_modules: Union[str, List[str]] =
+  "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
+      train_qk_norm: bool = False
+
+      def validate_args(self, args):
+          assert len(self.elements) > 0, "At least one element must be specified"
+          assert "vae" in self.processors, "VAE processor configuration is required"
+          assert "clip" in self.processors, "CLIP processor configuration is required"
+
+      def map_from_json(self, json_config):
+          """Map from JSON config to this class."""
+          # Implementation details
+
+  Processor Classes
+
+  class VAEPathwayProcessor(ProcessorMixin):
+      """Processor for the VAE spatial pathway."""
+
+      def __init__(self, output_names=None, input_names=None, config=None, device=None):
+          super().__init__()
+          self.output_names = output_names or ["vae_output"]
+          self.input_names = input_names or {}
+          self.config = config
+          self.device = device
+          assert len(self.output_names) == 1
+
+      def forward(self, image=None, video=None, element_config=None, **kwargs):
+          """Process image/video through VAE pathway.
+          
+          Args:
+              image: Optional image tensor (B, C, H, W)
+              video: Optional video tensor (B, F, C, H, W)
+              element_config: Configuration for this element
+              
+          Returns:
+              Dictionary with processed VAE output
+          """
+          # Implementation based on A2 pipeline reference
+          # 1. Get configuration with element-specific overrides
+          config = {**self.config}
+          if element_config and "vae" in element_config:
+              config.update(element_config["vae"])
+
+          # 2. Preprocess image/video
+          processed = self._preprocess_input(image, video, config)
+
+          # 3. Apply repetition based on config
+          repeated = self._apply_repetition(processed, config.get("repeat", 1))
+
+          # 4. Run VAE encoder
+          encoded = self._encode_vae(repeated)
+
+          # Result includes position for later concatenation
+          result = {
+              "latents": encoded,
+              "position": config.get("position", 0),
+              "frames": repeated.shape[1] if hasattr(repeated, "shape") else 1
+          }
+
+          return {self.output_names[0]: result}
+
+      def _preprocess_input(self, image, video, config):
+          # Implementation details
+          pass
+
+      def _apply_repetition(self, image, repeat):
+          # Implementation details
+          pass
+
+      def _encode_vae(self, video):
+          # Implementation details
+          pass
+
+  class CLIPPathwayProcessor(ProcessorMixin):
+      """Processor for the CLIP semantic pathway."""
+
+      def __init__(self, output_names=None, input_names=None, config=None, device=None):
+          super().__init__()
+          self.output_names = output_names or ["clip_output"]
+          self.input_names = input_names or {}
+          self.config = config
+          self.device = device
+          assert len(self.output_names) == 1
+
+      def forward(self, image=None, element_config=None, **kwargs):
+          """Process image through CLIP pathway.
+          
+          Args:
+              image: Image tensor (B, C, H, W)
+              element_config: Configuration for this element
+              
+          Returns:
+              Dictionary with processed CLIP features
+          """
+          # Implementation based on A2 pipeline reference
+          # 1. Get configuration with element-specific overrides
+          config = {**self.config}
+          if element_config and "clip" in element_config:
+              if isinstance(element_config["clip"], dict):
+                  config.update(element_config["clip"])
+              elif not element_config["clip"]:
+                  # CLIP pathway disabled for this element
+                  return {self.output_names[0]: None}
+
+          # 2. Preprocess image
+          processed = self._preprocess_input(image, config)
+
+          # 3. Run CLIP encoder
+          features = self._run_clip_encoder(processed)
+
+          return {self.output_names[0]: features}
+
+      def _preprocess_input(self, image, config):
+          # Implementation details
+          pass
+
+      def _run_clip_encoder(self, image):
+          # Implementation details
+          pass
+
+  Dataset Implementation
+
+  class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.checkpoint.stateful.Stateful):
+      """Dataset wrapper for E2V training."""
+
+      def __init__(self, dataset, config, device=None):
+          super().__init__()
+          self.dataset = dataset
+          self.config = config
+          self.device = device
+
+          # Initialize processors
+          self.processors = {
+              "vae": VAEPathwayProcessor(
+                  output_names=["vae_output"],
+                  config=config["processors"]["vae"],
+                  device=device
+              ),
+              "clip": CLIPPathwayProcessor(
+                  output_names=["clip_output"],
+                  config=config["processors"]["clip"],
+                  device=device
+              )
+          }
+
+          # Create element lookup
+          self.elements = {elem["name"]: elem for elem in config["elements"]}
+
+          logger.info("Initialized IterableE2VDataset")
+
+      def __iter__(self):
+          logger.info("Starting IterableE2VDataset")
+          for data in iter(self.dataset):
+              # Find element files
+              element_files = self._find_element_files(data)
+
+              # Process elements through pathways
+              processed_data = self._process_elements(data, element_files)
+
+              # Combine pathways
+              combined_data = self._combine_pathways(processed_data)
+
+              yield combined_data
+
+      def load_state_dict(self, state_dict):
+          self.dataset.load_state_dict(state_dict)
+
+      def state_dict(self):
+          return self.dataset.state_dict()
+
+      def _find_element_files(self, data):
+          """Find files for each element based on suffixes."""
+          # Implementation details
+          pass
+
+      def _process_elements(self, data, element_files):
+          """Process each element through each pathway."""
+          results = {"vae": {}, "clip": {}}
+
+          for element_name, files in element_files.items():
+              element_config = self.elements[element_name]
+
+              # Load element image
+              element_image = self._load_image(files["path"])
+
+              # Process through each pathway
+              for processor_name, processor in self.processors.items():
+                  if processor_name in element_config and element_config[processor_name]:
+                      result = processor(
+                          image=element_image,
+                          element_config=element_config
+                      )
+
+                      # Store result if pathway is enabled
+                      if result[processor.output_names[0]] is not None:
+                          results[processor_name][element_name] = result[processor.output_names[0]]
+
+          return results
+
+      def _combine_pathways(self, processed_data):
+          """Combine results from all pathways."""
+          # Implementation based on apply_frame_conditioning_on_latents
+          # Details similar to A2 pipeline
+          pass
+
+  Trainer Implementation
+
+  class E2VTrainer:
+      """Trainer for E2V fine-tuning."""
+
+      def __init__(self, config, model_spec=None):
+          self.config = config
+          self.model_spec = model_spec or WanControlModelSpecification(...)
+
+          # Setup dataset
+          self.train_dataset = IterableE2VDataset(
+              dataset=self._create_base_dataset(),
+              config=config["datasets"][0],
+              device=self.device
+          )
+
+          # Rest of initialization
+
+      def _train_step(self, batch):
+          """Execute a single training step."""
+          # 1. Extract pathways
+          vae_latents = batch["vae_combined"]
+          clip_features = batch["clip_combined"]
+          video_latents = batch["video_latents"]
+          text_embeddings = batch["text_embeddings"]
+
+          # 2. Forward pass using model specification
+          loss = self.model_spec.forward(
+              transformer=self.transformer,
+              condition_model_conditions={
+                  "encoder_hidden_states": text_embeddings,
+                  "encoder_hidden_states_image": clip_features
+              },
+              latent_model_conditions={
+                  "latents": video_latents,
+                  "control_latents": vae_latents
+              },
+              sigmas=self.sigmas
+          )
+
+          # 3. Backprop and optimize
+          loss.backward()
+          self.optimizer.step()
+          self.optimizer.zero_grad()
+
+          return loss.item()
+
+      # Additional methods following framework patterns
+
+  3. Data Flow Diagram
+
+  Load Data
+  └─> Base Dataset
+      └─> IterableE2VDataset (wrapper)
+          ├─> Find Element Files
+          │   ├─> main_subject: 001_person.png
+          │   ├─> secondary: 001_object.png
+          │   └─> environment: 001_background.png
+          │
+          ├─> Process Elements
+          │   ├─> VAEPathwayProcessor
+          │   │   ├─> Preprocess each element
+          │   │   ├─> Apply repetition (mini-video creation)
+          │   │   ├─> Encode through VAE
+          │   │   └─> Store with position metadata
+          │   │
+          │   └─> CLIPPathwayProcessor
+          │       ├─> Preprocess each element
+          │       ├─> Run CLIP encoder
+          │       └─> Store feature embeddings
+          │
+          └─> Combine Pathways
+              ├─> VAE Pathway
+              │   ├─> Sort elements by position
+              │   ├─> Concatenate temporal dimension
+              │   ├─> Create frame mask
+              │   └─> Concatenate mask with latents
+              │
+              └─> CLIP Pathway
+                  └─> Concatenate all embeddings
+
+  Forward Pass
+  ├─> condition_model_conditions
+  │   ├─> encoder_hidden_states: Text embeddings
+  │   └─> encoder_hidden_states_image: CLIP features
+  │
+  └─> latent_model_conditions
+      ├─> latents: Target video latents
+      └─> control_latents: Combined VAE pathway
+
+  4. Implementation Steps
+
+  1. Create Configuration Classes
+    - Define E2VType, ElementConfig, ProcessorConfig classes
+    - Create mapping from JSON config to framework classes
+  2. Implement Processors
+    - Create VAEPathwayProcessor extending ProcessorMixin
+    - Create CLIPPathwayProcessor extending ProcessorMixin
+    - Ensure both follow the framework's processor patterns
+  3. Create Dataset Wrapper
+    - Implement IterableE2VDataset to wrap base datasets
+    - Add support for element file finding and loading
+    - Implement pathway processing and combination
+  4. Build Trainer
+    - Extend existing trainer classes with E2V-specific logic
+    - Integrate with model specification
+    - Implement visualization handling
+  5. Register New Types
+    - Add E2V training types to framework configuration
+    - Register processors in the framework
+    - Set up CLI argument handling
+
+  5. Framework Compatibility Notes
+
+  - ProcessorMixin Interface: Our processors follow the standard interface with input/output names
+  - Dataset Wrapping: We use the same pattern as ControlTrainer to wrap existing datasets
+  - Configuration Classes: We extend ConfigMixin and implement required methods
+  - Frame Conditioning: We reuse the same conditioning types and parameters from control training
+  - Model Specification: We leverage WanControlModelSpecification without modification
+
+  By following these patterns, our E2V implementation will integrate seamlessly with the existing framework while adding the specialized
+  functionality needed for Elements-to-Video training.
+
+  The components we've outlined are consistent with how other training methods are implemented in the framework. some specific examples:
+
+  1. Configuration Classes:
+    - Our E2VType enum follows the same pattern as ControlType in the existing code
+    - Our config classes extend ConfigMixin just like ControlLowRankConfig and ControlFullRankConfig
+    - We include the same validation and mapping methods seen in other configs
+  2. Processor Implementation:
+    - Our processors extend ProcessorMixin just like CannyProcessor and others
+    - We follow the same pattern for input/output names handling
+    - The forward method signature matches the framework's processor pattern
+  3. Dataset Wrappers:
+    - Our IterableE2VDataset follows the same structure as IterableControlDataset
+    - We implement the same stateful interface for checkpoint compatibility
+    - The data processing flow matches the control training pattern
+  4. Trainer Implementation:
+    - Our trainer follows the same structure as the existing trainers
+    - We leverage the same model specification approach
+    - The train step implementation follows the same pattern
+
+  Looking at how control training is implemented, our approach is directly parallel:
+
+  - Control training wraps datasets to add control signal processing
+  - E2V training wraps datasets to add element processing
+  - Both use specialized processors for different types of conditioning
+  - Both leverage the same underlying model specification
+
+  The only significant difference is in how we handle multiple reference images and dual pathway processing, but this is implemented as an
+  extension of the existing patterns rather than a deviation from them.
