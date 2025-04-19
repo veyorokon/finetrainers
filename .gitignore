@@ -166,7 +166,6 @@ cython_debug/
 
 # manually added
 wandb/
-*.txt
 dump*
 outputs*
 *.slurm
