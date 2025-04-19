@@ -330,3 +330,30 @@ Configurations cascade from general to specific:
 - Reuse code where appropriate, extend where necessary
 - Minimize changes to core framework
 - Prioritize readability and maintainability over cleverness
+
+## Key Files to Create/Modify
+
+### 1. Training Type Implementation
+- `finetrainers/trainer/a2_trainer/__init__.py` - Export trainer and configs
+- `finetrainers/trainer/a2_trainer/config.py` - Define A2Trainer configurations extending BaseArgs
+- `finetrainers/trainer/a2_trainer/trainer.py` - A2Trainer implementation using WanControlModelSpecification
+- `finetrainers/trainer/a2_trainer/data.py` - IterableE2VDataset and ValidationE2VDataset
+
+### 2. Configuration Updates
+- `finetrainers/config.py` - Add A2 training types to TrainingType enum
+- `finetrainers/trainer/__init__.py` - Import and expose A2Trainer
+
+### 3. Processors
+- `finetrainers/processors/multi_reference.py` - New processor for E2V conditioning
+- `finetrainers/processors/__init__.py` - Import and expose new processor
+
+### 4. Testing
+- `tests/trainer/test_a2_trainer.py` - Tests for the new implementation
+- `tests/data/test_e2v_dataset.py` - Tests for dataset implementation
+
+This implementation approach:
+- Follows framework patterns by creating new components rather than modifying existing ones
+- Minimizes changes to core framework files
+- Leverages WanControlModelSpecification without modification
+- Maintains clean separation of concerns
+- Creates focused, purpose-specific new files
