@@ -191,6 +191,32 @@ Key features of this configuration:
    - Create test cases with various naming patterns to verify flexibility
    - Test handling of missing reference elements
 
+## Data Processing Pipeline for A2 Training
+
+### Reference Image Processing in A2
+
+1. **VAE Spatial Pathway**:
+   - Reference images are resized to match video dimensions (target_resolution)
+   - Images are arranged in a sequence based on position parameter
+   - Each image is repeated N times based on vae_repeat value
+   - This creates a mini-video of reference images
+   - Zero padding is added to match the target video's frame count
+   - The entire sequence is encoded through VAE (like a video)
+   - A frame mask is created to identify which frames are references
+   - The mask and encoded mini-video are concatenated along the channel dimension
+   - This combined tensor serves as conditioning for the model
+
+2. **CLIP Semantic Pathway**:
+   - Reference images are resized to clip_resolution
+   - Each image is processed through CLIP vision encoder
+   - The resulting embeddings provide semantic information
+   - These embeddings feed into cross-attention layers
+
+3. **Combined Effect**:
+   - VAE path provides spatial details and structure
+   - CLIP path provides high-level semantic understanding
+   - Together they enable accurate preservation of reference elements
+
 ## Key Files to Create/Modify
 - `finetrainers/trainer/a2_trainer/` - New training type implementation
 - `finetrainers/trainer/a2_trainer/config.py` - Configuration for A2 training
@@ -218,6 +244,70 @@ After reviewing the code, we've confirmed:
    - We should follow the control_trainer pattern, which already has channel concatenation
    - The implementation should be a new training type rather than a new model
    - Code should be modular so most components can be reused with minimal changes
+
+## Framework Reference Guide
+
+### Core Framework Concepts
+
+#### 1. Training Type Pattern
+The framework organizes training approaches as distinct "types" rather than different models:
+
+- **Reference**: `finetrainers/trainer/__init__.py` imports both `SFTTrainer` and `ControlTrainer` as different training types for the same models.
+
+- **Concept**: Each training type implements a specific approach to fine-tuning but uses the same underlying model architecture. Our A2 training follows this pattern.
+
+- **Application**: Create `a2_trainer` alongside existing types, not as a model variant.
+
+#### 2. Model Specification Pattern
+Models are defined through specification classes that handle model loading and conditioning:
+
+- **Reference**: `finetrainers/models/wan/base_specification.py` defines the base Wan model, while `control_specification.py` extends it for control training.
+
+- **Key Methods**: 
+  - `load_diffusion_models()`: Loads transformer models with appropriate configurations
+  - `forward()`: Defines how inputs flow through the model
+  - `prepare_conditions()` and `prepare_latents()`: Handle preprocessing for different input types
+
+- **Application**: Reuse the `WanControlModelSpecification` which already handles channel concatenation.
+
+#### 3. Data Processing Pipeline
+The framework separates data processing into distinct stages:
+
+- **Reference**: `finetrainers/trainer/control_trainer/data.py` shows how control training handles conditioning data.
+
+- **Key Components**:
+  - Dataset classes return raw data
+  - Preprocessors apply transformations 
+  - Processors handle specific encodings (like `CannyProcessor`)
+
+- **Application**: Create `IterableE2VDataset` and appropriate processors for reference images.
+
+#### 4. Configuration System
+Configurations cascade from general to specific:
+
+- **Reference**: `finetrainers/trainer/control_trainer/config.py` defines training configuration classes.
+
+- **Pattern**: 
+  - Base configuration defines common parameters
+  - Specialized configurations extend with specific needs
+
+- **Application**: Ensure our dataset config extensions follow existing patterns.
+
+### A2 Inference Code References
+
+- **Reference Processing Function**: The `prepare_latents` function in `A2/models/pipeline_a2.py` (lines 288-394) handles all reference processing.
+
+- **Mini-Video Creation**: At lines 330-347, references are arranged as a sequence and repeated based on the `vae_repeat` parameter. For example, with 3 reference images and `vae_repeat=True`, the first reference appears once, while the second and third are each repeated 4 times.
+
+- **VAE Encoding**: At line 356, the entire reference sequence is encoded through VAE, treating it like a video: `latent_condition = retrieve_latents(self.vae.encode(video_condition), generator)`.
+
+- **Frame Masking**: Lines 372-392 create a mask tensor where reference frames are marked with 1's and others with 0's. This mask is later used during conditioning.
+
+- **Channel Concatenation**: At line 394, the mask and encoded latents are concatenated along the channel dimension: `return latents, torch.concat([mask_lat_size, latent_condition], dim=1)`.
+
+- **CLIP Pathway**: Lines 570-575 show how CLIP embeddings from multiple references are concatenated and passed to the model via `encoder_hidden_states_image`.
+
+- **Model Input**: Line 610 demonstrates how the latents and condition tensor are concatenated before being passed to the model: `latent_model_input = torch.cat([latents, condition], dim=1).to(transformer_dtype)`.
 
 ## Development Guidelines
 
