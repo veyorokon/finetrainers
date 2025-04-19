@@ -100,8 +100,13 @@ class E2VTrainer:
         self._are_condition_models_loaded = False
 
         # Pass frame conditioning parameters to model specification
+        # Use getattr with default values for potentially missing parameters
+        frame_conditioning_type = getattr(args, "frame_conditioning_type", "full")
+        frame_conditioning_index = getattr(args, "frame_conditioning_index", 0)
+        frame_conditioning_concatenate_mask = getattr(args, "frame_conditioning_concatenate_mask", True)
+        
         model_specification._trainer_init(
-            args.frame_conditioning_type, args.frame_conditioning_index, args.frame_conditioning_concatenate_mask
+            frame_conditioning_type, frame_conditioning_index, frame_conditioning_concatenate_mask
         )
 
     def run(self) -> None:
