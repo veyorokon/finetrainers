@@ -191,19 +191,20 @@ class E2VTrainer:
         # Set up configuration options
         self.state.gradient_accumulation_steps = self.args.gradient_accumulation_steps
 
-        self.state.logging_nan_or_inf = self.args.logging_nan_or_inf
+        # Use getattr with default False in case the attribute doesn't exist in BaseArgs
+        self.state.logging_nan_or_inf = getattr(self.args, "logging_nan_or_inf", False)
         self.state.allow_tf32 = self.args.allow_tf32
         if self.state.allow_tf32:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
 
-        if not self.args.train_batch_size:
+        if not hasattr(self.args, "train_batch_size") or not self.args.train_batch_size:
             self.args.train_batch_size = 1
 
-        if not self.args.eval_batch_size:
+        if not hasattr(self.args, "eval_batch_size") or not self.args.eval_batch_size:
             self.args.eval_batch_size = 1
 
-        if self.args.setup_torch_compile:
+        if hasattr(self.args, "setup_torch_compile") and self.args.setup_torch_compile:
             # Reset compilation cache
             os.environ["TORCHINDUCTOR_DISABLE_CUDAGRAPHS"] = "1"
             

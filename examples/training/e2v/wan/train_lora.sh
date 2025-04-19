@@ -19,7 +19,7 @@ export FINETRAINERS_LOG_LEVEL="INFO"
 BACKEND="accelerate"
 
 # In this setting, we're using 4 GPUs for DeepSpeed training
-NUM_GPUS=4
+NUM_GPUS=1
 CUDA_VISIBLE_DEVICES="0"
 
 # Dataset configurations - use project-relative paths (relative to the project root)
