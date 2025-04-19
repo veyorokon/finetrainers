@@ -40,6 +40,14 @@ class ElementConfig(ConfigMixin):
         assert isinstance(self.name, str), "Element name must be a string"
         assert isinstance(self.suffixes, list), "Suffixes must be a list"
         assert all(isinstance(s, str) for s in self.suffixes), "All suffixes must be strings"
+        
+    def map_args(self, argparse_args, mapped_args):
+        # No CLI args to map for element config
+        pass
+        
+    def add_args(self, parser):
+        # No CLI args to add for element config
+        pass
 
 
 class ProcessorConfig(ConfigMixin):
@@ -50,6 +58,14 @@ class ProcessorConfig(ConfigMixin):
 
     def validate_args(self, args):
         assert len(self.resolution) == 2, "Resolution must be [height, width]"
+        
+    def map_args(self, argparse_args, mapped_args):
+        # No CLI args to map for processor config
+        pass
+        
+    def add_args(self, parser):
+        # No CLI args to add for processor config
+        pass
 
 
 class VaeProcessorConfig(ProcessorConfig):
@@ -83,6 +99,32 @@ class E2VConfig(ConfigMixin):
         assert "vae" in self.processors, "VAE processor configuration is required"
         if self.e2v_type in [E2VType.CLIP, E2VType.DUAL]:
             assert "clip" in self.processors, "CLIP processor configuration is required"
+    
+    def map_args(self, argparse_args, mapped_args):
+        # Map CLI args to this config
+        self.e2v_type = getattr(argparse_args, "e2v_type", self.e2v_type)
+        self.frame_conditioning_type = getattr(argparse_args, "frame_conditioning_type", self.frame_conditioning_type)
+        self.frame_conditioning_index = getattr(argparse_args, "frame_conditioning_index", self.frame_conditioning_index)
+        self.frame_conditioning_concatenate_mask = getattr(
+            argparse_args, "frame_conditioning_concatenate_mask", self.frame_conditioning_concatenate_mask
+        )
+    
+    def add_args(self, parser):
+        # Add E2V base args
+        parser.add_argument(
+            "--e2v_type",
+            type=str,
+            default=E2VType.DUAL.value,
+            choices=[x.value for x in E2VType.__members__.values()],
+        )
+        parser.add_argument(
+            "--frame_conditioning_type",
+            type=str,
+            default=FrameConditioningType.FULL.value,
+            choices=[x.value for x in FrameConditioningType.__members__.values()],
+        )
+        parser.add_argument("--frame_conditioning_index", type=int, default=0)
+        parser.add_argument("--frame_conditioning_concatenate_mask", action="store_true")
         
     def map_from_json(self, json_config):
         """Map from JSON config to this class."""
@@ -124,12 +166,7 @@ class E2VLowRankConfig(E2VConfig):
     train_qk_norm: bool = False
 
     def add_args(self, parser: argparse.ArgumentParser):
-        parser.add_argument(
-            "--e2v_type",
-            type=str,
-            default=E2VType.DUAL.value,
-            choices=[x.value for x in E2VType.__members__.values()],
-        )
+        super().add_args(parser)
         parser.add_argument("--rank", type=int, default=64)
         parser.add_argument("--lora_alpha", type=int, default=64)
         parser.add_argument(
@@ -141,36 +178,28 @@ class E2VLowRankConfig(E2VConfig):
             ],
         )
         parser.add_argument("--train_qk_norm", action="store_true")
-        parser.add_argument(
-            "--frame_conditioning_type",
-            type=str,
-            default=FrameConditioningType.FULL.value,
-            choices=[x.value for x in FrameConditioningType.__members__.values()],
-        )
-        parser.add_argument("--frame_conditioning_index", type=int, default=0)
-        parser.add_argument("--frame_conditioning_concatenate_mask", action="store_true")
 
     def validate_args(self, args: "BaseArgs"):
         super().validate_args(args)
         assert self.rank > 0, "Rank must be a positive integer."
         assert self.lora_alpha > 0, "lora_alpha must be a positive integer."
+        
+    def map_args(self, argparse_args, mapped_args):
+        super().map_args(argparse_args, mapped_args)
+        self.rank = getattr(argparse_args, "rank", self.rank)
+        self.lora_alpha = getattr(argparse_args, "lora_alpha", self.lora_alpha)
+        self.target_modules = getattr(argparse_args, "target_modules", self.target_modules)
+        self.train_qk_norm = getattr(argparse_args, "train_qk_norm", self.train_qk_norm)
 
 
 class E2VFullRankConfig(E2VConfig):
     """Configuration for E2V full rank training."""
 
     def add_args(self, parser: argparse.ArgumentParser):
-        parser.add_argument(
-            "--e2v_type",
-            type=str,
-            default=E2VType.DUAL.value,
-            choices=[x.value for x in E2VType.__members__.values()],
-        )
-        parser.add_argument(
-            "--frame_conditioning_type",
-            type=str,
-            default=FrameConditioningType.FULL.value,
-            choices=[x.value for x in FrameConditioningType.__members__.values()],
-        )
-        parser.add_argument("--frame_conditioning_index", type=int, default=0)
-        parser.add_argument("--frame_conditioning_concatenate_mask", action="store_true")
+        super().add_args(parser)
+        
+    def map_args(self, argparse_args, mapped_args):
+        super().map_args(argparse_args, mapped_args)
+        
+    def validate_args(self, args: "BaseArgs"):
+        super().validate_args(args)
