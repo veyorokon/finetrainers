@@ -385,6 +385,14 @@ Our implementation approach is carefully designed to align with the finetrainers
 - **No Code Pollution**: Avoid unnecessary verbosity and complexity
 - **Error Handling**: Fail fast and explicitly when inputs are invalid
 - **Testing**: Always run lint and typecheck commands to ensure code quality
+- **Commit Messages**: For all code changes, provide commit messages in the conventional format:
+  ```
+  type: concise description of the change
+
+  More detailed explanation of what was changed and why.
+  Include any important context or considerations.
+  ```
+  Where `type` is one of: fix, feat, refactor, docs, test, chore, style
 
 ### Implementation Approach
 - Follow existing patterns from SFT and Control trainers
