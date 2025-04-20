@@ -126,9 +126,20 @@ class E2VTrainer:
             first_config = json.load(file)["datasets"][0]
         
         # Copy essential configuration parts
-        for key in ["elements", "processors", "data_root", "reference_suffixes"]:
+        for key in ["elements", "processors", "data_root"]:
             if key in first_config:
                 e2v_config[key] = first_config[key]
+        
+        # Derive reference_suffixes from elements if not explicitly provided
+        if "reference_suffixes" in first_config:
+            e2v_config["reference_suffixes"] = first_config["reference_suffixes"]
+        elif "elements" in e2v_config:
+            # Extract all suffixes from the elements
+            all_suffixes = []
+            for element in e2v_config["elements"]:
+                if "suffixes" in element:
+                    all_suffixes.extend(element["suffixes"])
+            e2v_config["reference_suffixes"] = all_suffixes
         
         # Add E2V-specific parameters from args
         e2v_config["e2v_type"] = getattr(self.args, "e2v_type", "dual")
@@ -594,6 +605,20 @@ class E2VTrainer:
 
             # Initialize dataset using framework pattern
             dataset_name_or_root = data_root or dataset_file
+            
+            # If using video_references, pass reference_suffixes derived from elements
+            if dataset_type == "video_references":
+                # Extract suffix patterns from elements configuration
+                reference_suffixes = []
+                for element in config.get("elements", []):
+                    if "suffixes" in element:
+                        reference_suffixes.extend(element["suffixes"])
+                        
+                # Add to caption options
+                if caption_options is None:
+                    caption_options = {}
+                caption_options["reference_suffixes"] = reference_suffixes
+            
             dataset = data.initialize_dataset(
                 dataset_name_or_root, dataset_type, streaming=True, infinite=True, _caption_options=caption_options
             )
@@ -694,6 +719,20 @@ class E2VTrainer:
                 
                 # Initialize validation dataset
                 dataset_name_or_root = data_root or dataset_file
+                
+                # If using video_references, pass reference_suffixes derived from elements
+                if dataset_type == "video_references":
+                    # Extract suffix patterns from elements configuration
+                    reference_suffixes = []
+                    for element in config.get("elements", []):
+                        if "suffixes" in element:
+                            reference_suffixes.extend(element["suffixes"])
+                            
+                    # Add to caption options
+                    if caption_options is None:
+                        caption_options = {}
+                    caption_options["reference_suffixes"] = reference_suffixes
+                
                 validation_dataset = data.initialize_dataset(
                     dataset_name_or_root, dataset_type, streaming=True, infinite=False, _caption_options=caption_options
                 )

@@ -986,7 +986,9 @@ def _initialize_local_dataset(
 
     if dataset_type == "video_references":
         # Use the specialized VideoReferenceImagesDataset for E2V
-        reference_suffixes = _caption_options.get("reference_suffixes") if _caption_options else None
+        reference_suffixes = None
+        if _caption_options and "reference_suffixes" in _caption_options:
+            reference_suffixes = _caption_options["reference_suffixes"]
         dataset = VideoReferenceImagesDataset(root.as_posix(), infinite=infinite, reference_suffixes=reference_suffixes)
     elif _has_data_caption_file_pairs(root, remote=False):
         if dataset_type == "image":
@@ -1029,7 +1031,9 @@ def _initialize_hub_dataset(
             if dataset_type == "image":
                 dataset = ImageFolderDataset(dataset_root, infinite=infinite)
             elif dataset_type == "video_references":
-                reference_suffixes = _caption_options.get("reference_suffixes") if _caption_options else None
+                reference_suffixes = None
+                if _caption_options and "reference_suffixes" in _caption_options:
+                    reference_suffixes = _caption_options["reference_suffixes"]
                 dataset = VideoReferenceImagesDataset(dataset_root, infinite=infinite, reference_suffixes=reference_suffixes)
             else:
                 dataset = VideoFolderDataset(dataset_root, infinite=infinite)
