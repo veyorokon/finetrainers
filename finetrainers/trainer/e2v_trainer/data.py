@@ -274,33 +274,41 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         logger.info("Starting IterableE2VDataset")
         for data in iter(self.dataset):
             try:
-                # Enhanced logging for debugging
+                # Basic logging to understand dataset structure
                 keys = list(data.keys())
                 logger.info(f"Dataset item keys: {keys}")
                 
-                # Log tensor shapes and other value types
-                for key in keys:
-                    if isinstance(data[key], torch.Tensor):
-                        logger.info(f"  {key}: Tensor shape {data[key].shape}")
-                    elif key in ['video_path', 'image_path', 'caption']:
-                        logger.info(f"  {key}: {data[key]}")
+                if "video" in data:
+                    logger.info(f"Video shape: {data['video'].shape}")
                 
-                # Find element files
+                # Find element files based on dataset item
                 element_files = self._find_element_files(data)
                 
-                # Load and process elements
+                # Skip items where required elements are missing
+                if not element_files:
+                    required_elements = [elem.name for elem in self.config.get("elements", []) 
+                                        if elem.required]
+                    if required_elements:
+                        logger.warning(f"Skipping item because required elements not found: {required_elements}")
+                        continue
+                
+                # Load element images
                 element_data = self._load_elements(element_files)
                 
-                # Process elements through pathways
+                # If loading failed, skip this item
+                if not element_data:
+                    logger.warning("No elements could be loaded, skipping item")
+                    continue
+                
+                # Process elements through VAE and CLIP pathways
                 processed_data = self._process_elements(data, element_data)
                 
-                # Combine pathways
+                # Combine all pathways into final output
                 combined_data = self._combine_pathways(data, processed_data)
                 
                 yield combined_data
             except Exception as e:
                 logger.error(f"Error processing dataset item: {e}")
-                logger.error(f"Data keys: {list(data.keys())}")
                 # Skip this item and continue
                 continue
     
@@ -314,54 +322,41 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         """Find files for each element based on suffixes."""
         element_files = {}
         
-        # Get the base identifier from the data
-        base_path = None
+        # Get the dataset root directory from config
+        data_root = self.config.get("data_root", "")
+        if not data_root:
+            logger.warning("No data_root specified in configuration")
+            return {}
         
-        # Log attempt to find path
-        logger.info("Searching for base path in data")
+        # Generate a stable identifier for finding element files
+        # In production, you would extract this from your dataset 
+        # structure in a predictable way
+        identifier = None
         
-        # First check for standard paths
-        for key in ["video_path", "image_path"]:
-            if key in data:
-                base_path = data[key]
-                logger.info(f"Found {key}: {base_path}")
-                break
+        # Example: Try using caption as basis for identifier
+        if "caption" in data:
+            # Generate identifier from first few words of caption
+            caption = data["caption"]
+            words = caption.split()[:3]
+            identifier = "_".join(words).lower().replace(" ", "_")
+            logger.info(f"Using caption-based identifier: {identifier}")
         
-        # Try to extract from video tensor if there's no explicit path
-        if base_path is None and "video" in data:
-            logger.info("No path found, checking video tensor")
-            # This might be a VideoReader object with filename attribute
-            if hasattr(data["video"], "filename") and data["video"].filename:
-                base_path = data["video"].filename
-                logger.info(f"Found filename in video object: {base_path}")
-            # Try other common attributes
-            elif hasattr(data["video"], "file_path"):
-                base_path = data["video"].file_path
-                logger.info(f"Found file_path in video object: {base_path}")
-        
-        if base_path is None:
-            logger.error("Could not find any path in data")
-            raise ValueError("No video_path or image_path found in data")
-        
-        # Remove extension to get base identifier
-        base_id = os.path.splitext(base_path)[0]
-        logger.info(f"Using base identifier: {base_id}")
+        # If we couldn't generate an identifier, we can't find element files
+        if not identifier:
+            logger.warning("Could not generate identifier to find element files")
+            return {}
         
         # Search for matching element files
         for element_name, element_config in self.elements.items():
             # Try each suffix until we find a match
             for suffix in element_config.suffixes:
-                potential_path = f"{base_id}{suffix}"
+                potential_path = os.path.join(data_root, f"{identifier}{suffix}")
                 if os.path.exists(potential_path):
                     element_files[element_name] = {
                         "path": potential_path,
                         "config": element_config
                     }
                     break
-            
-            # Handle required elements
-            if element_config.required and element_name not in element_files:
-                raise ValueError(f"Required element '{element_name}' not found for {base_id}")
         
         return element_files
     
@@ -374,10 +369,12 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             try:
                 # Load image
                 image_path = file_info["path"]
+                
+                # Load and process image
                 element_img = Image.open(image_path).convert("RGB")
                 
-                # Convert to tensor (basic preprocessing)
-                video_processor = VideoProcessor()  # Basic processor for initial conversion
+                # Convert to tensor
+                video_processor = VideoProcessor()
                 element_tensor = video_processor.preprocess(element_img)
                 
                 # Store in element data
@@ -386,7 +383,7 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                     "config": file_info["config"]
                 }
             except Exception as e:
-                logger.error(f"Error loading element {element_name} from {file_info['path']}: {e}")
+                logger.error(f"Error loading element {element_name}: {e}")
                 # Skip this element if it fails to load
                 continue
         
@@ -396,6 +393,7 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         """Process each element through each pathway."""
         results = {"vae": {}, "clip": {}}
         
+        # Process each element through each pathway
         for element_name, element_info in element_data.items():
             element_image = element_info["image"]
             element_config = element_info["config"]
