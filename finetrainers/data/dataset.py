@@ -575,6 +575,9 @@ class VideoReferenceImagesDataset(torch.utils.data.IterableDataset, torch.distri
         # Create dataset
         data = datasets.Dataset.from_list(data)
         
+        # Convert video paths to tensors (following framework pattern)
+        data = data.cast_column("video", datasets.Video())
+        
         # Load captions from files
         def _load_caption(sample):
             sample["caption"] = _read_caption_from_file(sample["caption"])
@@ -833,7 +836,7 @@ class IterableDatasetPreprocessingWrapper(
                     sample["image"] = FF.resize_to_nearest_bucket_image(
                         sample["image"], self.image_resolution_buckets, self.reshape_mode
                     )
-            elif self.dataset_type == "video":
+            elif self.dataset_type in ["video", "video_references"]:
                 if self.video_resolution_buckets:
                     sample["_original_num_frames"] = sample["video"].size(0)
                     sample["_original_height"] = sample["video"].size(2)
@@ -983,7 +986,8 @@ def _initialize_local_dataset(
 
     if dataset_type == "video_references":
         # Use the specialized VideoReferenceImagesDataset for E2V
-        dataset = VideoReferenceImagesDataset(root.as_posix(), infinite=infinite)
+        reference_suffixes = _caption_options.get("reference_suffixes") if _caption_options else None
+        dataset = VideoReferenceImagesDataset(root.as_posix(), infinite=infinite, reference_suffixes=reference_suffixes)
     elif _has_data_caption_file_pairs(root, remote=False):
         if dataset_type == "image":
             dataset = ImageCaptionFilePairDataset(root.as_posix(), infinite=infinite)
@@ -1025,7 +1029,8 @@ def _initialize_hub_dataset(
             if dataset_type == "image":
                 dataset = ImageFolderDataset(dataset_root, infinite=infinite)
             elif dataset_type == "video_references":
-                dataset = VideoReferenceImagesDataset(dataset_root, infinite=infinite)
+                reference_suffixes = _caption_options.get("reference_suffixes") if _caption_options else None
+                dataset = VideoReferenceImagesDataset(dataset_root, infinite=infinite, reference_suffixes=reference_suffixes)
             else:
                 dataset = VideoFolderDataset(dataset_root, infinite=infinite)
             return dataset
