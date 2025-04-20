@@ -513,6 +513,104 @@ class ImageWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkp
         return {"sample_index": self._sample_index}
 
 
+class VideoReferenceImagesDataset(torch.utils.data.IterableDataset, torch.distributed.checkpoint.stateful.Stateful):
+    """Dataset for videos with associated reference images.
+    
+    This dataset locates video files and their corresponding reference images based on file naming patterns.
+    Example structure:
+        001.mp4                # Target video
+        001.txt                # Text prompt
+        001_object.png         # Reference image 1
+        001_background.png     # Reference image 2
+    """
+    def __init__(self, root: str, infinite: bool = False, reference_suffixes: Optional[List[str]] = None) -> None:
+        super().__init__()
+
+        self.root = pathlib.Path(root)
+        self.infinite = infinite
+        self.reference_suffixes = reference_suffixes or ["_object.png", "_background.png", "_person.png", "_mask.png"]
+
+        data = []
+        # Find all video and caption files
+        caption_files = sorted(find_files(self.root.as_posix(), "*.txt", depth=0))
+        
+        for caption_file in caption_files:
+            caption_path = pathlib.Path(caption_file)
+            base_id = caption_path.stem  # Get filename without extension
+            
+            # Find matching video file
+            video_found = False
+            video_path = None
+            
+            for ext in constants.SUPPORTED_VIDEO_FILE_EXTENSIONS:
+                potential_video = caption_path.with_suffix(f".{ext}")
+                if potential_video.exists():
+                    video_path = potential_video.as_posix()
+                    video_found = True
+                    break
+            
+            if not video_found:
+                logger.warning(f"No matching video found for caption {caption_file}, skipping")
+                continue
+            
+            # Find all reference images for this video
+            reference_images = []
+            for suffix in self.reference_suffixes:
+                ref_path = self.root / f"{base_id}{suffix}"
+                if ref_path.exists():
+                    reference_images.append(ref_path.as_posix())
+            
+            # Add to dataset if we have at least one reference image
+            if reference_images:
+                data.append({
+                    "caption": caption_path.as_posix(),
+                    "video": video_path,
+                    "images": reference_images
+                })
+            else:
+                logger.warning(f"No reference images found for {base_id}, skipping")
+        
+        logger.info(f"Found {len(data)} videos with reference images")
+        
+        # Create dataset
+        data = datasets.Dataset.from_list(data)
+        
+        # Load captions from files
+        def _load_caption(sample):
+            sample["caption"] = _read_caption_from_file(sample["caption"])
+            return sample
+        
+        data = data.map(_load_caption)
+        
+        # Setup iterator
+        self._data = data.to_iterable_dataset()
+        self._sample_index = 0
+        self._precomputable_once = len(data) <= MAX_PRECOMPUTABLE_ITEMS_LIMIT
+
+    def _get_data_iter(self):
+        if self._sample_index == 0:
+            return iter(self._data)
+        return iter(self._data.skip(self._sample_index))
+
+    def __iter__(self):
+        while True:
+            for sample in self._get_data_iter():
+                self._sample_index += 1
+                yield sample
+
+            if not self.infinite:
+                logger.warning(f"Dataset ({self.__class__.__name__}={self.root}) has run out of data")
+                break
+            else:
+                self._sample_index = 0
+
+    def load_state_dict(self, state_dict):
+        self._sample_index = state_dict["sample_index"]
+
+    def state_dict(self):
+        return {"sample_index": self._sample_index}
+
+
 class VideoWebDataset(torch.utils.data.IterableDataset, torch.distributed.checkpoint.stateful.Stateful):
     def __init__(
         self,
@@ -829,7 +927,7 @@ def initialize_dataset(
     *,
     _caption_options: Optional[Dict[str, Any]] = None,
 ) -> torch.utils.data.IterableDataset:
-    assert dataset_type in ["image", "video"]
+    assert dataset_type in ["image", "video", "video_references"]
 
     try:
         does_repo_exist_on_hub = repo_exists(dataset_name_or_root, repo_type="dataset")
@@ -883,7 +981,10 @@ def _initialize_local_dataset(
     if has_tar_or_parquet_files:
         return _initialize_webdataset(root.as_posix(), dataset_type, infinite, _caption_options=_caption_options)
 
-    if _has_data_caption_file_pairs(root, remote=False):
+    if dataset_type == "video_references":
+        # Use the specialized VideoReferenceImagesDataset for E2V
+        dataset = VideoReferenceImagesDataset(root.as_posix(), infinite=infinite)
+    elif _has_data_caption_file_pairs(root, remote=False):
         if dataset_type == "image":
             dataset = ImageCaptionFilePairDataset(root.as_posix(), infinite=infinite)
         else:
@@ -923,6 +1024,8 @@ def _initialize_hub_dataset(
             dataset_root = snapshot_download(dataset_name, repo_type="dataset")
             if dataset_type == "image":
                 dataset = ImageFolderDataset(dataset_root, infinite=infinite)
+            elif dataset_type == "video_references":
+                dataset = VideoReferenceImagesDataset(dataset_root, infinite=infinite)
             else:
                 dataset = VideoFolderDataset(dataset_root, infinite=infinite)
             return dataset
@@ -939,6 +1042,8 @@ def _initialize_data_caption_file_dataset_from_hub(
     dataset_root = snapshot_download(dataset_name, repo_type="dataset")
     if dataset_type == "image":
         return ImageCaptionFilePairDataset(dataset_root, infinite=infinite)
+    elif dataset_type == "video_references":
+        return VideoReferenceImagesDataset(dataset_root, infinite=infinite)
     else:
         return VideoCaptionFilePairDataset(dataset_root, infinite=infinite)
 
@@ -950,6 +1055,8 @@ def _initialize_data_file_caption_file_dataset_from_hub(
     dataset_root = snapshot_download(dataset_name, repo_type="dataset")
     if dataset_type == "image":
         return ImageFileCaptionFileListDataset(dataset_root, infinite=infinite)
+    elif dataset_type == "video_references":
+        return VideoReferenceImagesDataset(dataset_root, infinite=infinite)
     else:
         return VideoFileCaptionFileListDataset(dataset_root, infinite=infinite)
 

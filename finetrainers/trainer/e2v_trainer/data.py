@@ -321,56 +321,50 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         return self.dataset.state_dict()
     
     def _find_element_files(self, data):
-        """Find element files based on clear ID from video filename."""
+        """Process reference images from VideoReferenceImagesDataset."""
         element_files = {}
-        
-        # Get data root from config
-        data_root = self.config.get("data_root", "")
-        if not data_root:
-            logger.warning("No data_root specified in configuration")
-            return {}
-        
-        import os
         
         # Log what dataset provides
         logger.info(f"Dataset item keys: {list(data.keys())}")
         
-        # Get the video_path from dataset
-        video_path = None
-        if "video_path" in data:
-            video_path = data["video_path"]
+        # Check if we have reference images from our VideoReferenceImagesDataset
+        if "images" in data:
+            import os
+            
+            logger.info(f"Found {len(data['images'])} reference images in dataset item")
+            
+            # Process each reference image
+            for image_path in data["images"]:
+                # Get the basename to match with suffixes
+                filename = os.path.basename(image_path)
+                
+                # Try to match with one of our configured element types
+                for element_name, element_config in self.elements.items():
+                    # Check if this image matches one of the element's suffixes
+                    for config_suffix in element_config["suffixes"]:
+                        if filename.endswith(config_suffix):
+                            element_files[element_name] = {
+                                "path": image_path,
+                                "config": element_config
+                            }
+                            logger.info(f"Found {element_name} reference image: {image_path}")
+                            break
+            
+            if not element_files:
+                logger.warning("No matching reference images found in dataset item")
+        else:
+            logger.warning("No reference images ('images' key) found in dataset item")
         
-        # If we don't have a path, we can't find reference images
-        if not video_path:
-            logger.warning("No video_path in dataset item, can't find reference images")
-            return {}
-        
-        # Extract the exact base identifier from filename
-        base_id = os.path.splitext(os.path.basename(video_path))[0]
-        logger.info(f"Using exact base ID: {base_id} from video filename")
-        
-        # Find matching element files - no guessing, direct lookups
-        for element_name, element_config in self.elements.items():
-            for suffix in element_config["suffixes"]:
-                element_path = os.path.join(data_root, f"{base_id}{suffix}")
-                if os.path.exists(element_path):
-                    logger.info(f"Found {element_name} file: {element_path}")
-                    element_files[element_name] = {
-                        "path": element_path,
-                        "config": element_config
-                    }
-                    break
+        # All processing done with direct file paths from dataset
         
         # Log results
         if element_files:
-            logger.info(f"Found {len(element_files)} element files for base ID: {base_id}")
+            logger.info(f"Found {len(element_files)} element files")
         else:
-            logger.warning(f"No element files found for base ID: {base_id}")
-            # Log a few sample paths we tried
-            for element_name, element_config in self.elements.items():
-                if element_config.suffixes:
-                    example_path = os.path.join(data_root, f"{base_id}{element_config.suffixes[0]}")
-                    logger.info(f"Tried to find {element_name} at: {example_path}")
+            logger.warning(f"No element files found in dataset item")
+            # Log what elements we were looking for
+            element_types = [name for name in self.elements]
+            logger.info(f"Was looking for element types: {element_types}")
         
         return element_files
     
