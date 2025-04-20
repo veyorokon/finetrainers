@@ -246,6 +246,7 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         self.clip_processor = clip_processor
         self.vae = vae  # VAE for encoding reference images
         
+        
         # Initialize processors
         self.processors = {}
         if "vae" in config.get("processors", {}):

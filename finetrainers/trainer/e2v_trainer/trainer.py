@@ -767,20 +767,15 @@ class E2VTrainer:
         parallel_backend = self.state.parallel_backend
         train_state = self.state.train_state
         
-        # Number of update steps
-        num_update_steps_per_epoch = math.ceil(len(self.dataloader) / self.state.gradient_accumulation_steps)
-        num_train_epochs = math.ceil(self.args.train_steps / num_update_steps_per_epoch)
-        
+        # For IterableDatasets, we can't reliably get the length,
+        # but we can use the desired number of training steps directly
         total_batch_size = self.args.train_batch_size * parallel_backend.world_size * self.state.gradient_accumulation_steps
-        logger.info(f"  Num examples = {len(self.dataloader)}")
-        logger.info(f"  Num epochs = {num_train_epochs}")
         logger.info(f"  Batch size per device = {self.args.train_batch_size}")
         logger.info(f"  Total train batch size (w. parallel & accumulation) = {total_batch_size}")
         logger.info(f"  Gradient accumulation steps = {self.state.gradient_accumulation_steps}")
         logger.info(f"  Total optimization steps = {self.args.train_steps}")
         
         # Set initial values
-        self.state.train_state.epoch = 0
         self.state.train_state.global_step = 0
         self.state.train_state.max_steps = self.args.train_steps
         
@@ -792,62 +787,60 @@ class E2VTrainer:
             desc="Training steps",
         )
         
-        for epoch in range(train_state.epoch, num_train_epochs):
-            for step, batch in enumerate(self.dataloader):
-                # Skip steps already performed
-                if train_state.global_step > 0 and epoch == train_state.epoch and step < train_state.steps_in_epoch:
-                    continue
+        # Use a simpler approach that directly loops until we reach the target number of steps
+        data_iterator = iter(self.dataloader)
+        
+        while train_state.global_step < self.args.train_steps:
+            try:
+                # Get next batch
+                batch = next(data_iterator)
+            except StopIteration:
+                # Restart iterator if we run out of data
+                logger.info("Reached end of dataset, restarting data iterator")
+                data_iterator = iter(self.dataloader)
+                batch = next(data_iterator)
                 
-                with self.state.parallel_backend.accumulate():
-                    # Move batch to correct device
-                    batch = self._move_batch_to_device(batch)
-                    
-                    # Forward pass
-                    loss = self._forward_pass(batch)
-                    
-                    # Backward pass
-                    self.state.parallel_backend.backward(loss)
-                    
-                    # Check for NaN/Inf
-                    if self.state.logging_nan_or_inf:
-                        self._check_for_nan_in_loss_and_grads(self.trainable_modules)
-                    
-                    # Parameter update
-                    if self.state.parallel_backend.sync_gradients:
-                        self._update_parameters()
-                        
-                        progress_bar.update(1)
-                        train_state.global_step += 1
-                        train_state.steps_in_epoch = step + 1
-                        
-                        # Log metrics
-                        if parallel_backend.is_main_process:
-                            metrics = {
-                                "loss": loss.detach().item(),
-                                "lr": self.lr_scheduler.get_last_lr()[0],
-                                "step": train_state.global_step,
-                                "epoch": epoch,
-                            }
-                            logger.info(f"Step {train_state.global_step}: loss = {metrics['loss']:.4f}, lr = {metrics['lr']:.6f}")
-                            
-                            # Log to trackers
-                            if hasattr(self, "tracker") and self.tracker is not None:
-                                self.tracker.log(metrics)
-                        
-                        # Run validation
-                        if self.args.validation_steps > 0 and train_state.global_step % self.args.validation_steps == 0:
-                            self._validate()
-                        
-                        # Create checkpoint
-                        if self.checkpointer.should_save(train_state.global_step):
-                            self.checkpointer.save()
+            with self.state.parallel_backend.accumulate():
+                # Move batch to correct device
+                batch = self._move_batch_to_device(batch)
                 
-                # Check if we've reached max steps
-                if train_state.global_step >= self.args.train_steps:
-                    break
-            
-            train_state.epoch = epoch + 1
-            train_state.steps_in_epoch = 0
+                # Forward pass
+                loss = self._forward_pass(batch)
+                
+                # Backward pass
+                self.state.parallel_backend.backward(loss)
+                
+                # Check for NaN/Inf
+                if self.state.logging_nan_or_inf:
+                    self._check_for_nan_in_loss_and_grads(self.trainable_modules)
+                
+                # Parameter update
+                if self.state.parallel_backend.sync_gradients:
+                    self._update_parameters()
+                    
+                    progress_bar.update(1)
+                    train_state.global_step += 1
+                    
+                    # Log metrics
+                    if parallel_backend.is_main_process:
+                        metrics = {
+                            "loss": loss.detach().item(),
+                            "lr": self.lr_scheduler.get_last_lr()[0],
+                            "step": train_state.global_step,
+                        }
+                        logger.info(f"Step {train_state.global_step}: loss = {metrics['loss']:.4f}, lr = {metrics['lr']:.6f}")
+                        
+                        # Log to trackers
+                        if hasattr(self, "tracker") and self.tracker is not None:
+                            self.tracker.log(metrics)
+                    
+                    # Run validation
+                    if self.args.validation_steps > 0 and train_state.global_step % self.args.validation_steps == 0:
+                        self._validate()
+                    
+                    # Create checkpoint
+                    if self.checkpointer.should_save(train_state.global_step):
+                        self.checkpointer.save()
         
         # Make sure we create a final checkpoint
         if train_state.global_step != 0:
