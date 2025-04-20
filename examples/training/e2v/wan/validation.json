@@ -2,7 +2,7 @@
   "datasets": [
     {
       "data_root": "/workspace/dataset",
-      "dataset_type": "e2v",
+      "dataset_type": "video",
       "target_resolution": [ 480, 854 ],
       "auto_frame_buckets": true,
       "reshape_mode": "bicubic",
