@@ -427,12 +427,14 @@ This creates a natural time lag between local fixes and server execution, which 
 **Using Multiple Information Sources**  
 When investigating issues and understanding project context, leverage multiple sources:
 
-1. **tech_debt.txt**: The primary persistent communication channel between:
-   - Different versions of Claude (current and future)
-   - Human developers and Claude
-   - Multiple deployment environments
+1. **tech_debt.txt**: A persistent communication channel for tracking longer-term structural issues:
+   - **Framework Alignment Gaps**: Areas where the E2V trainer deviates from established framework patterns
+   - **Architectural Improvements**: Structural changes needed beyond immediate bug fixes
+   - **Missing Features**: Functionality that exists in other trainers but is missing in E2V trainer
+   - **Potential Future Issues**: Design choices that could cause problems as the codebase evolves
+   - **Refactoring Opportunities**: Code that works but needs restructuring for maintainability
 
-   This file is collaboratively maintained by both Claude and human developers, creating a shared record of known issues, fixes, and ongoing challenges. Unlike code comments that might get overwritten, this centralized document provides continuity across development cycles.
+   The file is NOT for tracking individual debugging tasks or immediate fixes - it captures higher-level technical debt that spans multiple sessions and requires thoughtful planning to address. This document is collaboratively maintained by both Claude and human developers, creating continuity across development cycles.
 
 2. **Git History**: Use git commands to gain high-level context about recent changes:
    - `git log`: Review recent commit messages to understand what changes have been made
@@ -444,9 +446,11 @@ When investigating issues and understanding project context, leverage multiple s
 
 #### Key Documentation Principles
 - **DOCUMENTATION-FIRST APPROACH**: When encountering discrepancies between local and deployment environments, document issues in tech_debt.txt before making code changes.
-- **USE TECH_DEBT.TXT AS COMMUNICATION CHANNEL**: Use tech_debt.txt to communicate known issues and their fixes between all stakeholders and environments.
+- **FOCUS ON LONG-TERM ISSUES**: Use tech_debt.txt only for structural, architectural, or alignment issues that require longer-term attention, not for immediate debugging fixes.
+- **DISTINGUISH FROM DEBUGGING**: Be clear about the difference between an immediate bug fix (which belongs in code) and technical debt (which belongs in tech_debt.txt).
+- **BE SPECIFIC ABOUT FRAMEWORK ALIGNMENT**: When documenting technical debt, reference specific patterns from the control_trainer and sft_trainer that should be adopted.
 - **CHECK FOR EXISTING DOCUMENTATION**: Always check if an issue is already documented before adding a new entry.
-- **DOCUMENT FIXES CLEARLY**: When fixing issues, mark them as [FIXED] in tech_debt.txt and explain the solution clearly.
+- **DOCUMENT PROGRESS CLEARLY**: When addressing technical debt, mark entries as [FIXED] and explain the solution thoroughly to guide future implementations.
 - **EXPLAIN ISSUES WITH CONTEXT**: Include details about parameter naming, framework patterns, and rationale for changes.
 - **PRIORITIZE ENVIRONMENT ALIGNMENT**: Ensure changes are propagated across all environments, guided by documentation.
 - **VERSION DISCREPANCY AWARENESS**: When errors don't match local code, assume version differences and document them accordingly.

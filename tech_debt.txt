@@ -5,7 +5,26 @@ The following issues need to be addressed to fully match the framework patterns:
      This caused errors because `max_train_steps` does not exist in BaseArgs.
    - The fix was to replace all instances of `max_train_steps` with `train_steps` in the E2VTrainer class.
 
-2. Missing Validation Sample Generation: 
+2. E2V Configuration Issues:
+   - [NEEDS FIX] The E2VTrainer validation is raising: "At least one element must be specified in the E2V configuration for /workspace/dataset"
+   - The specific error occurs in trainer.py, line 549, where it validates: `if not elements: raise ValueError`
+   - After examining the code execution path:
+     1. The local JSON files (training.json & validation.json) correctly include the elements
+     2. In the _prepare_dataset method, the config is loaded from JSON file using `json.load(file)["datasets"]`
+     3. For each config, e2v_config is extracted using `e2v_config = config.get("e2v_config", {})`
+     4. If e2v_config is empty, the code attempts to create one using getattr on self.args
+     5. Critical issue: When using getattr(self.args, "elements", []), self.args doesn't have an "elements" attribute
+   - The root problem is the configuration flow:
+     1. JSON config has elements defined correctly
+     2. But the E2V trainer expects self.args to have e2v-specific attributes
+     3. These attributes aren't being properly transferred from the JSON to the BaseArgs object
+   - Potential fixes:
+     1. Add a passthrough method in E2VConfig to map from JSON config to self.args
+     2. Modify the _prepare_dataset method to prioritize the JSON config's elements over self.args
+     3. Add defensive programming to catch and use the JSON config's elements
+   - From the error log, we know the dataset at /workspace/dataset has the required files (mp4, txt, mask.png, etc.) matching our configuration.
+
+3. Missing Validation Sample Generation: 
    The _generate_samples method in E2VTrainer is implemented as a placeholder but doesn't actually
    provide the functionality to generate validation samples during training. This is unlike the ControlTrainer which has a fully implemented
    validation sample generation workflow.

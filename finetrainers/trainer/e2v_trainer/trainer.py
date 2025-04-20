@@ -532,11 +532,20 @@ class E2VTrainer:
             
             # Get or create E2V specific configuration
             e2v_config = config.get("e2v_config", {})
+            
+            # Check if elements exist directly in the config (where they're supposed to be in training.json)
+            config_elements = config.get("elements", [])
+            
+            # If e2v_config exists but has no elements, use elements from config
+            if e2v_config and not e2v_config.get("elements") and config_elements:
+                e2v_config["elements"] = config_elements
+            
+            # If still no e2v_config, create with prioritizing config elements
             if not e2v_config:
                 e2v_config = {
                     "e2v_type": getattr(self.args, "e2v_type", "dual"),
-                    "elements": getattr(self.args, "elements", []),
-                    "processors": getattr(self.args, "processors", {}),
+                    "elements": config_elements or getattr(self.args, "elements", []),  # Try config first
+                    "processors": config.get("processors", {}) or getattr(self.args, "processors", {}),
                     "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
                     "frame_conditioning_index": getattr(self.args, "frame_conditioning_index", 0),
                     "frame_conditioning_concatenate_mask": getattr(self.args, "frame_conditioning_concatenate_mask", True),
@@ -627,11 +636,20 @@ class E2VTrainer:
                 
                 # Get or create E2V specific configuration
                 e2v_config = config.get("e2v_config", {})
+                
+                # Check if elements exist directly in the config (where they're supposed to be in validation.json)
+                config_elements = config.get("elements", [])
+                
+                # If e2v_config exists but has no elements, use elements from config
+                if e2v_config and not e2v_config.get("elements") and config_elements:
+                    e2v_config["elements"] = config_elements
+                
+                # If still no e2v_config, create with prioritizing config elements
                 if not e2v_config:
                     e2v_config = {
                         "e2v_type": getattr(self.args, "e2v_type", "dual"),
-                        "elements": getattr(self.args, "elements", []),
-                        "processors": getattr(self.args, "processors", {}),
+                        "elements": config_elements or getattr(self.args, "elements", []),  # Try config first
+                        "processors": config.get("processors", {}) or getattr(self.args, "processors", {}),
                         "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
                         "frame_conditioning_index": getattr(self.args, "frame_conditioning_index", 0),
                         "frame_conditioning_concatenate_mask": getattr(self.args, "frame_conditioning_concatenate_mask", True),
