@@ -405,6 +405,71 @@ Our implementation approach is carefully designed to align with the finetrainers
 - Minimize changes to core framework
 - Prioritize framework compatibility over cleverness
 
+### Environment and Version Management Strategy
+
+#### Development Workflow With Deployment Lag
+The finetrainers development workflow has an important characteristic to be aware of:
+
+1. **Code changes are made locally** in the development environment
+2. **Changes are pushed to the server** via git or other deployment mechanisms
+3. **Training runs on the server** using the deployed code version
+4. **Error logs are sent back** to the development environment for debugging
+5. **Fixes are made locally** and the cycle repeats
+
+This creates a natural time lag between local fixes and server execution, which means:
+- You may see errors that you've already fixed locally
+- Local file content may not match the code generating errors
+- Multiple iterations may be needed to fully resolve issues
+- Careful documentation is essential for tracking what's been fixed and what's pending deployment
+
+#### Documentation-First Principles
+
+**Using Multiple Information Sources**  
+When investigating issues and understanding project context, leverage multiple sources:
+
+1. **tech_debt.txt**: The primary persistent communication channel between:
+   - Different versions of Claude (current and future)
+   - Human developers and Claude
+   - Multiple deployment environments
+
+   This file is collaboratively maintained by both Claude and human developers, creating a shared record of known issues, fixes, and ongoing challenges. Unlike code comments that might get overwritten, this centralized document provides continuity across development cycles.
+
+2. **Git History**: Use git commands to gain high-level context about recent changes:
+   - `git log`: Review recent commit messages to understand what changes have been made
+   - `git log --grep="fix:"`: Search for specific types of changes (e.g., fixes)
+   - `git show <commit>`: Examine specific changes in detail
+   - `git diff`: Compare current files with previous versions
+
+   Git history provides valuable context about intentional changes, reasons behind modifications, and potential sources of issues. Always check commit messages when debugging to see if issues have been addressed but not yet properly propagated.
+
+#### Key Documentation Principles
+- **DOCUMENTATION-FIRST APPROACH**: When encountering discrepancies between local and deployment environments, document issues in tech_debt.txt before making code changes.
+- **USE TECH_DEBT.TXT AS COMMUNICATION CHANNEL**: Use tech_debt.txt to communicate known issues and their fixes between all stakeholders and environments.
+- **CHECK FOR EXISTING DOCUMENTATION**: Always check if an issue is already documented before adding a new entry.
+- **DOCUMENT FIXES CLEARLY**: When fixing issues, mark them as [FIXED] in tech_debt.txt and explain the solution clearly.
+- **EXPLAIN ISSUES WITH CONTEXT**: Include details about parameter naming, framework patterns, and rationale for changes.
+- **PRIORITIZE ENVIRONMENT ALIGNMENT**: Ensure changes are propagated across all environments, guided by documentation.
+- **VERSION DISCREPANCY AWARENESS**: When errors don't match local code, assume version differences and document them accordingly.
+- **MAINTAIN CONTINUITY**: Each version of Claude should read and respect previous entries, building on existing knowledge rather than starting fresh.
+
+#### Example: Handling Parameter Name Discrepancy
+
+When encountering the error `'BaseArgs' object has no attribute 'max_train_steps'` despite having already changed this in the local files, follow this thought process:
+
+1. **Problem Recognition**: Identify the discrepancy between the error message (`max_train_steps`) and what appears in your local file (`train_steps`), which signals a version difference between environments.
+
+2. **Documentation First**: Instead of immediately trying to fix code that might not match what's in production, check or update documentation to help users understand the issue.
+
+3. **Tech Debt As Communication**: Use tech_debt.txt as a communication channel between environments to document issues that need addressing.
+
+4. **Existing Documentation Check**: First check if tech_debt.txt exists and what issues are already documented.
+
+5. **Update With Context**: If the issue is already documented (e.g., marked as [FIXED]), recognize that the fix hasn't properly propagated to all environments.
+
+6. **Solution Instead of New Issue**: If the issue is already documented, focus on ensuring the fix is propagated rather than adding redundant documentation.
+
+This approach prioritizes documentation and communication as critical components of multi-environment development.
+
 ## A2 Inference Code References
 
 The working A2 inference code provides valuable implementation details:
