@@ -1,17 +1,23 @@
-There's only one remaining misalignment to address to fully match the framework patterns:
+The following issues need to be addressed to fully match the framework patterns:
 
-  Missing Validation Sample Generation: The _generate_samples method in E2VTrainer is implemented as a placeholder but doesn't actually
-  provide the functionality to generate validation samples during training. This is unlike the ControlTrainer which has a fully implemented
+1. Parameter Naming Consistency:
+   - [FIXED] The E2VTrainer was using `max_train_steps` instead of `train_steps` which is the standard parameter name used in other trainers. 
+     This caused errors because `max_train_steps` does not exist in BaseArgs.
+   - The fix was to replace all instances of `max_train_steps` with `train_steps` in the E2VTrainer class.
+
+2. Missing Validation Sample Generation: 
+   The _generate_samples method in E2VTrainer is implemented as a placeholder but doesn't actually
+   provide the functionality to generate validation samples during training. This is unlike the ControlTrainer which has a fully implemented
    validation sample generation workflow.
 
-  To fully align with the framework, the E2V trainer should implement this method to generate sample videos using the elements-to-video
-  approach during validation. This would provide valuable visual feedback during training.
+   To fully align with the framework, the E2V trainer should implement this method to generate sample videos using the elements-to-video
+   approach during validation. This would provide valuable visual feedback during training.
 
-  The placeholder method currently just passes, but it should be implemented to:
-  1. Take a validation batch
-  2. Extract the element references
-  3. Generate a video using the current model state
-  4. Save the generated video as a validation artifact
+   The placeholder method currently just passes, but it should be implemented to:
+   1. Take a validation batch
+   2. Extract the element references
+   3. Generate a video using the current model state
+   4. Save the generated video as a validation artifact
 
-  This matches how the ControlTrainer handles validation sample generation, providing consistent user experience across trainer types. I
-  recommend implementing this feature to complete the alignment with the framework patterns.
+   This matches how the ControlTrainer handles validation sample generation, providing consistent user experience across trainer types. I
+   recommend implementing this feature to complete the alignment with the framework patterns.

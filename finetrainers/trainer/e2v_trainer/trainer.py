@@ -504,7 +504,7 @@ class E2VTrainer:
             name=self.args.lr_scheduler,
             optimizer=self.optimizer,
             num_warmup_steps=self.args.lr_warmup_steps,
-            num_training_steps=self.args.max_train_steps,
+            num_training_steps=self.args.train_steps,
         )
         
         # 4. Prepare optimizer and scheduler for distributed training
@@ -759,7 +759,7 @@ class E2VTrainer:
         
         # Number of update steps
         num_update_steps_per_epoch = math.ceil(len(self.dataloader) / self.state.gradient_accumulation_steps)
-        num_train_epochs = math.ceil(self.args.max_train_steps / num_update_steps_per_epoch)
+        num_train_epochs = math.ceil(self.args.train_steps / num_update_steps_per_epoch)
         
         total_batch_size = self.args.train_batch_size * parallel_backend.world_size * self.state.gradient_accumulation_steps
         logger.info(f"  Num examples = {len(self.dataloader)}")
@@ -767,17 +767,17 @@ class E2VTrainer:
         logger.info(f"  Batch size per device = {self.args.train_batch_size}")
         logger.info(f"  Total train batch size (w. parallel & accumulation) = {total_batch_size}")
         logger.info(f"  Gradient accumulation steps = {self.state.gradient_accumulation_steps}")
-        logger.info(f"  Total optimization steps = {self.args.max_train_steps}")
+        logger.info(f"  Total optimization steps = {self.args.train_steps}")
         
         # Set initial values
         self.state.train_state.epoch = 0
         self.state.train_state.global_step = 0
-        self.state.train_state.max_steps = self.args.max_train_steps
+        self.state.train_state.max_steps = self.args.train_steps
         
         # Resume from checkpoint is handled in the _prepare_checkpointing method
         
         progress_bar = tqdm(
-            range(train_state.global_step, self.args.max_train_steps),
+            range(train_state.global_step, self.args.train_steps),
             disable=not self.state.parallel_backend.is_local_main_process,
             desc="Training steps",
         )
@@ -833,7 +833,7 @@ class E2VTrainer:
                             self.checkpointer.save()
                 
                 # Check if we've reached max steps
-                if train_state.global_step >= self.args.max_train_steps:
+                if train_state.global_step >= self.args.train_steps:
                     break
             
             train_state.epoch = epoch + 1
