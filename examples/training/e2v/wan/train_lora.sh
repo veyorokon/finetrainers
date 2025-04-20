@@ -1,6 +1,8 @@
 #!/bin/bash
 #tmux new-session -d -s e2v_train 'bash /workspace/finetrainers/examples/training/e2v/wan/train_lora.sh > /workspace/e2v_log.txt 2>&1' 
 
+#git fetch && git stash && git pull && tmux new-session -d -s e2v_train 'bash /workspace/finetrainers/examples/training/e2v/wan/train_lora.sh > /workspace/e2v_log.txt 2>&1'  
+
 set -e -x
 
 # Global project path - set this to your project root

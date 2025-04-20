@@ -378,9 +378,10 @@ Our implementation approach is carefully designed to align with the finetrainers
 - Maintain compatibility with existing inference code in A2/ directory while using Wan's core components
 
 ### Code Quality Standards
+- **FRAMEWORK ADHERENCE IS PARAMOUNT**: Never invent custom solutions when framework patterns exist. Identify how existing trainers solve similar problems and exactly replicate that pattern. When in doubt, search for the pattern in control_trainer and sft_trainer and copy it precisely. This is THE MOST IMPORTANT principle.
+- **Follow Don't Invent**: The goal is to integrate with the framework, not improve it. Follow established patterns exactly, even if you think you have a "better" solution.
 - **Minimal Code**: Use surgical precision - 10 lines is better than 100 
 - **No Implicit Defaults**: Fail explicitly rather than using hidden default values
-- **Framework Adherence**: Do not break existing framework patterns or functionality
 - **Clean Separation**: Keep concerns separated and modules focused
 - **No Code Pollution**: Avoid unnecessary verbosity and complexity
 - **Error Handling**: Fail fast and explicitly when inputs are invalid
@@ -395,10 +396,14 @@ Our implementation approach is carefully designed to align with the finetrainers
   Where `type` is one of: fix, feat, refactor, docs, test, chore, style
 
 ### Implementation Approach
+- **ALWAYS COPY PATTERNS FROM EXISTING TRAINERS**: When implementing any functionality, first find how the control_trainer or sft_trainer does it, then copy that exact pattern. This is non-negotiable.
+- **NEVER INVENT NEW PATTERNS**: Even if you think you know a "better way", the standard is to match existing code patterns precisely. Consistency trumps creativity.
+- **SEARCH BEFORE CODING**: Before writing any implementation, use search tools to locate the corresponding pattern in existing trainers.
+- **MATCH METHOD SIGNATURES AND STRUCTURES**: Keep method signatures, return types, and internal structures identical to their counterparts in existing trainers wherever possible.
 - Follow existing patterns from SFT and Control trainers
 - Reuse code where appropriate, extend where necessary
 - Minimize changes to core framework
-- Prioritize readability and maintainability over cleverness
+- Prioritize framework compatibility over cleverness
 
 ## A2 Inference Code References
 
