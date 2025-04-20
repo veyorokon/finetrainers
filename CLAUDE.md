@@ -386,7 +386,7 @@ Our implementation approach is carefully designed to align with the finetrainers
 - **No Code Pollution**: Avoid unnecessary verbosity and complexity
 - **Error Handling**: Fail fast and explicitly when inputs are invalid
 - **Testing**: Always run lint and typecheck commands to ensure code quality
-- **Commit Messages**: For all code changes, provide commit messages in the conventional format:
+- **Commit Messages**: For all code changes, provide commit messages in the conventional format when youre done making changes - just provide the message do not run the command:
   ```
   type: concise description of the change
 
@@ -405,36 +405,7 @@ Our implementation approach is carefully designed to align with the finetrainers
 - Minimize changes to core framework
 - Prioritize framework compatibility over cleverness
 
-### Environment and Version Management Strategy
-
-#### Development Workflow With Deployment Lag
-The finetrainers development workflow has an important characteristic to be aware of:
-
-1. **Code changes are made locally** in the development environment
-2. **Changes are pushed to the server** via git or other deployment mechanisms
-3. **Training runs on the server** using the deployed code version
-4. **Error logs are sent back** to the development environment for debugging
-5. **Fixes are made locally** and the cycle repeats
-
-This creates a natural time lag between local fixes and server execution, which means:
-- You may see errors that you've already fixed locally
-- Local file content may not match the code generating errors
-- Multiple iterations may be needed to fully resolve issues
-- Careful documentation is essential for tracking what's been fixed and what's pending deployment
-
 #### Documentation-First Principles
-
-**Using Multiple Information Sources**  
-When investigating issues and understanding project context, leverage multiple sources:
-
-1. **tech_debt.txt**: A persistent communication channel for tracking longer-term structural issues:
-   - **Framework Alignment Gaps**: Areas where the E2V trainer deviates from established framework patterns
-   - **Architectural Improvements**: Structural changes needed beyond immediate bug fixes
-   - **Missing Features**: Functionality that exists in other trainers but is missing in E2V trainer
-   - **Potential Future Issues**: Design choices that could cause problems as the codebase evolves
-   - **Refactoring Opportunities**: Code that works but needs restructuring for maintainability
-
-   The file is NOT for tracking individual debugging tasks or immediate fixes - it captures higher-level technical debt that spans multiple sessions and requires thoughtful planning to address. This document is collaboratively maintained by both Claude and human developers, creating continuity across development cycles.
 
 2. **Git History**: Use git commands to gain high-level context about recent changes:
    - `git log`: Review recent commit messages to understand what changes have been made
@@ -445,34 +416,6 @@ When investigating issues and understanding project context, leverage multiple s
    Git history provides valuable context about intentional changes, reasons behind modifications, and potential sources of issues. Always check commit messages when debugging to see if issues have been addressed but not yet properly propagated.
 
 #### Key Documentation Principles
-- **DOCUMENTATION-FIRST APPROACH**: When encountering discrepancies between local and deployment environments, document issues in tech_debt.txt before making code changes.
-- **FOCUS ON LONG-TERM ISSUES**: Use tech_debt.txt only for structural, architectural, or alignment issues that require longer-term attention, not for immediate debugging fixes.
-- **DISTINGUISH FROM DEBUGGING**: Be clear about the difference between an immediate bug fix (which belongs in code) and technical debt (which belongs in tech_debt.txt).
-- **BE SPECIFIC ABOUT FRAMEWORK ALIGNMENT**: When documenting technical debt, reference specific patterns from the control_trainer and sft_trainer that should be adopted.
-- **CHECK FOR EXISTING DOCUMENTATION**: Always check if an issue is already documented before adding a new entry.
-- **DOCUMENT PROGRESS CLEARLY**: When addressing technical debt, mark entries as [FIXED] and explain the solution thoroughly to guide future implementations.
-- **EXPLAIN ISSUES WITH CONTEXT**: Include details about parameter naming, framework patterns, and rationale for changes.
-- **PRIORITIZE ENVIRONMENT ALIGNMENT**: Ensure changes are propagated across all environments, guided by documentation.
-- **VERSION DISCREPANCY AWARENESS**: When errors don't match local code, assume version differences and document them accordingly.
-- **MAINTAIN CONTINUITY**: Each version of Claude should read and respect previous entries, building on existing knowledge rather than starting fresh.
-
-#### Example: Handling Parameter Name Discrepancy
-
-When encountering the error `'BaseArgs' object has no attribute 'max_train_steps'` despite having already changed this in the local files, follow this thought process:
-
-1. **Problem Recognition**: Identify the discrepancy between the error message (`max_train_steps`) and what appears in your local file (`train_steps`), which signals a version difference between environments.
-
-2. **Documentation First**: Instead of immediately trying to fix code that might not match what's in production, check or update documentation to help users understand the issue.
-
-3. **Tech Debt As Communication**: Use tech_debt.txt as a communication channel between environments to document issues that need addressing.
-
-4. **Existing Documentation Check**: First check if tech_debt.txt exists and what issues are already documented.
-
-5. **Update With Context**: If the issue is already documented (e.g., marked as [FIXED]), recognize that the fix hasn't properly propagated to all environments.
-
-6. **Solution Instead of New Issue**: If the issue is already documented, focus on ensuring the fix is propagated rather than adding redundant documentation.
-
-This approach prioritizes documentation and communication as critical components of multi-environment development.
 
 ## A2 Inference Code References
 

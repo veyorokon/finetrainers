@@ -330,14 +330,57 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             logger.warning("No data_root specified in configuration")
             return {}
         
-        # With VideoCaptionFilePairDataset, the video path is directly available
         import os
         
-        # Extract the base identifier from the video path
-        video_path = data["video"]
-        base_id = os.path.splitext(os.path.basename(video_path))[0]
-        logger.info(f"Using base ID: {base_id} from video path: {video_path}")
+        # Log what we got from the dataset to help debug
+        logger.info(f"Dataset item keys: {list(data.keys())}")
         
+        # Method 1: Try to extract base ID from caption
+        base_id = None
+        
+        if "caption" in data and isinstance(data["caption"], str):
+            caption = data["caption"]
+            # Check if the caption looks like a filename or contains an identifier
+            if os.path.splitext(caption)[1] == ".txt":
+                # It might be a caption file path
+                caption_path = caption
+                base_id = os.path.splitext(os.path.basename(caption_path))[0]
+                logger.info(f"Found base ID from caption file: {base_id}")
+            elif caption.strip().startswith("ID:") or caption.strip().startswith("id:"):
+                # Some datasets include ID in caption
+                base_id = caption.strip().split(":", 1)[1].strip().split()[0]
+                logger.info(f"Found base ID from caption ID prefix: {base_id}")
+        
+        # Method 2: Try to extract from video_path if available
+        if base_id is None and "video_path" in data:
+            video_path = data["video_path"]
+            if isinstance(video_path, str):
+                base_id = os.path.splitext(os.path.basename(video_path))[0]
+                logger.info(f"Found base ID from video_path: {base_id}")
+        
+        # Method 3: If video is a tensor, try to derive an ID from metadata or index
+        if base_id is None and "video" in data:
+            if hasattr(data["video"], "path"):
+                # Some video objects have a path attribute
+                video_path = data["video"].path
+                base_id = os.path.splitext(os.path.basename(video_path))[0]
+                logger.info(f"Found base ID from video.path: {base_id}")
+            elif hasattr(data["video"], "video_path"):
+                # Some video objects track their source path
+                video_path = data["video"].video_path
+                base_id = os.path.splitext(os.path.basename(video_path))[0]
+                logger.info(f"Found base ID from video.video_path: {base_id}")
+            else:
+                # Fallback: log the video shape but can't extract ID
+                logger.info(f"Video is a tensor with shape: {data['video'].shape}")
+                logger.warning("Could not determine base ID from video tensor")
+                return {}
+        
+        # If we still couldn't find a base ID, we can't locate element files
+        if base_id is None:
+            logger.warning("Could not determine base identifier from dataset item")
+            return {}
+            
         # Search for matching element files
         for element_name, element_config in self.elements.items():
             # Try each suffix until we find a match
