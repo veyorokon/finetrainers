@@ -288,8 +288,8 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 
                 # Skip items where required elements are missing
                 if not element_files:
-                    required_elements = [elem.name for elem in self.config.get("elements", []) 
-                                        if elem.required]
+                    required_elements = [elem["name"] for elem in self.config.get("elements", []) 
+                                        if elem.get("required", False)]
                     if required_elements:
                         logger.warning(f"Skipping item because required elements not found: {required_elements}")
                         continue
@@ -321,10 +321,10 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         return self.dataset.state_dict()
     
     def _find_element_files(self, data):
-        """Find files for each element based on suffixes."""
+        """Find element files based on clear ID from video filename."""
         element_files = {}
         
-        # Get the dataset root directory from config
+        # Get data root from config
         data_root = self.config.get("data_root", "")
         if not data_root:
             logger.warning("No data_root specified in configuration")
@@ -332,59 +332,26 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         
         import os
         
-        # Log what we got from the dataset to help debug
+        # Log what dataset provides
         logger.info(f"Dataset item keys: {list(data.keys())}")
         
-        # Method 1: Try to extract base ID from caption
-        base_id = None
-        
-        if "caption" in data and isinstance(data["caption"], str):
-            caption = data["caption"]
-            # Check if the caption looks like a filename or contains an identifier
-            if os.path.splitext(caption)[1] == ".txt":
-                # It might be a caption file path
-                caption_path = caption
-                base_id = os.path.splitext(os.path.basename(caption_path))[0]
-                logger.info(f"Found base ID from caption file: {base_id}")
-            elif caption.strip().startswith("ID:") or caption.strip().startswith("id:"):
-                # Some datasets include ID in caption
-                base_id = caption.strip().split(":", 1)[1].strip().split()[0]
-                logger.info(f"Found base ID from caption ID prefix: {base_id}")
-        
-        # Method 2: Try to extract from video_path if available
-        if base_id is None and "video_path" in data:
+        # Get the video_path from dataset
+        video_path = None
+        if "video_path" in data:
             video_path = data["video_path"]
-            if isinstance(video_path, str):
-                base_id = os.path.splitext(os.path.basename(video_path))[0]
-                logger.info(f"Found base ID from video_path: {base_id}")
         
-        # Method 3: If video is a tensor, try to derive an ID from metadata or index
-        if base_id is None and "video" in data:
-            if hasattr(data["video"], "path"):
-                # Some video objects have a path attribute
-                video_path = data["video"].path
-                base_id = os.path.splitext(os.path.basename(video_path))[0]
-                logger.info(f"Found base ID from video.path: {base_id}")
-            elif hasattr(data["video"], "video_path"):
-                # Some video objects track their source path
-                video_path = data["video"].video_path
-                base_id = os.path.splitext(os.path.basename(video_path))[0]
-                logger.info(f"Found base ID from video.video_path: {base_id}")
-            else:
-                # Fallback: log the video shape but can't extract ID
-                logger.info(f"Video is a tensor with shape: {data['video'].shape}")
-                logger.warning("Could not determine base ID from video tensor")
-                return {}
-        
-        # If we still couldn't find a base ID, we can't locate element files
-        if base_id is None:
-            logger.warning("Could not determine base identifier from dataset item")
+        # If we don't have a path, we can't find reference images
+        if not video_path:
+            logger.warning("No video_path in dataset item, can't find reference images")
             return {}
-            
-        # Search for matching element files
+        
+        # Extract the exact base identifier from filename
+        base_id = os.path.splitext(os.path.basename(video_path))[0]
+        logger.info(f"Using exact base ID: {base_id} from video filename")
+        
+        # Find matching element files - no guessing, direct lookups
         for element_name, element_config in self.elements.items():
-            # Try each suffix until we find a match
-            for suffix in element_config.suffixes:
+            for suffix in element_config["suffixes"]:
                 element_path = os.path.join(data_root, f"{base_id}{suffix}")
                 if os.path.exists(element_path):
                     logger.info(f"Found {element_name} file: {element_path}")

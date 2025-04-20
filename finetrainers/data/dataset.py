@@ -829,7 +829,7 @@ def initialize_dataset(
     *,
     _caption_options: Optional[Dict[str, Any]] = None,
 ) -> torch.utils.data.IterableDataset:
-    assert dataset_type in ["image", "video", "video_file_pair"]
+    assert dataset_type in ["image", "video"]
 
     try:
         does_repo_exist_on_hub = repo_exists(dataset_name_or_root, repo_type="dataset")
@@ -886,8 +886,6 @@ def _initialize_local_dataset(
     if _has_data_caption_file_pairs(root, remote=False):
         if dataset_type == "image":
             dataset = ImageCaptionFilePairDataset(root.as_posix(), infinite=infinite)
-        elif dataset_type == "video_file_pair":
-            dataset = VideoCaptionFilePairDataset(root.as_posix(), infinite=infinite)
         else:
             dataset = VideoCaptionFilePairDataset(root.as_posix(), infinite=infinite)
     elif _has_data_file_caption_file_lists(root, remote=False):
@@ -925,8 +923,6 @@ def _initialize_hub_dataset(
             dataset_root = snapshot_download(dataset_name, repo_type="dataset")
             if dataset_type == "image":
                 dataset = ImageFolderDataset(dataset_root, infinite=infinite)
-            elif dataset_type == "video_file_pair":
-                dataset = VideoFolderDataset(dataset_root, infinite=infinite)
             else:
                 dataset = VideoFolderDataset(dataset_root, infinite=infinite)
             return dataset
@@ -943,8 +939,6 @@ def _initialize_data_caption_file_dataset_from_hub(
     dataset_root = snapshot_download(dataset_name, repo_type="dataset")
     if dataset_type == "image":
         return ImageCaptionFilePairDataset(dataset_root, infinite=infinite)
-    elif dataset_type == "video_file_pair":
-        return VideoCaptionFilePairDataset(dataset_root, infinite=infinite)
     else:
         return VideoCaptionFilePairDataset(dataset_root, infinite=infinite)
 
@@ -956,8 +950,6 @@ def _initialize_data_file_caption_file_dataset_from_hub(
     dataset_root = snapshot_download(dataset_name, repo_type="dataset")
     if dataset_type == "image":
         return ImageFileCaptionFileListDataset(dataset_root, infinite=infinite)
-    elif dataset_type == "video_file_pair":
-        return VideoFileCaptionFileListDataset(dataset_root, infinite=infinite)
     else:
         return VideoFileCaptionFileListDataset(dataset_root, infinite=infinite)
 
@@ -969,9 +961,6 @@ def _initialize_webdataset(
     _caption_options = _caption_options or {}
     if dataset_type == "image":
         return ImageWebDataset(dataset_name, infinite=infinite, **_caption_options)
-    elif dataset_type == "video_file_pair":
-        # Use the VideoWebDataset for video_file_pair as well
-        return VideoWebDataset(dataset_name, infinite=infinite, **_caption_options)
     else:
         return VideoWebDataset(dataset_name, infinite=infinite, **_caption_options)
 
