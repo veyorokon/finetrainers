@@ -582,17 +582,34 @@ class E2VTrainer:
         # Combine datasets with framework's approach
         dataset = data.combine_datasets(datasets, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True)
         
-        # Wrap with E2V dataset
+        # Get E2V configuration from dataset configs
+        e2v_config = {}
+        
+        # We've gone through all configs already, so we need to re-read the first config
+        # to get the elements and processors information
+        with open(self.args.dataset_config, "r") as file:
+            first_config = json.load(file)["datasets"][0]
+            
+        # Use elements and processors from the config
+        if "elements" in first_config:
+            e2v_config["elements"] = first_config["elements"]
+        if "processors" in first_config:
+            e2v_config["processors"] = first_config["processors"]
+            
+        # Add data_root which is essential for finding element files
+        if "data_root" in first_config:
+            e2v_config["data_root"] = first_config["data_root"]
+            
+        # Add E2V-specific parameters from args 
+        e2v_config["e2v_type"] = getattr(self.args, "e2v_type", "dual")
+        e2v_config["frame_conditioning_type"] = getattr(self.args, "frame_conditioning_type", "full")
+        e2v_config["frame_conditioning_index"] = getattr(self.args, "frame_conditioning_index", 0)
+        e2v_config["frame_conditioning_concatenate_mask"] = getattr(self.args, "frame_conditioning_concatenate_mask", True)
+        
+        # Wrap with E2V dataset, following same pattern as control_trainer
         dataset = IterableE2VDataset(
             dataset, 
-            {
-                "e2v_type": getattr(self.args, "e2v_type", "dual"),
-                "elements": getattr(self.args, "elements", []),
-                "processors": getattr(self.args, "processors", {}),
-                "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
-                "frame_conditioning_index": getattr(self.args, "frame_conditioning_index", 0),
-                "frame_conditioning_concatenate_mask": getattr(self.args, "frame_conditioning_concatenate_mask", True),
-            },
+            e2v_config,
             device=self.state.parallel_backend.device,
             clip_processor=getattr(self, "image_encoder", None),
             vae=self.vae
@@ -681,17 +698,33 @@ class E2VTrainer:
             # Combine validation datasets
             validation_dataset = data.combine_datasets(validation_datasets, buffer_size=1, shuffle=False)
             
+            # Get E2V validation configuration from validation dataset configs
+            validation_e2v_config = {}
+            
+            # Read the first validation config to get elements and processors
+            with open(self.args.validation_dataset_file, "r") as file:
+                first_val_config = json.load(file)["datasets"][0]
+                
+            # Use elements and processors from the config
+            if "elements" in first_val_config:
+                validation_e2v_config["elements"] = first_val_config["elements"]
+            if "processors" in first_val_config:
+                validation_e2v_config["processors"] = first_val_config["processors"]
+                
+            # Add data_root which is essential for finding element files
+            if "data_root" in first_val_config:
+                validation_e2v_config["data_root"] = first_val_config["data_root"]
+                
+            # Add E2V-specific parameters from args
+            validation_e2v_config["e2v_type"] = getattr(self.args, "e2v_type", "dual")
+            validation_e2v_config["frame_conditioning_type"] = getattr(self.args, "frame_conditioning_type", "full")
+            validation_e2v_config["frame_conditioning_index"] = getattr(self.args, "frame_conditioning_index", 0)
+            validation_e2v_config["frame_conditioning_concatenate_mask"] = getattr(self.args, "frame_conditioning_concatenate_mask", True)
+            
             # Wrap with E2V validation dataset
             validation_dataset = ValidationE2VDataset(
                 validation_dataset,
-                {
-                    "e2v_type": getattr(self.args, "e2v_type", "dual"),
-                    "elements": getattr(self.args, "elements", []),
-                    "processors": getattr(self.args, "processors", {}),
-                    "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
-                    "frame_conditioning_index": getattr(self.args, "frame_conditioning_index", 0),
-                    "frame_conditioning_concatenate_mask": getattr(self.args, "frame_conditioning_concatenate_mask", True),
-                },
+                validation_e2v_config,
                 device=self.state.parallel_backend.device,
                 clip_processor=getattr(self, "image_encoder", None),
                 vae=self.vae

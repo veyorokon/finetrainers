@@ -265,10 +265,12 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                     clip_processor=clip_processor
                 )
         
-        # Create element lookup
-        self.elements = {elem.name: elem for elem in config.get("elements", [])}
-        
-        logger.info("Initialized IterableE2VDataset")
+        # Create element lookup - assume elements are dictionaries
+        self.elements = {}
+        for elem in config.get("elements", []):
+            self.elements[elem["name"]] = elem
+            
+        logger.info(f"Initialized IterableE2VDataset with {len(self.elements)} elements")
     
     def __iter__(self):
         logger.info("Starting IterableE2VDataset")
@@ -328,35 +330,53 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             logger.warning("No data_root specified in configuration")
             return {}
         
-        # Generate a stable identifier for finding element files
-        # In production, you would extract this from your dataset 
-        # structure in a predictable way
-        identifier = None
+        # Log what we got from the dataset to help diagnose issues
+        logger.info(f"Dataset item keys: {list(data.keys())}")
+        for key in ["video", "video_path", "caption"]:
+            if key in data:
+                value_info = str(data[key])[:100] + "..." if len(str(data[key])) > 100 else str(data[key])
+                logger.info(f"Data[{key}]: {value_info}")
         
-        # Example: Try using caption as basis for identifier
-        if "caption" in data:
-            # Generate identifier from first few words of caption
-            caption = data["caption"]
-            words = caption.split()[:3]
-            identifier = "_".join(words).lower().replace(" ", "_")
-            logger.info(f"Using caption-based identifier: {identifier}")
+        # Simple approach: Try to get base ID from video key, which should be an object with a path
+        import os
+        base_id = None
         
-        # If we couldn't generate an identifier, we can't find element files
-        if not identifier:
-            logger.warning("Could not generate identifier to find element files")
+        if "video" in data and hasattr(data["video"], "path"):
+            video_path = data["video"].path
+            base_id = os.path.splitext(os.path.basename(video_path))[0]
+            logger.info(f"Found base ID from video.path: {base_id}")
+        elif "video_path" in data:
+            base_id = os.path.splitext(os.path.basename(data["video_path"]))[0]
+            logger.info(f"Found base ID from video_path: {base_id}")
+        
+        # If we don't have a base_id, we can't find element files
+        if not base_id:
+            logger.warning("Could not determine base filename from dataset item")
             return {}
         
         # Search for matching element files
         for element_name, element_config in self.elements.items():
             # Try each suffix until we find a match
             for suffix in element_config.suffixes:
-                potential_path = os.path.join(data_root, f"{identifier}{suffix}")
-                if os.path.exists(potential_path):
+                element_path = os.path.join(data_root, f"{base_id}{suffix}")
+                if os.path.exists(element_path):
+                    logger.info(f"Found {element_name} file: {element_path}")
                     element_files[element_name] = {
-                        "path": potential_path,
+                        "path": element_path,
                         "config": element_config
                     }
                     break
+        
+        # Log results
+        if element_files:
+            logger.info(f"Found {len(element_files)} element files for base ID: {base_id}")
+        else:
+            logger.warning(f"No element files found for base ID: {base_id}")
+            # Log a few sample paths we tried
+            for element_name, element_config in self.elements.items():
+                if element_config.suffixes:
+                    example_path = os.path.join(data_root, f"{base_id}{element_config.suffixes[0]}")
+                    logger.info(f"Tried to find {element_name} at: {example_path}")
         
         return element_files
     
@@ -401,7 +421,7 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             # Process through each pathway
             for processor_name, processor in self.processors.items():
                 # Skip if the configuration doesn't enable this processor for this element
-                if processor_name == "clip" and not element_config.clip:
+                if processor_name == "clip" and not element_config.get("clip", False):
                     continue
                 
                 # Process the element
