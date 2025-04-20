@@ -330,29 +330,13 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             logger.warning("No data_root specified in configuration")
             return {}
         
-        # Log what we got from the dataset to help diagnose issues
-        logger.info(f"Dataset item keys: {list(data.keys())}")
-        for key in ["video", "video_path", "caption"]:
-            if key in data:
-                value_info = str(data[key])[:100] + "..." if len(str(data[key])) > 100 else str(data[key])
-                logger.info(f"Data[{key}]: {value_info}")
-        
-        # Simple approach: Try to get base ID from video key, which should be an object with a path
+        # With VideoCaptionFilePairDataset, the video path is directly available
         import os
-        base_id = None
         
-        if "video" in data and hasattr(data["video"], "path"):
-            video_path = data["video"].path
-            base_id = os.path.splitext(os.path.basename(video_path))[0]
-            logger.info(f"Found base ID from video.path: {base_id}")
-        elif "video_path" in data:
-            base_id = os.path.splitext(os.path.basename(data["video_path"]))[0]
-            logger.info(f"Found base ID from video_path: {base_id}")
-        
-        # If we don't have a base_id, we can't find element files
-        if not base_id:
-            logger.warning("Could not determine base filename from dataset item")
-            return {}
+        # Extract the base identifier from the video path
+        video_path = data["video"]
+        base_id = os.path.splitext(os.path.basename(video_path))[0]
+        logger.info(f"Using base ID: {base_id} from video path: {video_path}")
         
         # Search for matching element files
         for element_name, element_config in self.elements.items():
