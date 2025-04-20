@@ -131,18 +131,10 @@ class E2VTrainer:
             # Step 5: Set up checkpointing
             self._prepare_checkpointing()
             
-            # Log memory usage before training
-            if self.state.parallel_backend.is_main_process:
-                utils.memory.log_memory_stats()
-                
             # Step 6: Run training loop
             logger.info("Starting E2V training")
             self._train()
             
-            # Log memory usage after training
-            if self.state.parallel_backend.is_main_process:
-                utils.memory.log_memory_stats()
-                
             # Log training time
             total_time = time.time() - start_time
             logger.info(f"E2V training completed in {total_time:.2f} seconds")
@@ -1070,9 +1062,8 @@ class E2VTrainer:
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
                 
-                # Log final memory stats
-                if self.state.parallel_backend.is_main_process:
-                    utils.memory.log_memory_stats()
+                # Clean up GPU memory
+                pass
         except Exception as e:
             logger.warning(f"Error cleaning GPU memory: {e}")
             
