@@ -274,6 +274,17 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         logger.info("Starting IterableE2VDataset")
         for data in iter(self.dataset):
             try:
+                # Enhanced logging for debugging
+                keys = list(data.keys())
+                logger.info(f"Dataset item keys: {keys}")
+                
+                # Log tensor shapes and other value types
+                for key in keys:
+                    if isinstance(data[key], torch.Tensor):
+                        logger.info(f"  {key}: Tensor shape {data[key].shape}")
+                    elif key in ['video_path', 'image_path', 'caption']:
+                        logger.info(f"  {key}: {data[key]}")
+                
                 # Find element files
                 element_files = self._find_element_files(data)
                 
@@ -289,6 +300,7 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 yield combined_data
             except Exception as e:
                 logger.error(f"Error processing dataset item: {e}")
+                logger.error(f"Data keys: {list(data.keys())}")
                 # Skip this item and continue
                 continue
     
@@ -304,16 +316,36 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         
         # Get the base identifier from the data
         base_path = None
+        
+        # Log attempt to find path
+        logger.info("Searching for base path in data")
+        
+        # First check for standard paths
         for key in ["video_path", "image_path"]:
             if key in data:
                 base_path = data[key]
+                logger.info(f"Found {key}: {base_path}")
                 break
         
+        # Try to extract from video tensor if there's no explicit path
+        if base_path is None and "video" in data:
+            logger.info("No path found, checking video tensor")
+            # This might be a VideoReader object with filename attribute
+            if hasattr(data["video"], "filename") and data["video"].filename:
+                base_path = data["video"].filename
+                logger.info(f"Found filename in video object: {base_path}")
+            # Try other common attributes
+            elif hasattr(data["video"], "file_path"):
+                base_path = data["video"].file_path
+                logger.info(f"Found file_path in video object: {base_path}")
+        
         if base_path is None:
+            logger.error("Could not find any path in data")
             raise ValueError("No video_path or image_path found in data")
         
         # Remove extension to get base identifier
         base_id = os.path.splitext(base_path)[0]
+        logger.info(f"Using base identifier: {base_id}")
         
         # Search for matching element files
         for element_name, element_config in self.elements.items():

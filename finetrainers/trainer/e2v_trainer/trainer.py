@@ -140,14 +140,14 @@ class E2VTrainer:
             logger.info(f"E2V training completed in {total_time:.2f} seconds")
             
             # Final validation on training completion if requested
-            if self.validation_dataloader is not None and self.args.run_validation_on_train_end:
+            if self.validation_dataloader is not None and hasattr(self.args, "run_validation_on_train_end") and self.args.run_validation_on_train_end:
                 logger.info("Running final validation")
                 self._validate()
                 
         except KeyboardInterrupt:
             logger.warning("Training interrupted by user")
             # Save checkpoint on interrupt if requested
-            if self.args.save_on_interrupt and hasattr(self, "checkpointer"):
+            if hasattr(self.args, "save_on_interrupt") and self.args.save_on_interrupt and hasattr(self, "checkpointer"):
                 logger.info("Saving checkpoint on interrupt")
                 if hasattr(self, "checkpointer") and self.checkpointer is not None:
                     self.checkpointer.save()
