@@ -108,6 +108,35 @@ class E2VTrainer:
         model_specification._trainer_init(
             frame_conditioning_type, frame_conditioning_index, frame_conditioning_concatenate_mask
         )
+        
+    def _extract_e2v_config(self, config_file: str) -> Dict[str, Any]:
+        """Extract E2V-specific configuration from a dataset config file.
+        
+        Args:
+            config_file: Path to the dataset config JSON file
+            
+        Returns:
+            Dictionary with E2V configuration parameters
+        """
+        # Initialize E2V config with defaults
+        e2v_config = {}
+        
+        # Read the first config from the file
+        with open(config_file, "r") as file:
+            first_config = json.load(file)["datasets"][0]
+        
+        # Copy essential configuration parts
+        for key in ["elements", "processors", "data_root", "reference_suffixes"]:
+            if key in first_config:
+                e2v_config[key] = first_config[key]
+        
+        # Add E2V-specific parameters from args
+        e2v_config["e2v_type"] = getattr(self.args, "e2v_type", "dual")
+        e2v_config["frame_conditioning_type"] = getattr(self.args, "frame_conditioning_type", "full")
+        e2v_config["frame_conditioning_index"] = getattr(self.args, "frame_conditioning_index", 0)
+        e2v_config["frame_conditioning_concatenate_mask"] = getattr(self.args, "frame_conditioning_concatenate_mask", True)
+        
+        return e2v_config
 
     def run(self) -> None:
         """Main entry point for training - follows framework pattern."""
@@ -582,29 +611,8 @@ class E2VTrainer:
         # Combine datasets with framework's approach
         dataset = data.combine_datasets(datasets, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True)
         
-        # Get E2V configuration from dataset configs
-        e2v_config = {}
-        
-        # We've gone through all configs already, so we need to re-read the first config
-        # to get the elements and processors information
-        with open(self.args.dataset_config, "r") as file:
-            first_config = json.load(file)["datasets"][0]
-            
-        # Use elements and processors from the config
-        if "elements" in first_config:
-            e2v_config["elements"] = first_config["elements"]
-        if "processors" in first_config:
-            e2v_config["processors"] = first_config["processors"]
-            
-        # Add data_root which is essential for finding element files
-        if "data_root" in first_config:
-            e2v_config["data_root"] = first_config["data_root"]
-            
-        # Add E2V-specific parameters from args 
-        e2v_config["e2v_type"] = getattr(self.args, "e2v_type", "dual")
-        e2v_config["frame_conditioning_type"] = getattr(self.args, "frame_conditioning_type", "full")
-        e2v_config["frame_conditioning_index"] = getattr(self.args, "frame_conditioning_index", 0)
-        e2v_config["frame_conditioning_concatenate_mask"] = getattr(self.args, "frame_conditioning_concatenate_mask", True)
+        # Get E2V configuration using our helper method
+        e2v_config = self._extract_e2v_config(self.args.dataset_config)
         
         # Wrap with E2V dataset, following same pattern as control_trainer
         dataset = IterableE2VDataset(
@@ -698,28 +706,8 @@ class E2VTrainer:
             # Combine validation datasets
             validation_dataset = data.combine_datasets(validation_datasets, buffer_size=1, shuffle=False)
             
-            # Get E2V validation configuration from validation dataset configs
-            validation_e2v_config = {}
-            
-            # Read the first validation config to get elements and processors
-            with open(self.args.validation_dataset_file, "r") as file:
-                first_val_config = json.load(file)["datasets"][0]
-                
-            # Use elements and processors from the config
-            if "elements" in first_val_config:
-                validation_e2v_config["elements"] = first_val_config["elements"]
-            if "processors" in first_val_config:
-                validation_e2v_config["processors"] = first_val_config["processors"]
-                
-            # Add data_root which is essential for finding element files
-            if "data_root" in first_val_config:
-                validation_e2v_config["data_root"] = first_val_config["data_root"]
-                
-            # Add E2V-specific parameters from args
-            validation_e2v_config["e2v_type"] = getattr(self.args, "e2v_type", "dual")
-            validation_e2v_config["frame_conditioning_type"] = getattr(self.args, "frame_conditioning_type", "full")
-            validation_e2v_config["frame_conditioning_index"] = getattr(self.args, "frame_conditioning_index", 0)
-            validation_e2v_config["frame_conditioning_concatenate_mask"] = getattr(self.args, "frame_conditioning_concatenate_mask", True)
+            # Get E2V validation configuration using our helper method
+            validation_e2v_config = self._extract_e2v_config(self.args.validation_dataset_file)
             
             # Wrap with E2V validation dataset
             validation_dataset = ValidationE2VDataset(

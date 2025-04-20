@@ -235,7 +235,21 @@ def apply_frame_conditioning_on_latents(
 
 
 class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.checkpoint.stateful.Stateful):
-    """Dataset wrapper for E2V training."""
+    """Dataset wrapper for E2V (Elements-to-Video) training.
+    
+    This wrapper processes video datasets along with reference images to create
+    the combined conditioning needed for E2V training. It follows the same pattern
+    as other framework wrappers like IterableControlDataset.
+    
+    The wrapper's main functions:
+    1. Identify and load reference images for each video
+    2. Process references through VAE and CLIP pathways
+    3. Create the specialized conditioning tensors
+    4. Feed properly formatted data to the E2V training pipeline
+    
+    It coordinates all the processing needed for both spatial conditioning (VAE)
+    and semantic conditioning (CLIP) used in the A2 approach.
+    """
     
     def __init__(self, dataset, config, device=None, clip_processor=None, vae=None):
         super().__init__()
@@ -288,10 +302,20 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 
                 # Skip items where required elements are missing
                 if not element_files:
-                    required_elements = [elem["name"] for elem in self.config.get("elements", []) 
-                                        if elem.get("required", False)]
+                    required_elements = []
+                    for elem in self.config.get("elements", []):
+                        if elem.get("required", False):
+                            required_elements.append({
+                                "name": elem["name"],
+                                "suffixes": elem.get("suffixes", [])
+                            })
+                    
                     if required_elements:
-                        logger.warning(f"Skipping item because required elements not found: {required_elements}")
+                        # More detailed warning message with expected file patterns
+                        element_details = [f"{e['name']} (patterns: {', '.join(e['suffixes'])})" for e in required_elements]
+                        logger.warning(f"Skipping dataset item - required elements not found: {element_details}")
+                        if "images" in data:
+                            logger.warning(f"Available reference images: {data['images']}")
                         continue
                 
                 # Load element images
@@ -321,7 +345,19 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         return self.dataset.state_dict()
     
     def _find_element_files(self, data):
-        """Process reference images from VideoReferenceImagesDataset."""
+        """Process reference images from VideoReferenceImagesDataset.
+        
+        This method:
+        1. Extracts reference image paths from the dataset item
+        2. Matches them to the configured element types based on file suffixes
+        3. Creates a mapping from element types to their corresponding image paths
+        
+        Args:
+            data: Dataset item containing video tensor and reference image paths
+            
+        Returns:
+            Dictionary mapping element types to their file info (path and config)
+        """
         element_files = {}
         
         # Log what dataset provides
@@ -351,7 +387,16 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                             break
             
             if not element_files:
-                logger.warning("No matching reference images found in dataset item")
+                logger.warning("No reference images matched the configured element patterns")
+                # Provide more detailed information about what was expected
+                element_patterns = []
+                for name, config in self.elements.items():
+                    if "suffixes" in config:
+                        element_patterns.append(f"{name}: {config['suffixes']}")
+                
+                logger.info(f"Expected element patterns: {element_patterns}")
+                if "images" in data:
+                    logger.info(f"Available reference images: {data['images']}")
         else:
             logger.warning("No reference images ('images' key) found in dataset item")
         
