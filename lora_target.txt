@@ -1,29 +1,152 @@
-1. Style/Content LoRA (SFT) vs Conditioning LoRA
+Key Modules for E2V LoRA Training
 
-  Style/Content LoRA (SFT Training):
-  --target_modules "blocks.*(to_q|to_k|to_v|to_out.0)"
-  - Targets primarily attention blocks (query, key, value, output projections)
-  - Focuses on modifying the content generation aspects
-  - Doesn't include feed-forward networks (FF.net)
+  Information Flow in A2 Architecture:
 
-  Conditioning LoRA (Control Training):
-  --target_modules "blocks.*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
-  - Targets both attention blocks AND feed-forward networks
-  - Includes FF.net layers which are critical for conditioning information
-  - More comprehensive targeting to handle additional conditioning information
+  1. Input Processing Path:
+    - Patch Embedding: Processes input video latents via patch_embedding (3D Conv layer)
+    - Condition Embedder: Handles time, text, and image embeddings via condition_embedder
+    - Dual Conditioning:
+        - VAE path: Spatial features concatenated along channel dimension
+      - CLIP path: Semantic features passed through cross-attention
+  2. Transformer Blocks:
+    - Self-Attention: to_q, to_k, to_v, and to_out.0 in each block
+    - Cross-Attention: Additional add_k_proj and add_v_proj for image conditioning
+    - Feed-Forward: ff.net.0.proj and ff.net.2 in each block
 
-  What This Means for Your Implementation
+  Target Modules Recommendations:
 
-  1. For New Conditioning Type:
-    - Use the more comprehensive pattern that includes FF.net layers:
-  --target_modules "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
-    - This pattern ensures the model can properly process and integrate the conditioning information across both attention mechanisms and
-  feed-forward pathways
-    - The FF.net layers are crucial for conditioning as they help transform the feature representations
-  2. For Style LoRA:
-    - Use the more focused pattern targeting just attention layers:
-  --target_modules "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0)"
-    - This is sufficient for style modifications as most style elements are captured in the attention mechanisms
+  For New Control Type (Canny, Segmentation, Frame conditioning):
 
-  The E2V implementation uses the conditioning-type pattern since it needs to process multiple reference images as conditioning inputs,
-  just like control training does with control signals.
+  "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)|patch_embedding"
+
+  Rationale:
+  - Targets the standard self-attention and FF networks from the control trainer pattern
+  - Adds patch_embedding since this layer handles the initial processing of conditioning
+  - This focuses on the spatial features pathway - how new control signals are embedded
+
+  For Aesthetic and Style Training:
+
+  "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)|(add_k_proj|add_v_
+  proj)"
+
+  Rationale:
+  - Includes the standard attention and FF layers
+  - Adds add_k_proj and add_v_proj which handle CLIP image embeddings
+  - This focuses on the semantic conditioning pathway which is crucial for style and aesthetics
+
+  Comprehensive Pattern (Both Control and Aesthetic):
+
+  "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)|(add_k_proj|add_v_
+  proj)|patch_embedding"
+
+  Rationale:
+  - Targets both the spatial and semantic pathways
+  - Provides comprehensive coverage of conditioning-related modules
+  - Allows for simultaneous control and style modification
+
+  High-Level Module Overview:
+
+  1. Spatial Conditioning Modules (Control Type):
+    - patch_embedding: Processes the input latents and conditions
+    - Transformer attention layers: Process the combined conditioning
+  2. Semantic Conditioning Modules (Aesthetic/Style):
+    - add_k_proj and add_v_proj: Process CLIP embeddings
+    - Cross-attention layers: Integrate semantic features into generation
+  3. Core Generation Modules (Both):
+    - Self-attention components: to_q, to_k, to_v, to_out.0
+    - Feed-forward components: ff.net.0.proj, ff.net.2
+
+  Following the recent fixes to the E2V trainer, these target module patterns should now work correctly when passed
+  from the command line to enable effective LoRA training for different objectives.
+
+
+To enable separate style and control fine-tuning that can be loaded independently, we need to create
+   distinct non-overlapping target module patterns. Here's how we can separate them:
+
+  Non-Overlapping Target Module Patterns
+
+  1. Control-Specific Modules (Spatial Pathway)
+
+  "patch_embedding"
+
+  Rationale:
+  - Specifically targets only the patch embedding layer which handles spatial conditioning
+  - This is where different control types (canny, segmentation, first/last frame) are processed
+  - Doesn't include any modules used for style/aesthetic conditioning
+  - Extremely targeted for clean separation
+
+  2. Style/Aesthetic-Specific Modules (Semantic Pathway)
+
+  "(add_k_proj|add_v_proj)"
+
+  Rationale:
+  - Targets only the projections that handle CLIP image embeddings
+  - These modules specifically process reference images for semantic understanding
+  - Doesn't overlap with modules used for control signal processing
+  - Focuses on the semantic pathway essential for style transfer
+
+  3. General Fine-Tuning Modules (Optional)
+
+  "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
+
+  Rationale:
+  - These affect both control and style processing
+  - Could be used for a generic "quality improvement" adapter
+  - Independent from the specialized adapters above
+
+  How to Use These Separately
+
+  1. Train separate LoRA adapters with each pattern:
+    - Control adapter: Using only "patch_embedding"
+    - Style adapter: Using only "(add_k_proj|add_v_proj)"
+  2. Implement adapter swapping during inference:
+    - Load the base model
+    - Load control adapter for specific control type
+    - Load style adapter for desired aesthetic
+    - Both can be activated simultaneously without interference
+  3. Benefits of this approach:
+    - Complete separation between control signal and style
+    - Mix and match different control types with different styles
+    - Scale the influence of each independently using LoRA alpha
+    - Much smaller adapters since they target fewer layers
+
+  This approach allows for modular fine-tuning where you can create a library of control adapters (canny, depth,
+  segmentation) and a separate library of style adapters (cinematic, anime, photorealistic), then combine them freely
+  at inference time without interference.
+
+
+ For your product-focused cinematic ads without humans, I'll recommend a targeted approach for the "base" LoRA to
+  achieve maximum impact with minimal training.
+
+  Recommended Target Modules for Product Ad Base LoRA
+
+  "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0)|patch_embedding|(add_k_proj|add_v_proj)"
+
+  Rationale:
+
+  1. Complete Conditioning Coverage
+    - patch_embedding: Critical for spatial conditioning of product objects
+    - add_k_proj|add_v_proj: Essential for semantic style transfer for cinematic look
+  2. Focused Attention Modules
+    - to_q|to_k|to_v|to_out.0: Attention mechanisms that handle relationship between product and environment
+    - Deliberately excludes feedforward networks (ff.net.0.proj|ff.net.2) to reduce parameter count
+  3. Product-Specific Advantages
+    - Products require precise detail rendering (textures, reflections, branding)
+    - Cinematic style (like Austen Paul) needs strong attention to lighting, camera movement, and focal effects
+    - Both spatial and semantic pathways are crucial for product videos that "feel" like advertisements
+  4. Why This Combination
+    - Products often have specific relationships with camera movements (rotating, zooming, tracking shots)
+    - Removing humans simplifies composition but requires stronger focus on product as subject
+    - Cinematic style requires both control of movement and understanding of aesthetic features
+
+  This approach gives you a solid foundation that:
+  1. Transforms the model's understanding of object-centric composition (without humans)
+  2. Enhances cinematic qualities (lighting, movement, timing)
+  3. Maintains reasonable parameter count for efficient training
+
+  You can then create targeted "flavor" LoRAs on top of this base for:
+  - "(add_k_proj|add_v_proj)" → Different mood variations (colorful vs. moody)
+  - "patch_embedding" → Different product categories or shooting styles
+
+  This layered approach will allow you to efficiently create a versatile system for generating product-focused
+  cinematic ads in various styles.
