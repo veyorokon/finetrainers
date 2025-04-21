@@ -148,7 +148,20 @@ class CLIPPathwayProcessor(ProcessorMixin):
                 # Use the same approach as our processor in e2v.py
                 # Direct call to CLIPVisionModel with output_hidden_states=True
                 with torch.no_grad():
-                    outputs = self.clip_processor(processed, output_hidden_states=True)
+                    try:
+                        # Detailed diagnostics
+                        logger.info(f"CLIP processor type details: {type(self.clip_processor).__module__}.{type(self.clip_processor).__name__}")
+                        logger.info(f"CLIP processor available methods: {[m for m in dir(self.clip_processor) if not m.startswith('_')]}")
+                        logger.info(f"Processed image shape: {processed.shape}")
+                        
+                        # Try standard call
+                        outputs = self.clip_processor(processed, output_hidden_states=True)
+                    except Exception as e:
+                        logger.error(f"Error calling CLIP processor with output_hidden_states=True: {e}")
+                        logger.error(f"Error type: {type(e).__name__}")
+                        logger.error(f"Traceback: {e.__traceback__.tb_frame.f_code.co_filename}:{e.__traceback__.tb_lineno}")
+                        # Re-raise the exception - don't hide errors
+                        raise
                     
                     # Extract features from the model's output
                     if hasattr(outputs, "last_hidden_state"):
@@ -611,7 +624,55 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                             logger.info(f"CLIP processor's clip_processor is: {type(processor.clip_processor)}")
                             logger.info(f"CLIP processor's clip_processor is None: {processor.clip_processor is None}")
                         try:
-                            result = processor(image=element_input, element_config=element_config)
+                            # Debug the parameters
+                            logger.info(f"Calling processor with image shape: {element_input.shape}")
+                            logger.info(f"Element config for CLIP: {element_config}")
+                            
+                            # Get processor details
+                            import inspect
+                            sig = inspect.signature(processor.__call__)
+                            logger.info(f"Processor signature: {sig}")
+                            
+                            # Add detailed logging for clip_processor
+                            logger.info(f"CLIP processor module: {type(processor.clip_processor).__module__}")
+                            logger.info(f"CLIP processor class: {type(processor.clip_processor).__name__}")
+                            # Log model architecture
+                            if hasattr(processor.clip_processor, "config"):
+                                logger.info(f"CLIP processor config: {processor.clip_processor.config}")
+                            
+                            # Check if we're passing the right kind of model
+                            if hasattr(processor.clip_processor, "vision_model"):
+                                logger.info("CLIP processor has vision_model attribute - might be a full CLIP model, not just vision")
+                                logger.info(f"Vision model: {type(processor.clip_processor.vision_model)}")
+                            else:
+                                logger.info("CLIP processor appears to be a pure vision model")
+                            
+                            # Call the processor with even more detailed error tracking
+                            logger.info("About to call processor with image and element_config")
+                            try:
+                                result = processor(image=element_input, element_config=element_config)
+                                logger.info("Processor call succeeded")
+                            except ValueError as ve:
+                                if "too many values to unpack" in str(ve):
+                                    logger.error(f"VALUE ERROR - too many values to unpack: {ve}")
+                                    # This is exactly our targeted error - inspect traceback deeply
+                                    import traceback, sys
+                                    tb = sys.exc_info()[2]
+                                    while tb.tb_next:
+                                        tb = tb.tb_next
+                                    frame = tb.tb_frame
+                                    logger.error(f"Error location: {frame.f_code.co_filename}:{tb.tb_lineno}")
+                                    logger.error(f"Function: {frame.f_code.co_name}")
+                                    logger.error(f"Locals: {frame.f_locals}")
+                                    raise
+                                else:
+                                    logger.error(f"VALUE ERROR: {ve}")
+                                    raise
+                            except Exception as ex:
+                                logger.error(f"OTHER ERROR: {ex}")
+                                raise
+                            
+                            # Log success
                             logger.info(f"CLIP processing succeeded for {element_name}, result keys: {list(result.keys())}")
                             if processor.output_names[0] in result:
                                 logger.info(f"CLIP result contains output_name: {processor.output_names[0]}")
@@ -622,6 +683,14 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                                         logger.info(f"CLIP latents shape: {clip_result['latents'].shape}")
                         except Exception as e:
                             logger.error(f"Error during CLIP processing: {e}")
+                            import traceback
+                            logger.error(f"Traceback: {traceback.format_exc()}")
+                            # Log more details about the processor
+                            logger.error(f"Processor type: {type(processor)}")
+                            logger.error(f"Processor attributes: {[a for a in dir(processor) if not a.startswith('_')]}")
+                            if hasattr(processor, 'clip_processor'):
+                                logger.error(f"clip_processor type: {type(processor.clip_processor)}")
+                                logger.error(f"clip_processor attributes: {[a for a in dir(processor.clip_processor) if not a.startswith('_')]}")
                             raise
                     else:
                         continue

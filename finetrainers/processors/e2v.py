@@ -300,40 +300,98 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
         Returns:
             Dictionary with processed CLIP features
         """
+        logger.info(f"CLIPPathwayProcessor.forward called with clip_processor type: {type(clip_processor).__name__ if clip_processor else None}")
+        logger.info(f"Element config: {element_config}")
+        logger.info(f"Image shape: {image.shape if image is not None else None}")
+        logger.info(f"Self clip_processor type: {type(self.clip_processor).__name__ if self.clip_processor else None}")
+        
         # 1. Get configuration with element-specific overrides
         config = dict(self.config)
+        
+        # Log the incoming config and all paths for debugging
+        logger.info(f"Initial config: {self.config}")
+        
+        # Check processors structure in element_config
+        if element_config:
+            logger.info(f"Element config has processors key: {element_config.get('processors', None) is not None}")
+            if "processors" in element_config:
+                logger.info(f"Processors has clip key: {element_config['processors'].get('clip', None) is not None}")
+                logger.info(f"Processors clip type: {type(element_config['processors'].get('clip', None))}")
+        
+        # Check both possible structures
         if element_config and "processors" in element_config and "clip" in element_config["processors"]:
+            logger.info("Found clip in element_config.processors")
             if isinstance(element_config["processors"]["clip"], dict):
+                logger.info(f"Updating config with clip dict: {element_config['processors']['clip']}")
                 config.update(element_config["processors"]["clip"])
             elif not element_config["processors"]["clip"]:
+                logger.info("CLIP pathway explicitly disabled for this element")
+                # CLIP pathway disabled for this element
+                return {self.output_names[0]: None}
+        elif element_config and "clip" in element_config:
+            logger.info("Found clip directly in element_config")
+            if isinstance(element_config["clip"], dict):
+                logger.info(f"Updating config with clip dict: {element_config['clip']}")
+                config.update(element_config["clip"])
+            elif not element_config["clip"]:
+                logger.info("CLIP pathway explicitly disabled for this element")
                 # CLIP pathway disabled for this element
                 return {self.output_names[0]: None}
         
+        logger.info(f"Final config after updates: {config}")
+                
         # Use the provided clip_processor or fall back to the stored one
         if clip_processor is None:
+            logger.info("Using self.clip_processor since no clip_processor was provided")
             clip_processor = self.clip_processor
+        else:
+            logger.info("Using provided clip_processor")
+            
+        if clip_processor is None:
+            logger.error("No CLIP processor available - cannot process CLIP pathway")
+            return {self.output_names[0]: None}
             
         # 2. Preprocess image
+        logger.info(f"Preprocessing image of shape: {image.shape if image is not None else None}")
         processed = self._preprocess_input(image, config)
+        logger.info(f"Processed image shape: {processed.shape}")
         
         # 3. Run CLIP encoder if available
         if clip_processor is not None:
-            features = self._encode_with_clip(processed, clip_processor)
-            
-            # 4. Return result with metadata using standardized field names
-            result = {
-                "latents": features,  # Use "latents" consistently across all processors
-                "position": config.get("position", 0),
-                "frames": features.shape[1] if len(features.shape) > 2 else 1  # Add frames field like VAE processor
-            }
-            return {self.output_names[0]: result}
+            try:
+                logger.info(f"Calling _encode_with_clip with processed shape: {processed.shape}")
+                logger.info(f"CLIP processor type: {type(clip_processor).__name__}")
+                features = self._encode_with_clip(processed, clip_processor)
+                logger.info(f"_encode_with_clip returned features shape: {features.shape}")
+                
+                # 4. Return result with metadata using standardized field names
+                result = {
+                    "latents": features,  # Use "latents" consistently across all processors
+                    "position": config.get("position", 0),
+                    "frames": features.shape[1] if len(features.shape) > 2 else 1  # Add frames field like VAE processor
+                }
+                logger.info(f"Created result with keys: {list(result.keys())}")
+                logger.info(f"Result latents shape: {result['latents'].shape}")
+                logger.info(f"Result position: {result['position']}")
+                logger.info(f"Result frames: {result['frames']}")
+                
+                return {self.output_names[0]: result}
+            except Exception as e:
+                logger.error(f"Error in CLIP encoding: {e}")
+                import traceback
+                logger.error(f"CLIP encoding traceback: {traceback.format_exc()}")
+                raise
         else:
             # If no CLIP model, just return preprocessed image as latents for consistency
+            logger.info("No CLIP model, returning preprocessed image")
             result = {
                 "latents": processed,  # Use "latents" consistently even for preprocessed image
                 "position": config.get("position", 0),
                 "frames": processed.shape[1] if len(processed.shape) > 2 else 1  # Add frames field like VAE processor
             }
+            logger.info(f"Created result with keys: {list(result.keys())}")
+            logger.info(f"Result latents shape: {result['latents'].shape}")
+            
             return {self.output_names[0]: result}
     
     def _preprocess_input(self, image, config):
@@ -370,26 +428,76 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
         device = clip_processor.device
         image = image.to(device)
         
+        # Add detailed logging
+        logger.info(f"CLIP processor device: {device}")
+        logger.info(f"CLIP processor type: {type(clip_processor).__name__}")
+        logger.info(f"Image shape: {image.shape}")
+        logger.info(f"CLIP processor available methods: {[m for m in dir(clip_processor) if not m.startswith('_') and callable(getattr(clip_processor, m))]}")
+        
         # Encode through CLIP vision model
         with torch.no_grad():
-            # Get CLIP features
-            outputs = clip_processor(image, output_hidden_states=True)
-            
-            # Extract features from the model's output
-            if hasattr(outputs, "last_hidden_state"):
-                # For transformers CLIPVisionModel
-                features = outputs.last_hidden_state
-            elif hasattr(outputs, "image_embeds"):
-                # For open_clip models
-                features = outputs.image_embeds
-            elif hasattr(outputs, "pooler_output"):
-                # Another possible transformers format
-                features = outputs.pooler_output.unsqueeze(1)  # Add sequence dim
-            else:
-                # Fallback - assume features are the direct output
-                features = outputs
-        
-        return features
+            try:
+                # Get CLIP features - THIS IS WHERE THE ERROR MIGHT BE HAPPENING
+                logger.info("About to call CLIP processor with output_hidden_states=True")
+                
+                # Check if this is a standard CLIPVisionModel or something else
+                if hasattr(clip_processor, "forward"):
+                    # This is a standard PyTorch module, call with kwargs
+                    logger.info("Calling CLIPVisionModel.forward")
+                    try:
+                        outputs = clip_processor(image, output_hidden_states=True)
+                        logger.info(f"CLIP processor call succeeded, output type: {type(outputs)}")
+                    except Exception as e:
+                        logger.error(f"Error in CLIP processor call: {e}")
+                        logger.error(f"Error type: {type(e).__name__}")
+                        
+                        # Try alternative call patterns
+                        logger.info("Trying alternative call pattern without output_hidden_states")
+                        try:
+                            outputs = clip_processor(image)
+                            logger.info(f"Alternative call pattern succeeded, output type: {type(outputs)}")
+                        except Exception as e2:
+                            logger.error(f"Alternative call also failed: {e2}")
+                            raise
+                else:
+                    logger.error("CLIP processor doesn't have a forward method")
+                    raise ValueError("CLIP processor doesn't have a forward method")
+                
+                # Log output details
+                logger.info(f"CLIP outputs type: {type(outputs)}")
+                if hasattr(outputs, "__dict__"):
+                    logger.info(f"CLIP outputs attributes: {list(outputs.__dict__.keys())}")
+                
+                # Extract features from the model's output
+                if hasattr(outputs, "last_hidden_state"):
+                    # For transformers CLIPVisionModel
+                    logger.info(f"Using last_hidden_state, shape: {outputs.last_hidden_state.shape}")
+                    features = outputs.last_hidden_state
+                elif hasattr(outputs, "image_embeds"):
+                    # For open_clip models
+                    logger.info(f"Using image_embeds, shape: {outputs.image_embeds.shape}")
+                    features = outputs.image_embeds
+                elif hasattr(outputs, "pooler_output"):
+                    # Another possible transformers format
+                    logger.info(f"Using pooler_output, shape: {outputs.pooler_output.shape}")
+                    features = outputs.pooler_output.unsqueeze(1)  # Add sequence dim
+                elif hasattr(outputs, "hidden_states") and outputs.hidden_states is not None:
+                    # Try to get the penultimate hidden states
+                    logger.info(f"Using hidden_states, length: {len(outputs.hidden_states)}")
+                    features = outputs.hidden_states[-2]
+                else:
+                    # Fallback - assume features are the direct output
+                    logger.info(f"Using direct outputs, type: {type(outputs)}")
+                    features = outputs
+                    
+                logger.info(f"Final features shape: {features.shape}")
+                return features
+                
+            except Exception as e:
+                logger.error(f"Error in _encode_with_clip: {e}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                raise
     
     def _process_batch(self, clip_processor, inputs, configs):
         """Process a batch of inputs more efficiently."""
