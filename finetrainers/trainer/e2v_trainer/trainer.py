@@ -486,7 +486,7 @@ class E2VTrainer:
                 lora_config = LoraConfig(
                     r=rank,
                     lora_alpha=lora_alpha,
-                    target_modules=target_modules,
+                    target_modules=self._get_lora_target_modules(target_modules),
                     init_lora_weights="gaussian",
                     lora_dropout=0.0,
                     bias="none",
@@ -504,7 +504,7 @@ class E2VTrainer:
                 logger.info(f"First 30 available modules: {available_modules[:30]}")
                 logger.info(f"Total available modules: {len(available_modules)}")
                 
-                # Convert string regex pattern or patterns to actual module names
+                # Convert regex patterns to actual module names
                 import re
                 
                 # Handle either string or list of strings
@@ -1151,6 +1151,27 @@ class E2VTrainer:
         # Would need to create a proper pipeline that supports E2V generation
         pass
     
+    
+    def _get_lora_target_modules(self, target_modules):
+        """Process target modules for LoRA training.
+        
+        This ensures consistency with existing patterns in the model.
+        
+        Args:
+            target_modules: The target modules string or list from args
+            
+        Returns:
+            Modified target_modules for use with LoRA
+        """
+        # Make a copy to avoid modifying original args
+        if isinstance(target_modules, list):
+            target_modules = list(target_modules)
+        
+        # Handle special e2v-specific module patterns if needed
+        # For now, we just return the target_modules as-is
+        # but this method allows for future customization
+        
+        return target_modules
     
     def _upload_to_hub(self):
         """Upload the final model to Hugging Face Hub."""
