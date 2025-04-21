@@ -88,9 +88,8 @@ class E2VTrainer:
         self._init_distributed()
         self._init_config_options()
         
-        # Initialize logging, directories, and repositories
+        # Initialize logging and directories
         self._init_logging()
-        self._init_trackers()
         self._init_directories_and_repositories()
 
         # Perform any patches that might be necessary for training to work as expected
@@ -108,6 +107,8 @@ class E2VTrainer:
         model_specification._trainer_init(
             frame_conditioning_type, frame_conditioning_index, frame_conditioning_concatenate_mask
         )
+        
+        # We'll initialize trackers in _prepare_for_training, not here
         
     def _extract_e2v_config(self, config_file: str) -> Dict[str, Any]:
         """Extract E2V-specific configuration from a dataset config file.
@@ -250,6 +251,7 @@ class E2VTrainer:
             
     def _init_logging(self) -> None:
         """Initialize logging functionality."""
+        # Only log once from the main process
         if self.state.parallel_backend.is_main_process:
             logger.info(f"E2V training: {self.args.training_type}")
             logger.info(f"Output directory: {self.args.output_dir}")
@@ -258,13 +260,11 @@ class E2VTrainer:
             logger.info(f"Training batch size: {self.args.train_batch_size}")
             logger.info(f"Gradient accumulation steps: {self.args.gradient_accumulation_steps}")
             
-            # E2V Type is now configuration-driven, so we don't log it separately
-            logger.info("Using configuration-driven E2V approach")
-            
+            # E2V is configuration-driven
             if self.args.training_type == TrainingType.E2V_LORA:
-                # Use getattr for LoRA parameters that might not be directly in BaseArgs
-                lora_rank = getattr(self.args, "rank", 64)  # Default to 64
-                lora_alpha = getattr(self.args, "lora_alpha", 64)  # Default to 64
+                # Use getattr for LoRA parameters
+                lora_rank = getattr(self.args, "rank", 64)
+                lora_alpha = getattr(self.args, "lora_alpha", 64)
                 logger.info(f"LoRA rank: {lora_rank}")
                 logger.info(f"LoRA alpha: {lora_alpha}")
     
@@ -445,63 +445,21 @@ class E2VTrainer:
                 rank = getattr(self.args, "rank", 64)  # Default rank 64
                 lora_alpha = getattr(self.args, "lora_alpha", 64)  # Default alpha 64
                 
-                # Log all args for debugging
-                logger.info("=== DEBUGGING TARGET_MODULES ===")
+                # Find target_modules using framework standard approach
                 
-                # Check the raw args object
-                logger.info(f"Args type: {type(self.args)}")
-                
-                # Log key attributes
-                logger.info(f"Has 'target_modules': {hasattr(self.args, 'target_modules')}")
-                
-                # Try accessing with getattr
-                tm_value = getattr(self.args, "target_modules", "NOT_FOUND")
-                logger.info(f"target_modules via getattr: {repr(tm_value)}")
-                
-                # Check if it's in __dict__
-                if hasattr(self.args, "__dict__"):
-                    logger.info(f"__dict__ has 'target_modules': {'target_modules' in self.args.__dict__}")
-                    if 'target_modules' in self.args.__dict__:
-                        logger.info(f"target_modules from __dict__: {repr(self.args.__dict__['target_modules'])}")
-                
-                # Get all attributes
-                all_attrs = [attr for attr in dir(self.args) if not attr.startswith('_')]
-                logger.info(f"All attributes: {all_attrs}")
-                
-                # Log registered config mixins
-                if hasattr(self.args, "_registered_config_mixins"):
-                    for i, config in enumerate(self.args._registered_config_mixins):
-                        logger.info(f"Config mixin {i}: {type(config)}")
-                        logger.info(f"  Has target_modules: {hasattr(config, 'target_modules')}")
-                        if hasattr(config, 'target_modules'):
-                            logger.info(f"  target_modules value: {config.target_modules}")
-                
-                # Was it passed on CLI?
-                import sys
-                logger.info(f"CLI args: {sys.argv}")
-                if '--target_modules' in sys.argv:
-                    target_idx = sys.argv.index('--target_modules')
-                    logger.info(f"CLI target_modules at index {target_idx}: {sys.argv[target_idx+1:target_idx+2]}")
-                
-                # Try to get target_modules from different sources
+                # Get target_modules using standard approach
                 if hasattr(self.args, "target_modules") and self.args.target_modules:
                     # Direct attribute access
                     target_modules = self.args.target_modules
-                    logger.info(f"Found target_modules via direct attribute: {target_modules}")
                 elif hasattr(self.args, "_registered_config_mixins"):
                     # Try to get from registered config mixins
                     for config in self.args._registered_config_mixins:
                         if hasattr(config, "target_modules") and config.target_modules:
                             target_modules = config.target_modules
-                            logger.info(f"Found target_modules in config mixin: {target_modules}")
                             break
                     else:
-                        logger.error("No target_modules found in config mixins")
                         raise ValueError("target_modules must be specified for LoRA training")
                 else:
-                    # Log keys to help debug
-                    logger.error(f"target_modules not found in args. Available args: {', '.join(dir(self.args))}")
-                    
                     # Raise error instead of using a default that might not work
                     raise ValueError("target_modules must be specified for LoRA training")
                 
@@ -514,17 +472,7 @@ class E2VTrainer:
                     bias="none",
                 )
                 
-                # TEMPORARY: Log all module names to understand the model structure
-                logger.info("=== TEMPORARY LOGGING: Available module names in transformer ===")
-                # Get all module names with parameters that can be trained
-                available_modules = []
-                for name, module in self.transformer.named_modules():
-                    if hasattr(module, "weight") and isinstance(module.weight, torch.nn.Parameter):
-                        available_modules.append(name)
-                
-                # Log first 30 module names to avoid flooding logs
-                logger.info(f"First 30 available modules: {available_modules[:30]}")
-                logger.info(f"Total available modules: {len(available_modules)}")
+                # Module pattern matching will be done below
                 
                 # Convert regex patterns to actual module names
                 import re
@@ -538,7 +486,6 @@ class E2VTrainer:
                 filtered_modules = []
                 
                 for pattern in target_modules_patterns:
-                    logger.info(f"Searching for modules matching pattern: {pattern}")
                     pattern_matches = []
                     
                     for name, module in self.transformer.named_modules():
@@ -546,36 +493,40 @@ class E2VTrainer:
                             if hasattr(module, "weight") and isinstance(module.weight, torch.nn.Parameter):
                                 pattern_matches.append(name)
                                 filtered_modules.append(name)
-                    
-                    logger.info(f"Found {len(pattern_matches)} modules matching the pattern '{pattern}'")
-                
-                logger.info(f"Found {len(filtered_modules)} modules matching all patterns")
+                                
+                logger.info(f"Found {len(filtered_modules)} modules matching target patterns")
                 lora_config.target_modules = filtered_modules
                 
                 from peft import get_peft_model
                 
                 # Apply LoRA to the transformer
                 logger.info(f"Applying LoRA with rank {lora_config.r} and alpha {lora_config.lora_alpha}")
-                logger.info(f"Target modules: {len(filtered_modules)} modules")
                 get_peft_model(self.transformer, lora_config)
                 
                 # Add QK norm if needed
                 if getattr(self.args, "train_qk_norm", False):
-                    trainable_params = []
+                    qk_norm_count = 0
                     for name, param in self.transformer.named_parameters():
                         if "norm_q" in name or "norm_k" in name:
                             param.requires_grad = True
-                            trainable_params.append(name)
+                            qk_norm_count += 1
                     
-                    logger.info(f"Added {len(trainable_params)} QK norm layers to trainable parameters")
+                    logger.info(f"Added {qk_norm_count} QK norm layers to trainable parameters")
             
             # Set training modules and mark lora parameters as trainable
             logger.info("Setting up LoRA training parameters")
             
             # Count trainable parameters (only LoRA params should be trainable)
             trainable_params = [p for p in self.transformer.parameters() if p.requires_grad]
-            logger.info(f"Total trainable parameters: {sum(p.numel() for p in trainable_params):,}")
-            self.state.num_trainable_parameters = sum(p.numel() for p in trainable_params)
+            total_trainable = sum(p.numel() for p in trainable_params)
+            
+            # Calculate percentage of trainable parameters
+            all_params = [p for p in self.transformer.parameters()]
+            total_params = sum(p.numel() for p in all_params)
+            trainable_percentage = (total_trainable / total_params) * 100 if total_params > 0 else 0
+            
+            logger.info(f"Total trainable parameters: {total_trainable:,} ({trainable_percentage:.2f}% of model)")
+            self.state.num_trainable_parameters = total_trainable
         
         # For full fine-tuning
         else:
@@ -586,8 +537,15 @@ class E2VTrainer:
             
             # Count trainable parameters
             trainable_params = [p for p in self.transformer.parameters() if p.requires_grad]
-            logger.info(f"Total trainable parameters: {sum(p.numel() for p in trainable_params):,}")
-            self.state.num_trainable_parameters = sum(p.numel() for p in trainable_params)
+            total_trainable = sum(p.numel() for p in trainable_params)
+            
+            # Calculate percentage of trainable parameters (for full fine-tuning should be 100%)
+            all_params = [p for p in self.transformer.parameters()]
+            total_params = sum(p.numel() for p in all_params)
+            trainable_percentage = (total_trainable / total_params) * 100 if total_params > 0 else 0
+            
+            logger.info(f"Total trainable parameters: {total_trainable:,} ({trainable_percentage:.2f}% of model)")
+            self.state.num_trainable_parameters = total_trainable
         
         # Store trainable modules for later use
         self.trainable_modules = [self.transformer]
@@ -630,7 +588,7 @@ class E2VTrainer:
             self.optimizer, self.lr_scheduler
         )
         
-        # 5. Initialize trackers if not already done
+        # 5. Initialize trackers
         self._init_trackers()
 
     def _prepare_dataset(self) -> None:
