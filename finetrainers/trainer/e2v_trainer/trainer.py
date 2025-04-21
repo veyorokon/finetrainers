@@ -441,10 +441,19 @@ class E2VTrainer:
         if isinstance(self.args, E2VLowRankConfig) or getattr(self.args, "training_type", None) == TrainingType.E2V_LORA:
             # Configure LoRA
             if not hasattr(self.transformer, "peft_config"):
+                # Use getattr to access attributes with defaults
+                rank = getattr(self.args, "rank", 64)  # Default rank 64
+                lora_alpha = getattr(self.args, "lora_alpha", 64)  # Default alpha 64
+                target_modules = getattr(
+                    self.args, 
+                    "target_modules", 
+                    "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
+                )
+                
                 lora_config = LoraConfig(
-                    r=self.args.rank,
-                    lora_alpha=self.args.lora_alpha,
-                    target_modules=self.args.target_modules,
+                    r=rank,
+                    lora_alpha=lora_alpha,
+                    target_modules=target_modules,
                     init_lora_weights="gaussian",
                     lora_dropout=0.0,
                     bias="none",
@@ -476,7 +485,7 @@ class E2VTrainer:
                 get_peft_model(self.transformer, lora_config)
                 
                 # Add QK norm if needed
-                if self.args.train_qk_norm:
+                if getattr(self.args, "train_qk_norm", False):
                     trainable_params = []
                     for name, param in self.transformer.named_parameters():
                         if "norm_q" in name or "norm_k" in name:

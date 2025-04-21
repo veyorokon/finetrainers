@@ -52,6 +52,7 @@ lora_cmd=(
 dataset_cmd=(
   --dataset_config "$TRAINING_DATASET_CONFIG"
   --dataset_shuffle_buffer_size 32
+  --cache_dir "/workspace/e2v/cache/"
 )
 
 # Dataloader arguments
@@ -101,7 +102,7 @@ validation_cmd=(
 # Miscellaneous arguments
 miscellaneous_cmd=(
   --tracker_name "finetrainers-e2v-wan-lora"
-  --output_dir "examples/training/e2v/wan/output/e2v_wan_lora"
+  --output_dir "/workspace/e2v_wan_lora"
   --init_timeout 600
   --nccl_timeout 600
   --report_to "wandb"
