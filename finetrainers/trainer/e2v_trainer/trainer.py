@@ -459,6 +459,18 @@ class E2VTrainer:
                     bias="none",
                 )
                 
+                # TEMPORARY: Log all module names to understand the model structure
+                logger.info("=== TEMPORARY LOGGING: Available module names in transformer ===")
+                # Get all module names with parameters that can be trained
+                available_modules = []
+                for name, module in self.transformer.named_modules():
+                    if hasattr(module, "weight") and isinstance(module.weight, torch.nn.Parameter):
+                        available_modules.append(name)
+                
+                # Log first 30 module names to avoid flooding logs
+                logger.info(f"First 30 available modules: {available_modules[:30]}")
+                logger.info(f"Total available modules: {len(available_modules)}")
+                
                 # Convert string regex patterns to actual module names
                 if isinstance(lora_config.target_modules, str) or (
                     isinstance(lora_config.target_modules, list) and len(lora_config.target_modules) == 1
@@ -468,13 +480,17 @@ class E2VTrainer:
                     else:
                         target_modules_pattern = lora_config.target_modules[0]
                     
+                    logger.info(f"Searching for modules matching pattern: {target_modules_pattern}")
+                    
                     import re
                     
                     filtered_modules = []
-                    for name, _ in self.transformer.named_modules():
+                    for name, module in self.transformer.named_modules():
                         if re.search(target_modules_pattern, name):
-                            filtered_modules.append(name)
+                            if hasattr(module, "weight") and isinstance(module.weight, torch.nn.Parameter):
+                                filtered_modules.append(name)
                     
+                    logger.info(f"Found {len(filtered_modules)} modules matching the pattern")
                     lora_config.target_modules = filtered_modules
                 
                 from peft import get_peft_model
