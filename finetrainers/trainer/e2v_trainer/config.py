@@ -25,6 +25,7 @@ class FrameConditioningType(str, Enum):
     RANDOM = "random"
     FIRST_AND_LAST = "first_and_last"
     FULL = "full"
+    SOURCE_LENGTH = "source_length"  # Match length to source processor output
 
 
 class ElementConfig(ConfigMixin):
@@ -33,8 +34,10 @@ class ElementConfig(ConfigMixin):
     name: str
     suffixes: List[str]
     required: bool = False
+    placeholder: Any = None  # Default value for placeholder elements
     vae: Dict[str, Any] = {"repeat": 1, "position": 0}
     clip: Union[Dict[str, Any], bool] = {"preprocess": "center_crop"}
+    mask: Union[Dict[str, Any], bool] = None  # Mask processor configuration
 
     def validate_args(self, args):
         assert isinstance(self.name, str), "Element name must be a string"
@@ -85,12 +88,19 @@ class ClipProcessorConfig(ProcessorConfig):
     default_preprocess: str = "center_crop"
 
 
+class MaskProcessorConfig(ProcessorConfig):
+    """Configuration for mask generation."""
+    
+    frame_conditioning: str = FrameConditioningType.SOURCE_LENGTH
+    preprocessor: Optional[str] = None  # No preprocessing for mask, it's generated programmatically
+
+
 class E2VConfig(ConfigMixin):
     """Base configuration for E2V training."""
 
     e2v_type: str = E2VType.DUAL
     elements: List[ElementConfig] = []  # Default to empty list
-    processors: Dict[str, Union[VaeProcessorConfig, ClipProcessorConfig]] = {}  # Default to empty dict
+    processors: Dict[str, Union[VaeProcessorConfig, ClipProcessorConfig, MaskProcessorConfig]] = {}  # Default to empty dict
     tensor_combinations: Dict[str, List[str]] = {}  # Configuration for tensor combinations
     frame_conditioning_type: str = FrameConditioningType.FULL
     frame_conditioning_index: int = 0
@@ -144,6 +154,8 @@ class E2VConfig(ConfigMixin):
                 processors["vae"] = VaeProcessorConfig(**json_config["processors"]["vae"])
             if "clip" in json_config["processors"]:
                 processors["clip"] = ClipProcessorConfig(**json_config["processors"]["clip"])
+            if "mask" in json_config["processors"]:
+                processors["mask"] = MaskProcessorConfig(**json_config["processors"]["mask"])
             config["processors"] = processors
         
         # Handle tensor_combinations if present

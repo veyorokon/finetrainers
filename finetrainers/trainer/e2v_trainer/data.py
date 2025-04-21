@@ -98,6 +98,129 @@ class VAEPathwayProcessor(ProcessorMixin):
             return video
 
 
+class MaskPathwayProcessor(ProcessorMixin):
+    """Processor for generating masks based on other processor outputs."""
+    
+    def __init__(self, output_names=None, input_names=None, config=None, device=None):
+        super().__init__()
+        self.output_names = output_names or ["mask_output"]
+        self.input_names = input_names or {}
+        self.config = config
+        self.device = device
+    
+    def forward(self, processed_data=None, element_config=None, **kwargs):
+        """Generate mask based on source processor output.
+        
+        Args:
+            processed_data: Dictionary of processed data from other processors
+            element_config: Configuration for this element
+            
+        Returns:
+            Dictionary with generated mask tensor
+        """
+        # 1. Get configuration with element-specific overrides
+        config = dict(self.config or {})
+        if element_config and "mask" in element_config:
+            if isinstance(element_config["mask"], dict):
+                config.update(element_config["mask"])
+            elif not element_config["mask"]:
+                # Mask pathway disabled for this element
+                return {self.output_names[0]: None}
+        
+        # 2. Generate mask using preprocessor
+        mask = self._preprocess_input(processed_data, config, element_config)
+        
+        if mask is None:
+            return {self.output_names[0]: None}
+        
+        # 3. Store result for later concatenation
+        result = {
+            "latents": mask,
+            "position": config.get("position", 0),
+            "frames": mask.shape[2] if len(mask.shape) > 3 else 1
+        }
+        
+        return {self.output_names[0]: result}
+    
+    def _preprocess_input(self, processed_data, config, element_config):
+        """Generate mask based on processed data."""
+        # 1. Get source processor and field information
+        source_processor = config.get("source", "vae")
+        source_field = config.get("source_field", "latents")
+        
+        # 2. Check if we have processed data from the source
+        if processed_data is None or source_processor not in processed_data:
+            logger.warning(f"Source processor {source_processor} not found in processed data")
+            return None
+        
+        source_results = processed_data.get(source_processor, {})
+        if not source_results:
+            logger.warning(f"No results from source processor {source_processor}")
+            return None
+        
+        # 3. Get source tensor for dimensions
+        source_tensors = []
+        for element_name, result in source_results.items():
+            if source_field in result:
+                source_tensors.append(result[source_field])
+        
+        if not source_tensors:
+            logger.warning(f"No source tensors found with field {source_field}")
+            return None
+        
+        # 4. Create mask based on source dimensions
+        # Use first tensor as reference for shape
+        reference_tensor = source_tensors[0]
+        batch_size = reference_tensor.shape[0]
+        channels = 1  # Mask has 1 channel
+        
+        # Calculate total frames based on source results
+        total_frames = sum(result.get("frames", 0) for result in source_results.values())
+        
+        # Get spatial dimensions
+        if len(reference_tensor.shape) >= 4:
+            height = reference_tensor.shape[-2]
+            width = reference_tensor.shape[-1]
+        else:
+            # Default dimensions if not available
+            height, width = config.get("resolution", [224, 224])
+        
+        # 5. Create the mask tensor
+        if len(reference_tensor.shape) == 5:  # (B, C, F, H, W)
+            mask_shape = (batch_size, channels, total_frames, height, width)
+            frame_dim = 2
+        else:
+            # Fallback for non-video tensors
+            mask_shape = (batch_size, channels, height, width)
+            frame_dim = None
+        
+        # Use the placeholder value or default to 1
+        placeholder_value = element_config.get("placeholder", 1)
+        mask = torch.zeros(mask_shape, device=reference_tensor.device, dtype=reference_tensor.dtype)
+        
+        # Set mask values based on frame conditioning
+        if frame_dim is not None:
+            # For video tensors, set values based on frame dim
+            frame_conditioning = config.get("frame_conditioning", FrameConditioningType.SOURCE_LENGTH)
+            
+            if frame_conditioning == FrameConditioningType.SOURCE_LENGTH:
+                # Set 1s for reference frame positions
+                current_idx = 0
+                for result in sorted(source_results.values(), key=lambda x: x.get("position", 0)):
+                    frames = result.get("frames", 0)
+                    if frames > 0:
+                        mask[:, :, current_idx:current_idx+frames] = placeholder_value
+                        current_idx += frames
+            else:
+                # For other conditioning types, use the helper function
+                mask[:, :, :total_frames] = placeholder_value
+        else:
+            # For non-video tensors, fill the entire mask
+            mask.fill_(placeholder_value)
+        
+        return mask
+
+
 class CLIPPathwayProcessor(ProcessorMixin):
     """Processor for the CLIP semantic pathway."""
     
@@ -213,6 +336,12 @@ def apply_frame_conditioning_on_latents(
         indexing = [slice(None)] * latents.ndim
         indexing[frame_dim] = slice(0, num_frames)
         mask[tuple(indexing)] = 1
+        
+    elif frame_conditioning_type == FrameConditioningType.SOURCE_LENGTH:
+        # Simply adjust dimensions without changing content values
+        # This is used when the latents already have the right values
+        # but need to match expected dimensions
+        pass
 
     # Handle padding/truncation to match expected number of frames
     if latents.size(frame_dim) >= expected_num_frames:
@@ -278,6 +407,13 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                     device=device,
                     clip_processor=clip_processor
                 )
+        
+        if "mask" in config.get("processors", {}):
+            self.processors["mask"] = MaskPathwayProcessor(
+                output_names=["mask_output"],
+                config=config["processors"]["mask"],
+                device=device
+            )
         
         # Create element lookup - assume elements are dictionaries
         self.elements = {}
@@ -454,7 +590,16 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         processor_configs = {proc_name: [] for proc_name in self.processors}
         processor_elements = {proc_name: [] for proc_name in self.processors}
         
-        # Map elements to processors
+        # Check for virtual/placeholder elements that weren't loaded but are in configuration
+        for element_name, element_config in self.elements.items():
+            if element_name not in element_data and len(element_config.get("suffixes", [])) == 0:
+                # This is a virtual element (like mask) - add it for processing
+                if "mask" in self.processors and "mask" in element_config.get("processors", {}):
+                    processor_inputs["mask"].append(None)  # No input needed for mask
+                    processor_configs["mask"].append(element_config)
+                    processor_elements["mask"].append(element_name)
+        
+        # Map real elements to processors
         for element_name, element_info in element_data.items():
             element_image = element_info["image"]
             element_config = element_info["config"]
@@ -463,6 +608,10 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             for proc_name, processor in self.processors.items():
                 # Skip if the processor is explicitly disabled for this element
                 if proc_name == "clip" and not element_config.get("clip", False):
+                    continue
+                
+                # Skip mask processor for real elements - it's handled separately
+                if proc_name == "mask":
                     continue
                 
                 processor_inputs[proc_name].append(element_image)
@@ -492,6 +641,9 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                         result = processor(image=element_input, element_config=element_config)
                     elif proc_name == "clip":
                         result = processor(image=element_input, element_config=element_config)
+                    elif proc_name == "mask":
+                        # Special handling for mask - it needs processed data from other processors
+                        result = processor(processed_data=results, element_config=element_config)
                     else:
                         continue
                     
@@ -510,53 +662,22 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         frame_dim = 2
         channel_dim = 1
         
-        # Create mask for conditioning
-        mask = None
-        if "vae" in processed_data and processed_data["vae"]:
-            vae_results = list(processed_data["vae"].values())
-            if vae_results:
-                # Sort by position
-                vae_results.sort(key=lambda x: x["position"])
-                
-                # Get example latent for shape
-                example_latent = vae_results[0]["latents"]
-                
-                # Create mask for the length of all VAE frames
-                mask = torch.zeros_like(example_latent[:, :1])  # Take only first channel
-                mask_length = sum(r["frames"] for r in vae_results)
-                mask[:, :, :mask_length] = 1
-                
-                # Process mask according to frame conditioning
-                frame_cond_type = self.config.get("processors", {}).get("vae", {}).get("frame_conditioning", FrameConditioningType.FULL)
-                frame_cond_index = self.config.get("processors", {}).get("vae", {}).get("frame_index", 0)
-                
-                # Match to expected video frames if available
-                expected_frames = data["video"].shape[1] if "video" in data else None
-                if expected_frames:
-                    mask = apply_frame_conditioning_on_latents(
-                        mask,
-                        expected_frames,
-                        channel_dim,
-                        frame_dim,
-                        frame_cond_type,
-                        frame_cond_index,
-                        False
-                    )
-                
-                # Store the mask for tensor combinations
-                processed_data["mask"] = {"mask": {"latents": mask, "position": 0}}
-        
         # Get tensor combination configuration
         tensor_combinations = self.config.get("tensor_combinations", {})
         
         # Default combinations if not specified
         if not tensor_combinations:
-            tensor_combinations = {
+            default_combinations = {
                 "reference_latents": ["vae"],
-                "mask_latents": ["mask"],
-                "combined_condition_latents": ["vae", "mask"],
                 "reference_embeddings": ["clip"]
             }
+            
+            # Add mask-related combinations if mask processor is available
+            if "mask" in self.processors and "mask" in processed_data:
+                default_combinations["reference_mask"] = ["mask"]
+                default_combinations["combined_condition_latents"] = ["vae", "mask"]
+            
+            tensor_combinations = default_combinations
         
         # Process each defined output combination
         for output_name, processor_list in tensor_combinations.items():
