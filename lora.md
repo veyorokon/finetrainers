@@ -31,7 +31,7 @@ Our recommended approach consists of:
 
 **Target Modules**:
 ```
-"(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0)|patch_embedding"
+".*blocks\..*\.(to_q|to_k|to_v|to_out\.0|ffn\.)|.*patch_embedding.*"
 ```
 
 **Purpose**:
@@ -55,7 +55,7 @@ Our recommended approach consists of:
 
 **Target Modules**:
 ```
-"(add_k_proj|add_v_proj)"
+".*blocks\..*\.(add_k_proj|add_v_proj|norm_added_k).*"
 ```
 
 **Purpose**:
@@ -91,7 +91,7 @@ python train.py \
   --use_peft=True \
   --rank=32 \
   --lora_alpha=32 \
-  --target_modules="(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0)|patch_embedding"
+  --target_modules=".*blocks\..*\.(to_q|to_k|to_v|to_out\.0|ffn\.)|.*patch_embedding.*"
 ```
 
 **Dataset Considerations**:
@@ -110,7 +110,7 @@ python train.py \
   --use_peft=True \
   --rank=16 \
   --lora_alpha=16 \
-  --target_modules="(add_k_proj|add_v_proj)"
+  --target_modules=".*blocks\..*\.(add_k_proj|add_v_proj|norm_added_k).*"
 ```
 
 **Dataset Considerations**:
