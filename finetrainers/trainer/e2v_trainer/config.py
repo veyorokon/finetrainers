@@ -179,6 +179,7 @@ class E2VLowRankConfig(E2VConfig):
         parser.add_argument(
             "--target_modules",
             type=str,
+            nargs="+",  # Accept one or more arguments
             required=True,  # Make it required
         )
         parser.add_argument("--train_qk_norm", action="store_true")
@@ -189,14 +190,27 @@ class E2VLowRankConfig(E2VConfig):
         assert self.lora_alpha > 0, "lora_alpha must be a positive integer."
         assert self.target_modules is not None, "target_modules must be specified for LoRA training"
         
-        # Ensure target_modules is a string
-        assert isinstance(self.target_modules, str), "target_modules must be a string containing a regex pattern"
+        # Validate target_modules can be either a string or a list of strings
+        if isinstance(self.target_modules, str):
+            # Single regex pattern is valid
+            pass
+        elif isinstance(self.target_modules, list):
+            assert len(self.target_modules) > 0, "target_modules cannot be an empty list"
+            assert all(isinstance(m, str) for m in self.target_modules), "All target_modules entries must be strings"
+        else:
+            raise TypeError("target_modules must be a string or list of strings")
         
     def map_args(self, argparse_args, mapped_args):
         super().map_args(argparse_args, mapped_args)
         self.rank = getattr(argparse_args, "rank", self.rank)
         self.lora_alpha = getattr(argparse_args, "lora_alpha", self.lora_alpha)
-        self.target_modules = getattr(argparse_args, "target_modules", self.target_modules)
+        
+        # Handle target_modules as a list from the command line
+        target_modules = getattr(argparse_args, "target_modules", None)
+        if target_modules:
+            # Convert to a single string if there's only one element
+            self.target_modules = target_modules[0] if len(target_modules) == 1 else target_modules
+        
         self.train_qk_norm = getattr(argparse_args, "train_qk_norm", self.train_qk_norm)
 
 
