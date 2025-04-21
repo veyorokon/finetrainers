@@ -407,6 +407,10 @@ class E2VTrainer:
         logger.info(f"Have image_encoder: {hasattr(self, 'image_encoder')}")
         if hasattr(self, 'image_encoder'):
             logger.info(f"image_encoder type: {type(self.image_encoder)}")
+        else:
+            logger.warning("No image_encoder loaded - E2V training requires CLIP image_encoder")
+            logger.warning("This might be because we're not using WanE2VModelSpecification")
+            logger.warning(f"Using model specification type: {type(self.model_specification)}")
         
         self._are_condition_models_loaded = True
 

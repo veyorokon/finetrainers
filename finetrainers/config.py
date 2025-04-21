@@ -2,7 +2,7 @@ from enum import Enum
 from typing import Type
 
 from .models import ModelSpecification
-from .models.wan import WanControlModelSpecification, WanModelSpecification
+from .models.wan import WanControlModelSpecification, WanModelSpecification, WanE2VModelSpecification
 
 
 class ModelType(str, Enum):
@@ -30,8 +30,8 @@ SUPPORTED_MODEL_CONFIGS = {
         TrainingType.FULL_FINETUNE: WanModelSpecification,
         TrainingType.CONTROL_LORA: WanControlModelSpecification,
         TrainingType.CONTROL_FULL_FINETUNE: WanControlModelSpecification,
-        TrainingType.E2V_LORA: WanControlModelSpecification,
-        TrainingType.E2V_FULL_FINETUNE: WanControlModelSpecification,
+        TrainingType.E2V_LORA: WanE2VModelSpecification,
+        TrainingType.E2V_FULL_FINETUNE: WanE2VModelSpecification,
     },
 }
 

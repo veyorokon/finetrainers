@@ -1,2 +1,3 @@
-from .base_specification import WanModelSpecification
+from .base_specification import WanModelSpecification, WanLatentEncodeProcessor
 from .control_specification import WanControlModelSpecification
+from .e2v_specification import WanE2VModelSpecification

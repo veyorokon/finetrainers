@@ -307,7 +307,11 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                         # Check if CLIP is required in tensor_combinations
                         is_clip_required = any("clip" in procs for procs in config["tensor_combinations"].values())
                         if is_clip_required:
-                            logger.error(f"CLIP is required in tensor_combinations but no clip_processor provided")
+                            logger.warning(f"CLIP is required in tensor_combinations but no clip_processor provided")
+                            logger.warning(f"Updating tensor_combinations to remove CLIP dependency as a temporary fix")
+                            # Modify the tensor_combinations to remove clip dependency
+                            for key, procs in list(config["tensor_combinations"].items()):
+                                config["tensor_combinations"][key] = [p for p in procs if p != "clip"]
                 else:
                     self.processors["clip"] = CLIPPathwayProcessor(
                         output_names=["clip_output"],
