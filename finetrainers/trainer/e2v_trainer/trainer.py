@@ -24,7 +24,7 @@ from finetrainers.config import TrainingType
 from finetrainers.patches import load_lora_weights
 from finetrainers.state import State, TrainState
 
-from .config import E2VFullRankConfig, E2VLowRankConfig, E2VType
+from .config import E2VFullRankConfig, E2VLowRankConfig
 from .data import IterableE2VDataset, ValidationE2VDataset
 
 
@@ -141,8 +141,7 @@ class E2VTrainer:
                     all_suffixes.extend(element["suffixes"])
             e2v_config["reference_suffixes"] = all_suffixes
         
-        # Add E2V-specific parameters from args
-        e2v_config["e2v_type"] = getattr(self.args, "e2v_type", "dual")
+        # We no longer need e2v_type as it's now configuration-driven
         e2v_config["frame_conditioning_type"] = getattr(self.args, "frame_conditioning_type", "full")
         e2v_config["frame_conditioning_index"] = getattr(self.args, "frame_conditioning_index", 0)
         e2v_config["frame_conditioning_concatenate_mask"] = getattr(self.args, "frame_conditioning_concatenate_mask", True)
@@ -259,9 +258,8 @@ class E2VTrainer:
             logger.info(f"Training batch size: {self.args.train_batch_size}")
             logger.info(f"Gradient accumulation steps: {self.args.gradient_accumulation_steps}")
             
-            # Use getattr for e2v_type which might not be directly in BaseArgs
-            e2v_type = getattr(self.args, "e2v_type", "dual")  # Default to "dual"
-            logger.info(f"E2V Type: {e2v_type}")
+            # E2V Type is now configuration-driven, so we don't log it separately
+            logger.info("Using configuration-driven E2V approach")
             
             if self.args.training_type == TrainingType.E2V_LORA:
                 # Use getattr for LoRA parameters that might not be directly in BaseArgs
