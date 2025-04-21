@@ -678,7 +678,9 @@ class E2VTrainer:
         # Check image_encoder availability before dataset initialization
         image_encoder = getattr(self, "image_encoder", None)
         logger.info(f"Using image_encoder for CLIP: {image_encoder is not None}")
-        if image_encoder is None:
+        if image_encoder is not None:
+            logger.info(f"image_encoder type: {type(image_encoder)}")
+        else:
             logger.warning("No image_encoder found for CLIP processing - this may cause issues if CLIP pathway is required")
             
         dataset = IterableE2VDataset(

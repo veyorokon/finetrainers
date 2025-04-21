@@ -123,7 +123,16 @@ class CLIPPathwayProcessor(ProcessorMixin):
         """
         # 1. Get configuration with element-specific overrides
         config = dict(self.config)
-        if element_config and "clip" in element_config:
+        
+        # First check for processors structure (most common)
+        if element_config and "processors" in element_config and "clip" in element_config["processors"]:
+            if isinstance(element_config["processors"]["clip"], dict):
+                config.update(element_config["processors"]["clip"])
+            elif not element_config["processors"]["clip"]:
+                # CLIP pathway disabled for this element
+                return {self.output_names[0]: None}
+        # Legacy support for direct clip key
+        elif element_config and "clip" in element_config:
             if isinstance(element_config["clip"], dict):
                 config.update(element_config["clip"])
             elif not element_config["clip"]:
@@ -135,14 +144,44 @@ class CLIPPathwayProcessor(ProcessorMixin):
         
         # 3. Run CLIP encoder via the clip_processor
         if self.clip_processor is not None:
-            clip_inputs = {"image": processed}
-            clip_outputs = self.clip_processor(**clip_inputs)
-            features = clip_outputs.get("encoder_hidden_states", None)
-            
-            return {self.output_names[0]: features}
+            try:
+                # Use the same approach as our processor in e2v.py
+                # Direct call to CLIPVisionModel with output_hidden_states=True
+                with torch.no_grad():
+                    outputs = self.clip_processor(processed, output_hidden_states=True)
+                    
+                    # Extract features from the model's output
+                    if hasattr(outputs, "last_hidden_state"):
+                        # For transformers CLIPVisionModel
+                        features = outputs.last_hidden_state
+                    elif hasattr(outputs, "image_embeds"):
+                        # For open_clip models
+                        features = outputs.image_embeds
+                    elif hasattr(outputs, "pooler_output"):
+                        # Another possible transformers format
+                        features = outputs.pooler_output.unsqueeze(1)  # Add sequence dim
+                    else:
+                        # Fallback - assume features are the direct output
+                        features = outputs
+                        
+                # Return result with standardized field names
+                result = {
+                    "latents": features,  # Use "latents" consistently
+                    "position": config.get("position", 0),
+                    "frames": features.shape[1] if len(features.shape) > 2 else 1
+                }
+                return {self.output_names[0]: result}
+            except Exception as e:
+                logger.error(f"Error processing CLIP: {e}")
+                raise
         else:
-            # If no CLIP processor, just return preprocessed image
-            return {self.output_names[0]: processed}
+            # If no CLIP processor, return with standardized field names
+            result = {
+                "latents": processed,  # Use "latents" consistently
+                "position": config.get("position", 0),
+                "frames": processed.shape[1] if len(processed.shape) > 2 else 1
+            }
+            return {self.output_names[0]: result}
     
     def _preprocess_input(self, image, config):
         """Preprocess image for CLIP."""
