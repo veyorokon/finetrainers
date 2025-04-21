@@ -127,7 +127,7 @@ We'll use a concise yet expressive JSON configuration format:
             "position": 0
           },
           "clip": {
-            "preprocess": "center_crop"
+            "preprocess": "center_crop" #FF Functions
           }
         },
         {
