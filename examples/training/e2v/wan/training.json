@@ -41,15 +41,15 @@
       "processors": {
         "vae": {
           "resolution": [ 480, 854 ],
-          "preprocessor": "resize"
+          "preprocessor": "letterbox_image"
         },
         "clip": {
           "resolution": [ 512, 512 ],
-          "preprocessor": "center_crop"
+          "preprocessor": "letterbox_image"
         },
         "mask": {
           "resolution": [ 480, 854 ],
-          "preprocessor": "resize",
+          "preprocessor": "letterbox_image",
           "binarize": true,
           "threshold": 0.5
         }
