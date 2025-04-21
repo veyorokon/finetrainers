@@ -56,7 +56,7 @@ class VAEPathwayProcessor(ProcessorMixin):
         result = {
             "latents": repeated,
             "position": config.get("position", 0),
-            "frames": repeated.shape[1] if len(repeated.shape) > 3 else 1
+            "frames": repeated.shape[2] if len(repeated.shape) > 3 else 1
         }
         
         return {self.output_names[0]: result}

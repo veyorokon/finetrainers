@@ -20,11 +20,11 @@
         },
         {
           "name": "mask",
-          "suffixes": [ "_mask.png" ],
-          "required": true,
+          "suffixes": [ ],
+          "required": false,
+          "placeholder": 1,
           "processors": {
-            "vae": { "repeat": 4, "position": 1 },
-            "mask": { "repeat": 1, "position": 0, "binarize": true }
+            "vae": { "repeat": 4, "position": 1 }
           }
         },
         {
