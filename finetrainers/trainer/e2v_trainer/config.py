@@ -179,7 +179,6 @@ class E2VLowRankConfig(E2VConfig):
         parser.add_argument(
             "--target_modules",
             type=str,
-            nargs="+",
             required=True,  # Make it required
         )
         parser.add_argument("--train_qk_norm", action="store_true")
@@ -190,14 +189,8 @@ class E2VLowRankConfig(E2VConfig):
         assert self.lora_alpha > 0, "lora_alpha must be a positive integer."
         assert self.target_modules is not None, "target_modules must be specified for LoRA training"
         
-        if isinstance(self.target_modules, str):
-            # Single regex pattern is valid
-            pass
-        elif isinstance(self.target_modules, list):
-            assert len(self.target_modules) > 0, "target_modules cannot be an empty list"
-            assert all(isinstance(m, str) for m in self.target_modules), "All target_modules entries must be strings"
-        else:
-            raise TypeError("target_modules must be a string or list of strings")
+        # Ensure target_modules is a string
+        assert isinstance(self.target_modules, str), "target_modules must be a string containing a regex pattern"
         
     def map_args(self, argparse_args, mapped_args):
         super().map_args(argparse_args, mapped_args)

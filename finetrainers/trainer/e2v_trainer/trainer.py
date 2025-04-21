@@ -504,27 +504,22 @@ class E2VTrainer:
                 logger.info(f"First 30 available modules: {available_modules[:30]}")
                 logger.info(f"Total available modules: {len(available_modules)}")
                 
-                # Convert string regex patterns to actual module names
-                if isinstance(lora_config.target_modules, str) or (
-                    isinstance(lora_config.target_modules, list) and len(lora_config.target_modules) == 1
-                ):
-                    if isinstance(lora_config.target_modules, str):
-                        target_modules_pattern = lora_config.target_modules
-                    else:
-                        target_modules_pattern = lora_config.target_modules[0]
+                # Convert string regex pattern to actual module names
+                # target_modules is now always a string
+                target_modules_pattern = lora_config.target_modules
+                
+                logger.info(f"Searching for modules matching pattern: {target_modules_pattern}")
+                
+                import re
+                
+                filtered_modules = []
+                for name, module in self.transformer.named_modules():
+                    if re.search(target_modules_pattern, name):
+                        if hasattr(module, "weight") and isinstance(module.weight, torch.nn.Parameter):
+                            filtered_modules.append(name)
                     
-                    logger.info(f"Searching for modules matching pattern: {target_modules_pattern}")
-                    
-                    import re
-                    
-                    filtered_modules = []
-                    for name, module in self.transformer.named_modules():
-                        if re.search(target_modules_pattern, name):
-                            if hasattr(module, "weight") and isinstance(module.weight, torch.nn.Parameter):
-                                filtered_modules.append(name)
-                    
-                    logger.info(f"Found {len(filtered_modules)} modules matching the pattern")
-                    lora_config.target_modules = filtered_modules
+                logger.info(f"Found {len(filtered_modules)} modules matching the pattern")
+                lora_config.target_modules = filtered_modules
                 
                 from peft import get_peft_model
                 
