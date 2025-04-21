@@ -45,7 +45,7 @@ e2v_cmd=(
 lora_cmd=(
   --rank 64
   --lora_alpha 64
-  --target_modules "blocks.*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
+  --target_modules "blocks\\.[0-9]+\\._checkpoint_wrapped_module\\.(attn[0-9]+\\.(to_q|to_k|to_v|to_out\\.0)|ffn\\.net\\.[02])"
 )
 
 # Dataset arguments

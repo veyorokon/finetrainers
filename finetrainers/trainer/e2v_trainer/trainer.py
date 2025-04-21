@@ -444,11 +444,13 @@ class E2VTrainer:
                 # Use getattr to access attributes with defaults
                 rank = getattr(self.args, "rank", 64)  # Default rank 64
                 lora_alpha = getattr(self.args, "lora_alpha", 64)  # Default alpha 64
-                target_modules = getattr(
-                    self.args, 
-                    "target_modules", 
-                    "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
-                )
+                
+                # Get target_modules but don't provide a default
+                if hasattr(self.args, "target_modules") and self.args.target_modules:
+                    target_modules = self.args.target_modules
+                else:
+                    # Raise error instead of using a default that might not work
+                    raise ValueError("target_modules must be specified for LoRA training")
                 
                 lora_config = LoraConfig(
                     r=rank,

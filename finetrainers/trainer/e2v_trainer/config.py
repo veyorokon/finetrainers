@@ -169,9 +169,7 @@ class E2VLowRankConfig(E2VConfig):
 
     rank: int = 64
     lora_alpha: int = 64
-    target_modules: Union[str, List[str]] = (
-        "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
-    )
+    target_modules: Union[str, List[str]] = None  # Must be provided explicitly
     train_qk_norm: bool = False
 
     def add_args(self, parser: argparse.ArgumentParser):
@@ -182,9 +180,7 @@ class E2VLowRankConfig(E2VConfig):
             "--target_modules",
             type=str,
             nargs="+",
-            default=[
-                "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
-            ],
+            required=True,  # Make it required
         )
         parser.add_argument("--train_qk_norm", action="store_true")
 
@@ -192,10 +188,13 @@ class E2VLowRankConfig(E2VConfig):
         super().validate_args(args)
         assert self.rank > 0, "Rank must be a positive integer."
         assert self.lora_alpha > 0, "lora_alpha must be a positive integer."
+        assert self.target_modules is not None, "target_modules must be specified for LoRA training"
+        
         if isinstance(self.target_modules, str):
             # Single regex pattern is valid
             pass
         elif isinstance(self.target_modules, list):
+            assert len(self.target_modules) > 0, "target_modules cannot be an empty list"
             assert all(isinstance(m, str) for m in self.target_modules), "All target_modules entries must be strings"
         else:
             raise TypeError("target_modules must be a string or list of strings")
