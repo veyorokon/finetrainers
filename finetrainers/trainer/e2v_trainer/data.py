@@ -150,13 +150,13 @@ class MaskPathwayProcessor(ProcessorMixin):
         
         # 2. Check if we have processed data from the source
         if processed_data is None or source_processor not in processed_data:
-            logger.warning(f"Source processor {source_processor} not found in processed data")
-            return None
+            logger.error(f"Source processor {source_processor} not found in processed data")
+            raise ValueError(f"Mask processor requires {source_processor} processor results")
         
         source_results = processed_data.get(source_processor, {})
         if not source_results:
-            logger.warning(f"No results from source processor {source_processor}")
-            return None
+            logger.error(f"No results from source processor {source_processor}")
+            raise ValueError(f"Mask processor requires {source_processor} processor results")
         
         # 3. Get source tensor for dimensions
         source_tensors = []
@@ -165,8 +165,8 @@ class MaskPathwayProcessor(ProcessorMixin):
                 source_tensors.append(result[source_field])
         
         if not source_tensors:
-            logger.warning(f"No source tensors found with field {source_field}")
-            return None
+            logger.error(f"No source tensors found with field {source_field}")
+            raise ValueError(f"Mask processor requires {source_processor} tensors with {source_field} field")
         
         # 4. Create mask based on source dimensions
         # Use first tensor as reference for shape
@@ -666,84 +666,92 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         frame_dim = 2
         channel_dim = 1
         
-        # Get tensor combination configuration
+        # Get tensor combination configuration - must be explicitly specified
         tensor_combinations = self.config.get("tensor_combinations", {})
         
-        # Default combinations if not specified
-        if not tensor_combinations:
-            default_combinations = {
-                "reference_latents": ["vae"],
-                "reference_embeddings": ["clip"]
-            }
-            
-            # Add mask-related combinations if mask processor is available
-            if "mask" in self.processors and "mask" in processed_data:
-                default_combinations["reference_mask"] = ["mask"]
-                default_combinations["combined_condition_latents"] = ["vae", "mask"]
-            
-            tensor_combinations = default_combinations
+        # First collect all processor outputs by type
+        collected_tensors = {}
         
-        # Process each defined output combination
+        # Helper function to extract and process tensors from a processor
+        def collect_processor_tensors(proc_name):
+            if proc_name not in processed_data or not processed_data[proc_name]:
+                logger.error(f"Required processor {proc_name} not found in processed data")
+                raise ValueError(f"Required processor {proc_name} not found in processed data")
+            
+            # Get all results for this processor type
+            proc_results = list(processed_data[proc_name].values())
+            if not proc_results:
+                logger.error(f"No results from processor {proc_name}")
+                raise ValueError(f"No results from processor {proc_name}")
+                
+            # Sort by position
+            proc_results.sort(key=lambda x: x.get("position", 0))
+            
+            # Different handling based on processor type
+            field_name = "latents"  # Default field name
+            concat_dim = frame_dim  # Default concatenation dimension
+            
+            # For CLIP processor, we concatenate along sequence dimension
+            if proc_name == "clip":
+                concat_dim = 1  # Sequence dimension for embeddings
+            
+            # Extract tensors from the results
+            tensors = [r.get(field_name) for r in proc_results if field_name in r]
+            if not tensors:
+                logger.error(f"No {field_name} found in results for processor {proc_name}")
+                raise ValueError(f"No {field_name} found in results for processor {proc_name}")
+                
+            # Concatenate tensors
+            combined = torch.cat(tensors, dim=concat_dim)
+            
+            # Apply frame conditioning for tensors with frames
+            if proc_name in ["vae", "mask"] and "video" in data:
+                expected_frames = data["video"].shape[1]
+                if expected_frames and len(combined.shape) >= 5:  # Has frame dimension
+                    processor_config = self.config.get("processors", {}).get(proc_name, {})
+                    frame_cond_type = processor_config.get("frame_conditioning", FrameConditioningType.FULL)
+                    frame_cond_index = processor_config.get("frame_index", 0)
+                    
+                    combined = apply_frame_conditioning_on_latents(
+                        combined,
+                        expected_frames,
+                        channel_dim,
+                        frame_dim,
+                        frame_cond_type,
+                        frame_cond_index,
+                        False
+                    )
+            
+            return combined
+        
+        # Process all processor types
+        for proc_name in set(sum(tensor_combinations.values(), [])):
+            collected_tensors[proc_name] = collect_processor_tensors(proc_name)
+        
+        # Now create the output combinations
         for output_name, processor_list in tensor_combinations.items():
             components = []
             
-            # Collect tensors from each processor
+            # Collect tensors from each processor in the list
             for proc_name in processor_list:
-                if proc_name not in processed_data or not processed_data[proc_name]:
-                    continue
+                if proc_name not in collected_tensors:
+                    logger.error(f"Required processor {proc_name} not found in collected tensors")
+                    raise ValueError(f"Required processor {proc_name} not found in collected tensors")
                 
-                # Get all results for this processor
-                proc_results = list(processed_data[proc_name].values())
-                
-                # Sort by position
-                proc_results.sort(key=lambda x: x.get("position", 0))
-                
-                # Extract tensors based on processor type
-                if proc_name == "vae":
-                    # Concatenate VAE latents along frame dimension (dim=2)
-                    if all("latents" in r for r in proc_results):
-                        vae_latents = torch.cat([r["latents"] for r in proc_results], dim=frame_dim)
-                        
-                        # Apply frame conditioning to match expected video frames
-                        expected_frames = data["video"].shape[1] if "video" in data else None
-                        if expected_frames:
-                            frame_cond_type = self.config.get("processors", {}).get("vae", {}).get("frame_conditioning", FrameConditioningType.FULL)
-                            frame_cond_index = self.config.get("processors", {}).get("vae", {}).get("frame_index", 0)
-                            
-                            vae_latents = apply_frame_conditioning_on_latents(
-                                vae_latents,
-                                expected_frames,
-                                channel_dim,
-                                frame_dim,
-                                frame_cond_type,
-                                frame_cond_index,
-                                False
-                            )
-                        
-                        components.append(vae_latents)
-                elif proc_name == "clip":
-                    # For CLIP, extract features and concatenate along sequence dimension (dim=1)
-                    clip_embeddings = [r for r in proc_results if r is not None]
-                    if clip_embeddings:
-                        clip_combined = torch.cat(clip_embeddings, dim=1)
-                        components.append(clip_combined)
-                elif proc_name == "mask":
-                    # For mask tensors, just collect them directly
-                    mask_tensors = [r["latents"] for r in proc_results if "latents" in r]
-                    if mask_tensors:
-                        components.extend(mask_tensors)
+                components.append(collected_tensors[proc_name])
             
-            # Skip if no components
+            # Output combinations must have at least one component
             if not components:
-                continue
+                logger.error(f"No components available for output {output_name}")
+                raise ValueError(f"No components available for output {output_name}")
             
-            # Determine combine method based on output name
-            if "latents" in output_name:
-                # For latent outputs, concatenate along channel dimension (dim=1)
-                result_data[f"e2v_{output_name}"] = torch.cat(components, dim=channel_dim)
-            elif "embeddings" in output_name:
-                # For embedding outputs, use as is (already concatenated above)
+            # Determine combine method based on number of components
+            if len(components) == 1:
+                # Single component, no need to concatenate
                 result_data[f"e2v_{output_name}"] = components[0]
+            else:
+                # Multiple components, concatenate along channel dimension
+                result_data[f"e2v_{output_name}"] = torch.cat(components, dim=channel_dim)
         
         return result_data
 
