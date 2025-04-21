@@ -104,7 +104,7 @@ The suffixes can vary across datasets (e.g., `_person.png` or `_mask.png` for ch
 
 ## Configuration Format
 
-We'll use a concise yet expressive JSON configuration format:
+We use a concise yet expressive JSON configuration format that includes the new tensor_combinations pattern:
 
 ```json
 {
@@ -122,36 +122,42 @@ We'll use a concise yet expressive JSON configuration format:
           "name": "main_subject", 
           "suffixes": ["_dog.png", "_person.png", "_mask.png"],
           "required": true,
-          "vae": {
-            "repeat": 4, 
-            "position": 0
-          },
-          "clip": {
-            "preprocess": "center_crop" #FF Functions
+          "processors": {
+            "vae": {
+              "repeat": 4, 
+              "position": 0
+            },
+            "clip": {
+              "preprocess": "center_crop"
+            }
           }
         },
         {
           "name": "secondary",
           "suffixes": ["_object.png", "_toy.png"],
           "required": false,
-          "vae": {
-            "repeat": 4, 
-            "position": 1
-          },
-          "clip": {
-            "preprocess": "pad_white"
+          "processors": {
+            "vae": {
+              "repeat": 4, 
+              "position": 1
+            },
+            "clip": {
+              "preprocess": "pad_white"
+            }
           }
         },
         {
           "name": "environment",
           "suffixes": ["_background.png", "_scene.png"],
           "required": false,
-          "vae": {
-            "repeat": 4, 
-            "position": 2
-          },
-          "clip": {
-            "preprocess": "letterbox"
+          "processors": {
+            "vae": {
+              "repeat": 4, 
+              "position": 2
+            },
+            "clip": {
+              "preprocess": "letterbox"
+            }
           }
         }
       ],
@@ -168,7 +174,18 @@ We'll use a concise yet expressive JSON configuration format:
         "clip": {
           "resolution": [512, 512],
           "default_preprocess": "center_crop"
+        },
+        "mask": {
+          "resolution": [480, 854],
+          "source": "vae",
+          "source_field": "latents",
+          "frame_conditioning": "source_length"
         }
+      },
+      
+      "tensor_combinations": {
+        "condition_latents": ["vae", "mask"],
+        "encoder_hidden_states": ["clip"]
       },
       
       "visualization": {
@@ -198,21 +215,25 @@ We'll use a concise yet expressive JSON configuration format:
    - Elements define what inputs to use and their basic properties
    - Processors define how to handle different pathways globally
    - Each element can override processor settings as needed
+   - Tensor combinations define how processor outputs are organized into model inputs
 
 2. **Framework-Friendly Structure**:
    - Direct mapping to processor names via the "processors" object
    - Simple element-processor parameter override pattern
    - Clear pathway for extending with new processor types
+   - Configuration-driven tensor combinations for greater flexibility
 
 3. **Control Compatibility**:
    - Added control-specific parameters to the VAE processor
    - Includes frame_conditioning, frame_index, and concatenate_mask
+   - Dedicated mask processor for flexible mask generation
    - Easily extensible for other processor-specific parameters
 
 4. **Simplified Element Configuration**:
-   - Direct mapping of processor names to element properties
-   - Clean, flat structure for element-specific overrides
+   - Structured processor configuration within elements
+   - Clean hierarchy for element-specific processor overrides
    - Straightforward ability to set processor to null/false to disable
+   - Clear separation between element identification and processing
 
 ### Visualization Configuration
 
@@ -239,6 +260,7 @@ The `frequency` parameter controls how often visualizations are generated (every
    - Implement processors for the E2V conditioning approach
    - Modify the forward pass to handle the dual-path (CLIP + VAE) conditioning
    - Leverage existing control training code for channel concatenation
+   - Implement configuration-driven tensor combinations approach
 
 2. **Data Processing**:
    - Create specialized dataset classes for multiple reference loading
@@ -247,19 +269,22 @@ The `frequency` parameter controls how often visualizations are generated (every
    - Develop image preparation utilities for both semantic and spatial paths
    - Implement frame conditioning similar to control training pattern
    - Support variable numbers of reference images (1-3) as in A2 inference code
+   - Implement dedicated mask processor for flexible mask generation
 
 3. **Training Configuration**:
    - Add E2V-specific training types to configuration
    - Create flexible configuration options for reference image types and naming patterns
    - Design training.json to support dynamic suffix mapping
-   - Support various combination modes (as seen in inference code)
+   - Support explicit tensor combinations through configuration
    - Allow specification of which element types are required vs. optional
+   - Support hierarchical processor configuration within elements
 
 4. **Testing and Validation**:
    - Develop specialized validation dataset for E2V tasks
    - Ensure compatibility with A2 inference code
    - Create test cases with various naming patterns to verify flexibility
    - Test handling of missing reference elements
+   - Validate tensor combinations configuration works as expected
 
 ## Data Processing Pipeline
 
@@ -307,20 +332,34 @@ Target Video Processing
    - This creates a mini-video of reference images
    - Zero padding is added to match the target video's frame count
    - The entire sequence is encoded through VAE (like a video)
-   - A frame mask is created to identify which frames are references
-   - The mask and encoded mini-video are concatenated along the channel dimension
-   - This combined tensor serves as conditioning for the model
+   - VAE outputs provide spatial conditioning information
 
-2. **CLIP Semantic Pathway**:
+2. **Mask Pathway**:
+   - Creates frame mask tensor based on VAE pathway output dimensions
+   - Mask identifies which frames contain reference images (1s) vs padding (0s)
+   - Supports multiple frame conditioning types (full, index, source_length, etc.)
+   - Tensor can be concatenated with VAE latents along the channel dimension
+   - Follows the same pattern as control conditioning masks
+
+3. **CLIP Semantic Pathway**:
    - Reference images are resized to clip_resolution
    - Each image is processed through CLIP vision encoder
    - The resulting embeddings provide semantic information
    - These embeddings feed into cross-attention layers
 
-3. **Combined Effect**:
+4. **Tensor Combinations**:
+   - Processor outputs are organized via tensor_combinations configuration
+   - Typically combines VAE and mask outputs for condition_latents
+   - CLIP outputs become encoder_hidden_states for cross-attention
+   - Configuration-driven approach allows for flexible combinations
+   - No hardcoded tensor handling ensures maximum flexibility
+
+5. **Combined Effect**:
    - VAE path provides spatial details and structure
+   - Mask path identifies reference frame locations
    - CLIP path provides high-level semantic understanding
    - Together they enable accurate preservation of reference elements
+   - Configuration-driven approach allows for easy experimentation
 
 ## Framework Compatibility
 
@@ -328,44 +367,63 @@ Our implementation approach is carefully designed to align with the finetrainers
 
 1. **Processor Pattern**:
    - We follow the ProcessorMixin interface from the framework
-   - Our processors will integrate with the existing processor registry
+   - Our processors integrate with the existing processor registry
    - Input/output naming follows framework conventions
+   - BasePathwayProcessor provides common functionality for all pathways
 
 2. **Dataset Wrapper Approach**:
    - We use the same dataset wrapping pattern as ControlTrainer
-   - IterableE2VDataset will wrap existing datasets
+   - IterableE2VDataset wraps existing datasets
    - Maintains compatibility with dataset distribution and checkpointing
+   - Flexible processor registration and configuration
 
 3. **Configuration Integration**:
    - Our configuration classes extend ConfigMixin
    - We maintain compatibility with the framework's CLI argument handling
    - JSON conversion happens in the framework's expected locations
+   - Support hierarchical processor configuration within elements
 
 4. **Model Specification Reuse**:
    - We leverage WanControlModelSpecification without modification
    - The same forward pass pattern is maintained
    - Channel concatenation uses the same approach as control training
+   - Tensor combinations are configuration-driven for maximum flexibility
 
 5. **Frame Conditioning**:
    - We reuse the same frame conditioning types from control training
-   - Apply the same masking approaches
+   - Apply the same masking approaches through dedicated MaskPathwayProcessor
+   - Added SOURCE_LENGTH conditioning type for element-specific length matching
    - Maintain compatibility with existing inference code
+   
+6. **Tensor Combinations**:
+   - Configuration-driven approach for organizing processor outputs
+   - No hardcoded tensor handling ensures maximum flexibility
+   - Clean separation between processor functionality and tensor organization
+   - Explicit error handling with detailed messages for configuration issues
 
 ## Key Files to Create/Modify
 
-### New Files to Create
+### New Files Created
 - `finetrainers/trainer/e2v_trainer/__init__.py` - Export trainer and configs
 - `finetrainers/trainer/e2v_trainer/config.py` - Configuration for E2V training
+  - Includes FrameConditioningType enum
+  - ElementConfig, ProcessorConfig, E2VConfig classes
 - `finetrainers/trainer/e2v_trainer/trainer.py` - E2V trainer implementation
 - `finetrainers/trainer/e2v_trainer/data.py` - Dataset wrappers for E2V
-- `finetrainers/processors/e2v.py` - VAE and CLIP pathway processors
+  - IterableE2VDataset with processor orchestration
+  - VAEPathwayProcessor, CLIPPathwayProcessor, MaskPathwayProcessor
+  - _combine_pathways using tensor_combinations configuration
+- `finetrainers/processors/e2v.py` - Dedicated processors for E2V pathways
+  - BasePathwayProcessor with common functionality
+  - VAEPathwayProcessor, CLIPPathwayProcessor implementations
+  - Batch processing support for efficient handling
 
-### Existing Files to Update
-- `finetrainers/config.py` - Add E2V training types to TrainingType enum
+### Existing Files Updated
+- `finetrainers/config.py` - Added E2V training types to TrainingType enum
 - `finetrainers/trainer/__init__.py` - Import and expose E2VTrainer
 - `finetrainers/processors/__init__.py` - Import and expose new processors
 
-### Tests to Create
+### Tests Created
 - `tests/trainer/test_e2v_trainer.py` - Test E2V trainer functionality
 - `tests/processors/test_e2v.py` - Test E2V processors
 
