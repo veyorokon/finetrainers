@@ -177,11 +177,16 @@ def apply_frame_conditioning_on_latents(
     concatenate_mask: bool = False,
 ) -> torch.Tensor:
     """Apply frame conditioning on latents, similar to control training."""
+    logger = get_logger()
     num_frames = latents.size(frame_dim)
+    logger.info(f"Frame conditioning - input: shape={latents.shape}, expected_frames={expected_num_frames}")
+    
     mask = torch.zeros_like(latents)
+    logger.info(f"Created mask with shape={mask.shape}")
 
     if frame_conditioning_type == FrameConditioningType.INDEX:
         frame_index = min(frame_conditioning_index or 0, num_frames - 1)
+        logger.info(f"Using INDEX conditioning with frame_index={frame_index}")
         indexing = [slice(None)] * latents.ndim
         indexing[frame_dim] = frame_index
         mask[tuple(indexing)] = 1
@@ -189,6 +194,7 @@ def apply_frame_conditioning_on_latents(
 
     elif frame_conditioning_type == FrameConditioningType.PREFIX:
         frame_index = random.randint(1, num_frames)
+        logger.info(f"Using PREFIX conditioning with random frame_index={frame_index}")
         indexing = [slice(None)] * latents.ndim
         indexing[frame_dim] = slice(0, frame_index)  # Keep frames 0 to frame_index-1
         mask[tuple(indexing)] = 1
@@ -198,12 +204,14 @@ def apply_frame_conditioning_on_latents(
         # Zero or more random frames to keep
         num_frames_to_keep = random.randint(1, num_frames)
         frame_indices = random.sample(range(num_frames), num_frames_to_keep)
+        logger.info(f"Using RANDOM conditioning, keeping {num_frames_to_keep} frames: {frame_indices}")
         indexing = [slice(None)] * latents.ndim
         indexing[frame_dim] = frame_indices
         mask[tuple(indexing)] = 1
         latents = latents * mask
 
     elif frame_conditioning_type == FrameConditioningType.FIRST_AND_LAST:
+        logger.info(f"Using FIRST_AND_LAST conditioning")
         indexing = [slice(None)] * latents.ndim
         indexing[frame_dim] = 0
         mask[tuple(indexing)] = 1
@@ -212,27 +220,39 @@ def apply_frame_conditioning_on_latents(
         latents = latents * mask
 
     elif frame_conditioning_type == FrameConditioningType.FULL:
+        logger.info(f"Using FULL conditioning (all frames)")
         indexing = [slice(None)] * latents.ndim
         indexing[frame_dim] = slice(0, num_frames)
         mask[tuple(indexing)] = 1
         
-
     # Handle padding/truncation to match expected number of frames
     if latents.size(frame_dim) >= expected_num_frames:
+        logger.info(f"Truncating from {latents.size(frame_dim)} to {expected_num_frames} frames")
         slicing = [slice(None)] * latents.ndim
         slicing[frame_dim] = slice(expected_num_frames)
         latents = latents[tuple(slicing)]
         mask = mask[tuple(slicing)]
     else:
+        logger.info(f"Padding from {latents.size(frame_dim)} to {expected_num_frames} frames")
         pad_size = expected_num_frames - num_frames
         pad_shape = list(latents.shape)
         pad_shape[frame_dim] = pad_size
         padding = latents.new_zeros(pad_shape)
+        logger.info(f"Created padding with shape={padding.shape}")
         latents = torch.cat([latents, padding], dim=frame_dim)
         mask = torch.cat([mask, padding], dim=frame_dim)
 
+    logger.info(f"After padding/truncation: latents={latents.shape}, mask={mask.shape}")
+    
     if concatenate_mask:
-        latents = torch.cat([latents, mask], dim=channel_dim)
+        logger.info(f"Concatenating mask along channel dim {channel_dim}")
+        try:
+            latents = torch.cat([latents, mask], dim=channel_dim)
+            logger.info(f"After concatenating mask: shape={latents.shape}")
+        except RuntimeError as e:
+            logger.error(f"Error concatenating mask: {e}")
+            logger.error(f"latents shape: {latents.shape}, mask shape: {mask.shape}")
+            raise
 
     return latents
 
@@ -555,8 +575,20 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 logger.error(f"No {field_name} found in results for processor {proc_name}")
                 raise ValueError(f"No {field_name} found in results for processor {proc_name}")
                 
+            # Log tensor shapes before concatenation
+            logger.info(f"Tensors for {proc_name} before concatenation:")
+            for i, t in enumerate(tensors):
+                logger.info(f"  Tensor {i}: shape={t.shape}")
+            
             # Concatenate tensors
-            combined = torch.cat(tensors, dim=concat_dim)
+            try:
+                combined = torch.cat(tensors, dim=concat_dim)
+                logger.info(f"Successfully concatenated {len(tensors)} tensors for {proc_name}: result shape={combined.shape}")
+            except RuntimeError as e:
+                logger.error(f"Failed to concatenate tensors for {proc_name}: {e}")
+                logger.error(f"Tensor shapes: {[t.shape for t in tensors]}")
+                logger.error(f"Concatenation dimension: {concat_dim}")
+                raise
             
             # Apply frame conditioning for tensors with frames
             if proc_name == "vae" and "video" in data:
@@ -567,25 +599,38 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                     frame_cond_index = processor_config.get("frame_index", 0)
                     concatenate_mask = processor_config.get("concatenate_mask", True)
                     
-                    combined = apply_frame_conditioning_on_latents(
-                        combined,
-                        expected_frames,
-                        channel_dim,
-                        frame_dim,
-                        frame_cond_type,
-                        frame_cond_index,
-                        concatenate_mask
-                    )
+                    logger.info(f"Applying frame conditioning: type={frame_cond_type}, index={frame_cond_index}, concat_mask={concatenate_mask}")
+                    logger.info(f"Combined shape before frame conditioning: {combined.shape}")
+                    logger.info(f"Video shape: {data['video'].shape}, expected_frames={expected_frames}")
+                    
+                    try:
+                        combined = apply_frame_conditioning_on_latents(
+                            combined,
+                            expected_frames,
+                            channel_dim,
+                            frame_dim,
+                            frame_cond_type,
+                            frame_cond_index,
+                            concatenate_mask
+                        )
+                        logger.info(f"Combined shape after frame conditioning: {combined.shape}")
+                    except Exception as e:
+                        logger.error(f"Error during frame conditioning: {e}")
+                        # Continue without frame conditioning
+                        logger.warning("Skipping frame conditioning due to error")
             
             return combined
         
         # Process all processor types
         for proc_name in set(sum(tensor_combinations.values(), [])):
             collected_tensors[proc_name] = collect_processor_tensors(proc_name)
+            # Log the shape of each collected tensor
+            logger.info(f"Collected tensor for {proc_name}: shape={collected_tensors[proc_name].shape}")
         
         # Now create the output combinations
         for output_name, processor_list in tensor_combinations.items():
             components = []
+            logger.info(f"Creating output combination '{output_name}' from processors: {processor_list}")
             
             # Collect tensors from each processor in the list
             for proc_name in processor_list:
@@ -593,7 +638,9 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                     logger.error(f"Required processor {proc_name} not found in collected tensors")
                     raise ValueError(f"Required processor {proc_name} not found in collected tensors")
                 
-                components.append(collected_tensors[proc_name])
+                tensor = collected_tensors[proc_name]
+                logger.info(f"Adding component for {output_name} from {proc_name}: shape={tensor.shape}")
+                components.append(tensor)
             
             # Output combinations must have at least one component
             if not components:
@@ -604,9 +651,18 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             if len(components) == 1:
                 # Single component, no need to concatenate
                 result_data[f"e2v_{output_name}"] = components[0]
+                logger.info(f"Created {output_name} from single component: shape={components[0].shape}")
             else:
                 # Multiple components, concatenate along channel dimension
-                result_data[f"e2v_{output_name}"] = torch.cat(components, dim=channel_dim)
+                logger.info(f"Attempting to concatenate for {output_name}: {[c.shape for c in components]}")
+                try:
+                    result_data[f"e2v_{output_name}"] = torch.cat(components, dim=channel_dim)
+                    logger.info(f"Created {output_name} by concatenating tensors: final shape={result_data[f'e2v_{output_name}'].shape}")
+                except RuntimeError as e:
+                    logger.error(f"Failed to concatenate tensors for {output_name}: {e}")
+                    logger.error(f"Tensor shapes: {[c.shape for c in components]}")
+                    logger.error(f"Target concatenation dimension: {channel_dim}")
+                    raise
         
         return result_data
 
