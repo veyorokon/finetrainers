@@ -12,19 +12,10 @@
         {
           "name": "object",
           "suffixes": [ "_object.png" ],
-          "required": false,
+          "required": true,
           "processors": {
             "vae": { "repeat": 4, "position": 0 },
             "clip": { "position": 1 }
-          }
-        },
-        {
-          "name": "mask",
-          "suffixes": [ ],
-          "required": false,
-          "placeholder": 1,
-          "processors": {
-            "mask": { "frame_conditioning": "source_length", "source": "vae", "source_field": "latents", "position": 0 }
           }
         },
         {
@@ -42,7 +33,9 @@
         "vae": {
           "resolution": [ 480, 854 ],
           "preprocessor": "letterbox",
-          "batch_size": 1
+          "batch_size": 1,
+          "concatenate_mask": true,
+          "frame_conditioning": "full"
         },
         "clip": {
           "resolution": [ 512, 512 ],
@@ -52,18 +45,12 @@
           "alpha_threshold": 0.1,
           "padding_buffer": 8,
           "batch_size": 1
-        },
-        "mask": {
-          "resolution": [ 480, 854 ],
-          "preprocessor": null,
-          "batch_size": 1
         }
       },
 
       "tensor_combinations": {
         "reference_latents": [ "vae" ],
-        "mask_latents": [ "mask" ],
-        "combined_condition_latents": [ "vae", "mask" ],
+        "combined_condition_latents": [ "vae" ],
         "reference_embeddings": [ "clip" ]
       },
 

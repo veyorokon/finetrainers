@@ -42,7 +42,9 @@
         "vae": {
           "resolution": [ 480, 854 ],
           "preprocessor": "letterbox",
-          "batch_size": 1
+          "batch_size": 1,
+          "concatenate_mask": true,
+          "frame_conditioning": "full"
         },
         "clip": {
           "resolution": [ 512, 512 ],
@@ -62,8 +64,7 @@
 
       "tensor_combinations": {
         "reference_latents": [ "vae" ],
-        "mask_latents": [ "mask" ],
-        "combined_condition_latents": [ "vae", "mask" ],
+        "combined_condition_latents": [ "vae" ],
         "reference_embeddings": [ "clip" ]
       },
 

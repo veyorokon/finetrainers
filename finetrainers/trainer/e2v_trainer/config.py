@@ -20,7 +20,6 @@ class FrameConditioningType(str, Enum):
     RANDOM = "random"
     FIRST_AND_LAST = "first_and_last"
     FULL = "full"
-    SOURCE_LENGTH = "source_length"  # Match length to source processor output
 
 
 class ElementConfig(ConfigMixin):
@@ -83,11 +82,6 @@ class ClipProcessorConfig(ProcessorConfig):
     default_preprocess: str = "center_crop"
 
 
-class MaskProcessorConfig(ProcessorConfig):
-    """Configuration for mask generation."""
-    
-    frame_conditioning: str = FrameConditioningType.SOURCE_LENGTH
-    preprocessor: Optional[str] = None  # No preprocessing for mask, it's generated programmatically
 
 
 class E2VConfig(ConfigMixin):
@@ -139,8 +133,6 @@ class E2VConfig(ConfigMixin):
                 processors["vae"] = VaeProcessorConfig(**json_config["processors"]["vae"])
             if "clip" in json_config["processors"]:
                 processors["clip"] = ClipProcessorConfig(**json_config["processors"]["clip"])
-            if "mask" in json_config["processors"]:
-                processors["mask"] = MaskProcessorConfig(**json_config["processors"]["mask"])
             config["processors"] = processors
         
         # Handle tensor_combinations if present
