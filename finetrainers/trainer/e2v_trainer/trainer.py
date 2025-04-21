@@ -126,7 +126,7 @@ class E2VTrainer:
             first_config = json.load(file)["datasets"][0]
         
         # Copy essential configuration parts
-        for key in ["elements", "processors", "data_root"]:
+        for key in ["elements", "processors", "data_root", "tensor_combinations", "visualization"]:
             if key in first_config:
                 e2v_config[key] = first_config[key]
         
@@ -146,6 +146,10 @@ class E2VTrainer:
         e2v_config["frame_conditioning_type"] = getattr(self.args, "frame_conditioning_type", "full")
         e2v_config["frame_conditioning_index"] = getattr(self.args, "frame_conditioning_index", 0)
         e2v_config["frame_conditioning_concatenate_mask"] = getattr(self.args, "frame_conditioning_concatenate_mask", True)
+        
+        # Log the tensor_combinations configuration if present
+        if "tensor_combinations" in e2v_config:
+            logger.info(f"Using tensor combinations configuration: {e2v_config['tensor_combinations']}")
         
         return e2v_config
 
@@ -918,9 +922,26 @@ class E2VTrainer:
         latents_mean = batch.get("latents_mean", None)
         latents_std = batch.get("latents_std", None)
         
-        # Get E2V specific conditioning
-        e2v_vae_latents = batch.get("e2v_vae_latents")
-        e2v_clip_embeddings = batch.get("e2v_clip_embeddings")
+        # Get control latents based on tensor_combinations
+        # Try different possible keys based on tensor_combinations config
+        control_latents = None
+        
+        # Look for combined_condition_latents first (preferred)
+        if "e2v_combined_condition_latents" in batch:
+            control_latents = batch["e2v_combined_condition_latents"]
+        # Fall back to reference_latents if that's all we have
+        elif "e2v_reference_latents" in batch:
+            control_latents = batch["e2v_reference_latents"]
+        else:
+            # Default to VAE latents if tensor_combinations not configured
+            control_latents = batch.get("e2v_vae_latents")
+            
+        # Get CLIP embeddings if available
+        clip_embeddings = None
+        if "e2v_reference_embeddings" in batch:
+            clip_embeddings = batch["e2v_reference_embeddings"]
+        elif "e2v_clip_embeddings" in batch:
+            clip_embeddings = batch["e2v_clip_embeddings"]
         
         # Generate random sigmas for flow matching
         generator = torch.Generator(device=self.state.parallel_backend.device).manual_seed(self.args.seed)
@@ -929,7 +950,7 @@ class E2VTrainer:
         # Prepare batch for model
         latent_model_conditions = {
             "latents": video_latents,
-            "control_latents": e2v_vae_latents,
+            "control_latents": control_latents,
         }
         
         if latents_mean is not None and latents_std is not None:
@@ -942,8 +963,8 @@ class E2VTrainer:
         }
         
         # Add CLIP embeddings if available
-        if e2v_clip_embeddings is not None:
-            condition_model_conditions["encoder_hidden_states_image"] = e2v_clip_embeddings
+        if clip_embeddings is not None:
+            condition_model_conditions["encoder_hidden_states_image"] = clip_embeddings
         
         # Sample sigmas for training
         sigmas = torch.randn(

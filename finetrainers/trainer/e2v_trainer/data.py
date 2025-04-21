@@ -443,93 +443,182 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         return element_data
     
     def _process_elements(self, data, element_data):
-        """Process each element through each pathway."""
-        results = {"vae": {}, "clip": {}}
+        """Process elements through each pathway using batch processing.
         
-        # Process each element through each pathway
+        Groups elements by processor type and processes them in batches for efficiency.
+        """
+        results = {proc_name: {} for proc_name in self.processors}
+        
+        # Group elements by processor for batch processing
+        processor_inputs = {proc_name: [] for proc_name in self.processors}
+        processor_configs = {proc_name: [] for proc_name in self.processors}
+        processor_elements = {proc_name: [] for proc_name in self.processors}
+        
+        # Map elements to processors
         for element_name, element_info in element_data.items():
             element_image = element_info["image"]
             element_config = element_info["config"]
             
-            # Process through each pathway
-            for processor_name, processor in self.processors.items():
-                # Skip if the configuration doesn't enable this processor for this element
-                if processor_name == "clip" and not element_config.get("clip", False):
+            # Check which processors are configured for this element
+            for proc_name, processor in self.processors.items():
+                # Skip if the processor is explicitly disabled for this element
+                if proc_name == "clip" and not element_config.get("clip", False):
                     continue
                 
-                # Process the element
-                if processor_name == "vae":
-                    result = processor(image=element_image, element_config=element_config)
-                elif processor_name == "clip":
-                    result = processor(image=element_image, element_config=element_config)
-                else:
-                    continue
+                processor_inputs[proc_name].append(element_image)
+                processor_configs[proc_name].append(element_config)
+                processor_elements[proc_name].append(element_name)
+        
+        # Process each processor type in batches
+        for proc_name, processor in self.processors.items():
+            if not processor_inputs[proc_name]:
+                continue
+            
+            # Get batch size from processor config
+            batch_size = self.config.get("processors", {}).get(proc_name, {}).get("batch_size", len(processor_inputs[proc_name]))
+            
+            # Process in batches if needed
+            for batch_start in range(0, len(processor_inputs[proc_name]), batch_size):
+                batch_end = min(batch_start + batch_size, len(processor_inputs[proc_name]))
                 
-                # Store result if pathway is enabled and returned a valid result
-                output_name = processor.output_names[0]
-                if result[output_name] is not None:
-                    results[processor_name][element_name] = result[output_name]
+                batch_inputs = processor_inputs[proc_name][batch_start:batch_end]
+                batch_configs = processor_configs[proc_name][batch_start:batch_end]
+                batch_elements = processor_elements[proc_name][batch_start:batch_end]
+                
+                # Process each element in the batch
+                for i, (element_input, element_config, element_name) in enumerate(zip(batch_inputs, batch_configs, batch_elements)):
+                    # Process the element based on processor type
+                    if proc_name == "vae":
+                        result = processor(image=element_input, element_config=element_config)
+                    elif proc_name == "clip":
+                        result = processor(image=element_input, element_config=element_config)
+                    else:
+                        continue
+                    
+                    # Store result if pathway is enabled and returned a valid result
+                    output_name = processor.output_names[0]
+                    if result[output_name] is not None:
+                        results[proc_name][element_name] = result[output_name]
         
         return results
     
     def _combine_pathways(self, data, processed_data):
-        """Combine results from all pathways."""
+        """Combine results according to tensor_combinations configuration."""
         result_data = dict(data)
         
-        # Combine VAE pathway results
+        # Constants for tensor dimensions
+        frame_dim = 2
+        channel_dim = 1
+        
+        # Create mask for conditioning
+        mask = None
         if "vae" in processed_data and processed_data["vae"]:
             vae_results = list(processed_data["vae"].values())
-            
-            # Sort by position
-            vae_results.sort(key=lambda x: x["position"])
-            
-            # Concatenate along frame dimension
-            vae_latents = torch.cat([r["latents"] for r in vae_results], dim=2)
-            
-            # Create mask
-            frame_dim = 2
-            channel_dim = 1
-            num_frames = vae_latents.shape[frame_dim]
-            mask = torch.zeros_like(vae_latents[:, :1])  # Take only first channel for mask
-            mask[:, :, :sum(r["frames"] for r in vae_results)] = 1
-            
-            # Apply frame conditioning
-            frame_cond_type = self.config.get("frame_conditioning_type", FrameConditioningType.FULL)
-            frame_cond_index = self.config.get("frame_conditioning_index", 0)
-            concatenate_mask = self.config.get("frame_conditioning_concatenate_mask", True)
-            
-            # Apply frame conditioning to match expected video frames
-            expected_frames = data["video"].shape[1] if "video" in data else None
-            if expected_frames:
-                vae_latents = apply_frame_conditioning_on_latents(
-                    vae_latents,
-                    expected_frames,
-                    channel_dim,
-                    frame_dim,
-                    frame_cond_type,
-                    frame_cond_index,
-                    False  # We'll handle mask concatenation separately
-                )
+            if vae_results:
+                # Sort by position
+                vae_results.sort(key=lambda x: x["position"])
                 
-                if concatenate_mask:
-                    # Match mask shape to conditioned latents
-                    mask = mask[:, :, :vae_latents.shape[frame_dim]]
-                    
-                    # Concatenate mask with latents
-                    vae_latents = torch.cat([vae_latents, mask], dim=channel_dim)
-            
-            # Add to result
-            result_data["e2v_vae_latents"] = vae_latents
+                # Get example latent for shape
+                example_latent = vae_results[0]["latents"]
+                
+                # Create mask for the length of all VAE frames
+                mask = torch.zeros_like(example_latent[:, :1])  # Take only first channel
+                mask_length = sum(r["frames"] for r in vae_results)
+                mask[:, :, :mask_length] = 1
+                
+                # Process mask according to frame conditioning
+                frame_cond_type = self.config.get("processors", {}).get("vae", {}).get("frame_conditioning", FrameConditioningType.FULL)
+                frame_cond_index = self.config.get("processors", {}).get("vae", {}).get("frame_index", 0)
+                
+                # Match to expected video frames if available
+                expected_frames = data["video"].shape[1] if "video" in data else None
+                if expected_frames:
+                    mask = apply_frame_conditioning_on_latents(
+                        mask,
+                        expected_frames,
+                        channel_dim,
+                        frame_dim,
+                        frame_cond_type,
+                        frame_cond_index,
+                        False
+                    )
+                
+                # Store the mask for tensor combinations
+                processed_data["mask"] = {"mask": {"latents": mask, "position": 0}}
         
-        # Combine CLIP pathway results
-        if "clip" in processed_data and processed_data["clip"]:
-            clip_embeddings = list(processed_data["clip"].values())
+        # Get tensor combination configuration
+        tensor_combinations = self.config.get("tensor_combinations", {})
+        
+        # Default combinations if not specified
+        if not tensor_combinations:
+            tensor_combinations = {
+                "reference_latents": ["vae"],
+                "mask_latents": ["mask"],
+                "combined_condition_latents": ["vae", "mask"],
+                "reference_embeddings": ["clip"]
+            }
+        
+        # Process each defined output combination
+        for output_name, processor_list in tensor_combinations.items():
+            components = []
             
-            # Concatenate along sequence dimension (dim=1)
-            if clip_embeddings and all(e is not None for e in clip_embeddings):
-                # Assume clip_embeddings is a list of tensors of shape [batch, seq_len, hidden_dim]
-                clip_combined = torch.cat(clip_embeddings, dim=1)
-                result_data["e2v_clip_embeddings"] = clip_combined
+            # Collect tensors from each processor
+            for proc_name in processor_list:
+                if proc_name not in processed_data or not processed_data[proc_name]:
+                    continue
+                
+                # Get all results for this processor
+                proc_results = list(processed_data[proc_name].values())
+                
+                # Sort by position
+                proc_results.sort(key=lambda x: x.get("position", 0))
+                
+                # Extract tensors based on processor type
+                if proc_name == "vae":
+                    # Concatenate VAE latents along frame dimension (dim=2)
+                    if all("latents" in r for r in proc_results):
+                        vae_latents = torch.cat([r["latents"] for r in proc_results], dim=frame_dim)
+                        
+                        # Apply frame conditioning to match expected video frames
+                        expected_frames = data["video"].shape[1] if "video" in data else None
+                        if expected_frames:
+                            frame_cond_type = self.config.get("processors", {}).get("vae", {}).get("frame_conditioning", FrameConditioningType.FULL)
+                            frame_cond_index = self.config.get("processors", {}).get("vae", {}).get("frame_index", 0)
+                            
+                            vae_latents = apply_frame_conditioning_on_latents(
+                                vae_latents,
+                                expected_frames,
+                                channel_dim,
+                                frame_dim,
+                                frame_cond_type,
+                                frame_cond_index,
+                                False
+                            )
+                        
+                        components.append(vae_latents)
+                elif proc_name == "clip":
+                    # For CLIP, extract features and concatenate along sequence dimension (dim=1)
+                    clip_embeddings = [r for r in proc_results if r is not None]
+                    if clip_embeddings:
+                        clip_combined = torch.cat(clip_embeddings, dim=1)
+                        components.append(clip_combined)
+                elif proc_name == "mask":
+                    # For mask tensors, just collect them directly
+                    mask_tensors = [r["latents"] for r in proc_results if "latents" in r]
+                    if mask_tensors:
+                        components.extend(mask_tensors)
+            
+            # Skip if no components
+            if not components:
+                continue
+            
+            # Determine combine method based on output name
+            if "latents" in output_name:
+                # For latent outputs, concatenate along channel dimension (dim=1)
+                result_data[f"e2v_{output_name}"] = torch.cat(components, dim=channel_dim)
+            elif "embeddings" in output_name:
+                # For embedding outputs, use as is (already concatenated above)
+                result_data[f"e2v_{output_name}"] = components[0]
         
         return result_data
 

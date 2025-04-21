@@ -55,9 +55,11 @@ class ProcessorConfig(ConfigMixin):
 
     resolution: List[int]
     default_preprocess: str = "resize"
+    batch_size: int = 16  # Default batch size for processing
 
     def validate_args(self, args):
         assert len(self.resolution) == 2, "Resolution must be [height, width]"
+        assert self.batch_size > 0, "Batch size must be a positive integer"
         
     def map_args(self, argparse_args, mapped_args):
         # No CLI args to map for processor config
@@ -89,6 +91,7 @@ class E2VConfig(ConfigMixin):
     e2v_type: str = E2VType.DUAL
     elements: List[ElementConfig] = []  # Default to empty list
     processors: Dict[str, Union[VaeProcessorConfig, ClipProcessorConfig]] = {}  # Default to empty dict
+    tensor_combinations: Dict[str, List[str]] = {}  # Configuration for tensor combinations
     frame_conditioning_type: str = FrameConditioningType.FULL
     frame_conditioning_index: int = 0
     frame_conditioning_concatenate_mask: bool = True
@@ -143,9 +146,13 @@ class E2VConfig(ConfigMixin):
                 processors["clip"] = ClipProcessorConfig(**json_config["processors"]["clip"])
             config["processors"] = processors
         
+        # Handle tensor_combinations if present
+        if "tensor_combinations" in json_config:
+            config["tensor_combinations"] = json_config["tensor_combinations"]
+        
         # Copy other fields
         for key, value in json_config.items():
-            if key not in ["elements", "processors"]:
+            if key not in ["elements", "processors", "tensor_combinations"]:
                 config[key] = value
         
         # Update self with the new config

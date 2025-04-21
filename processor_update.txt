@@ -19,11 +19,11 @@ This document outlines the updated JSON configuration structure for Elements-to-
 
       "elements": [
         {
-          "name": "main_subject",
+          "name": "main_subject", 
           "suffixes": ["_mask.png", "_person.png"],
           "required": true,
           "processors": {
-            "vae": { "repeat": 4, "position": 0 },
+            "vae": { "repeat": 4, "position": 0, "trim_alpha": true, "padding_buffer": 8 },
             "mask": { "repeat": 1, "position": 0, "binarize": true }
           }
         },
@@ -220,22 +220,27 @@ def _combine_pathways(self, data, processed_data):
 
 ## Processor Implementations
 
-### 1. Base Processor (common functionality)
+### 1. BasePathwayProcessor
 - Initialization with config and output_names
-- Preprocessing using FF utilities
-- Batch processing capability
+- Generic batch processing interface
+- Consistent method signatures
+- Fallback to individual processing when batching isn't possible
 
 ### 2. VAEPathwayProcessor
 - Uses letterbox preprocessing to maintain aspect ratio
 - Handles frame repetition for reference images
 - Applies VAE encoding when available
 - Specialized batch processing for VAE tensors
+- Supports element-specific configuration via `element_config["processors"]["vae"]`
+- Automatic tensor stacking for compatible shapes
 
 ### 3. CLIPPathwayProcessor
 - Uses center_crop preprocessing as expected by CLIP
 - Applies CLIP encoding when available
 - Extracts appropriate features from CLIP output
 - Supports batch processing for CLIP vision models
+- Supports element-specific configuration via `element_config["processors"]["clip"]`
+- Handles disabled CLIP pathways gracefully
 
 ## Files to Update
 
@@ -263,15 +268,18 @@ def _combine_pathways(self, data, processed_data):
 ## Implementation Guidelines
 
 1. **Processor Interface**:
-   - Consistent initialization with output_names and config
+   - BasePathwayProcessor provides common interface
+   - Two-phase design: preprocessing + encoding
    - Forward method that takes models, tensors, and element_config
-   - Batch processing method for multiple elements
-   - Return dictionary with tensors and metadata
+   - Batch processing for multiple elements
+   - Return dictionary with tensors and metadata following framework convention
 
 2. **Data Flow**:
-   - Dataset loads elements and groups them by processor
-   - Processors handle elements in batches for efficiency
-   - Combined results are assembled according to tensor_combinations
+   - Dataset loads elements and groups them by processor type
+   - Elements with the same processor are processed in batches
+   - Models are kept on GPU throughout processing
+   - Tensor stacking for efficient batch encoding
+   - Combined results assembled according to tensor_combinations
    - Trainer receives properly named tensors ready for training
 
 3. **Preprocessing Implementation**:
