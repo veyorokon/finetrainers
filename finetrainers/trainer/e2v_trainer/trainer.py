@@ -445,10 +445,41 @@ class E2VTrainer:
                 rank = getattr(self.args, "rank", 64)  # Default rank 64
                 lora_alpha = getattr(self.args, "lora_alpha", 64)  # Default alpha 64
                 
+                # Log all args for debugging
+                logger.info("=== DEBUGGING TARGET_MODULES ===")
+                
+                # Check the raw args object
+                logger.info(f"Args type: {type(self.args)}")
+                
+                # Log key attributes
+                logger.info(f"Has 'target_modules': {hasattr(self.args, 'target_modules')}")
+                
+                # Try accessing with getattr
+                tm_value = getattr(self.args, "target_modules", "NOT_FOUND")
+                logger.info(f"target_modules via getattr: {repr(tm_value)}")
+                
+                # Check if it's in __dict__
+                if hasattr(self.args, "__dict__"):
+                    logger.info(f"__dict__ has 'target_modules': {'target_modules' in self.args.__dict__}")
+                    if 'target_modules' in self.args.__dict__:
+                        logger.info(f"target_modules from __dict__: {repr(self.args.__dict__['target_modules'])}")
+                
+                # Get all attributes
+                all_attrs = [attr for attr in dir(self.args) if not attr.startswith('_')]
+                logger.info(f"All attributes: {all_attrs}")
+                
+                # Log all args for debugging 
+                all_args = {attr: getattr(self.args, attr) for attr in all_attrs}
+                logger.info(f"All args: {all_args}")
+                
                 # Get target_modules but don't provide a default
                 if hasattr(self.args, "target_modules") and self.args.target_modules:
                     target_modules = self.args.target_modules
+                    logger.info(f"Found target_modules: {target_modules}")
                 else:
+                    # Log keys to help debug
+                    logger.error(f"target_modules not found in args. Available args: {', '.join(dir(self.args))}")
+                    
                     # Raise error instead of using a default that might not work
                     raise ValueError("target_modules must be specified for LoRA training")
                 
