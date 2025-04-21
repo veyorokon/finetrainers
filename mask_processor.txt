@@ -1,0 +1,67 @@
+1. Fix VAEPathwayProcessor Frame Calculation
+
+  - Fix the "frames" calculation in the result dictionary to use the correct dimension index:
+  "frames": repeated.shape[2] if len(repeated.shape) > 3 else 1  # Correct dimension for frames
+
+  2. Create MaskPathwayProcessor
+
+  - Implement a new processor that generates masks based on other processors' outputs
+  - Support configuration for source processor, source field, and frame conditioning type
+  - Ensure it follows the same pattern as other ProcessorMixin implementations
+
+  3. Add New FrameConditioningType
+
+  - Add the "match_length" type to FrameConditioningType enum
+  - Update apply_frame_conditioning_on_latents to support this new type
+  - Implementation should dimension mask to match source processor output
+
+  4. Register MaskPathwayProcessor in IterableE2VDataset
+
+  - Update init to initialize the mask processor when configured
+  - Ensure proper access to other processor outputs for reference
+
+  5. Clean Up _combine_pathways
+
+  - Remove hardcoded mask generation and concatenation
+  - Rely exclusively on tensor_combinations for output organization
+  - Ensure proper error handling for missing processors
+
+  6. Create MaskProcessorConfig
+
+  - Add configuration class for the mask processor
+  - Follow framework patterns for consistent configuration
+
+  Separation of Concerns
+
+  Level of Abstraction
+
+  - Elements: Define what inputs to use (including virtual ones like mask)
+  - Processors: Define how to process inputs
+  - Element-Processor Config: Define element-specific processing parameters
+  - tensor_combinations: Define how to organize processor outputs into model inputs
+
+  Framework Alignment
+
+  - ProcessorMixin: All processors follow this interface
+  - ConfigMixin: All configurations follow this pattern
+  - Batch Processing: Maintain batch processing capabilities
+  - Virtual Elements: Support elements with no physical files
+
+  Design Principles
+
+  1. Framework Consistency: Follow established patterns from existing trainers
+  2. Configuration-Driven: Behavior controlled through JSON, not hardcoding
+  3. Clean Separation: Keep concerns clearly separated in both code and config
+  4. Flexibility: Support various mask patterns through frame conditioning types
+  5. Elegance: Simple implementation with minimal code changes
+
+  Benefits
+
+  - Removes hardcoded behavior for greater experimental flexibility
+  - Explicit tensor combination control through configuration
+  - Clean separation between what processors do and how outputs are combined
+  - Maintains compatibility with A2 inference approach
+  - Enables more advanced configurations for future research
+
+  This approach ensures the implementation is both powerful and elegant, preserving the design principles of the
+  framework while adding the flexibility needed for E2V training.

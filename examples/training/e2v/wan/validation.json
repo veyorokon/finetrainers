@@ -20,11 +20,11 @@
         },
         {
           "name": "mask",
-          "suffixes": [ "_mask.png" ],
-          "required": true,
+          "suffixes": [ ],
+          "required": false,
+          "placeholder": 1,
           "processors": {
-            "vae": { "repeat": 4, "position": 1 },
-            "mask": { "repeat": 1, "position": 0, "binarize": true }
+            "mask": { "frame_conditioning": "source_length", "source": "vae", "source_field": "latents", "position": 0 }
           }
         },
         {
@@ -55,9 +55,7 @@
         },
         "mask": {
           "resolution": [ 480, 854 ],
-          "preprocessor": "letterbox",
-          "binarize": true,
-          "threshold": 0.5,
+          "preprocessor": null,
           "batch_size": 1
         }
       },
