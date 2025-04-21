@@ -381,9 +381,14 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                     continue
                 
                 # Process elements through VAE and CLIP pathways
+                logger.info("Calling _process_elements")
                 processed_data = self._process_elements(data, element_data)
+                logger.info(f"_process_elements returned with keys: {list(processed_data.keys())}")
+                for proc_name, proc_results in processed_data.items():
+                    logger.info(f"  Results for {proc_name} has {len(proc_results)} entries")
                 
                 # Combine all pathways into final output
+                logger.info("Calling _combine_pathways")
                 combined_data = self._combine_pathways(data, processed_data)
                 
                 yield combined_data
@@ -516,8 +521,21 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             
             # Check which processors are configured for this element
             for proc_name, processor in self.processors.items():
+                # Debug: log element config for clip
+                if proc_name == "clip":
+                    logger.info(f"Element {element_name} - checking if CLIP is enabled")
+                    logger.info(f"Element config: {element_config}")
+                    logger.info(f"Element config has 'clip': {element_config.get('clip', None)}")
+                    logger.info(f"Element config has 'processors': {element_config.get('processors', None)}")
+                    if "processors" in element_config:
+                        logger.info(f"Element processors has 'clip': {element_config['processors'].get('clip', None)}")
+                
                 # Skip if the processor is explicitly disabled for this element
-                if proc_name == "clip" and not element_config.get("clip", False):
+                if proc_name == "clip" and (not element_config.get("clip", True) or 
+                                          ("processors" in element_config and 
+                                           "clip" in element_config["processors"] and 
+                                           not element_config["processors"]["clip"])):
+                    logger.info(f"Skipping CLIP for element {element_name} - explicitly disabled")
                     continue
                 
                 
@@ -547,20 +565,47 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                     if proc_name == "vae":
                         result = processor(image=element_input, element_config=element_config)
                     elif proc_name == "clip":
-                        result = processor(image=element_input, element_config=element_config)
+                        logger.info(f"Processing CLIP for element {element_name}")
+                        logger.info(f"CLIP processor type: {type(processor)}")
+                        logger.info(f"CLIP processor clip_processor attribute: {hasattr(processor, 'clip_processor')}")
+                        if hasattr(processor, 'clip_processor'):
+                            logger.info(f"CLIP processor's clip_processor is: {type(processor.clip_processor)}")
+                            logger.info(f"CLIP processor's clip_processor is None: {processor.clip_processor is None}")
+                        try:
+                            result = processor(image=element_input, element_config=element_config)
+                            logger.info(f"CLIP processing succeeded for {element_name}, result keys: {list(result.keys())}")
+                            if processor.output_names[0] in result:
+                                logger.info(f"CLIP result contains output_name: {processor.output_names[0]}")
+                                clip_result = result[processor.output_names[0]]
+                                if clip_result is not None:
+                                    logger.info(f"CLIP result is not None, keys: {list(clip_result.keys())}")
+                                    if 'latents' in clip_result:
+                                        logger.info(f"CLIP latents shape: {clip_result['latents'].shape}")
+                        except Exception as e:
+                            logger.error(f"Error during CLIP processing: {e}")
+                            raise
                     else:
                         continue
                     
                     # Store result if pathway is enabled and returned a valid result
                     output_name = processor.output_names[0]
                     if result[output_name] is not None:
+                        logger.info(f"Storing result for {proc_name} element {element_name}")
                         results[proc_name][element_name] = result[output_name]
+                        logger.info(f"After storing, results[{proc_name}] has keys: {list(results[proc_name].keys())}")
         
         return results
     
     def _combine_pathways(self, data, processed_data):
         """Combine results according to tensor_combinations configuration."""
         result_data = dict(data)
+        
+        # Debug: Log what's in processed_data
+        logger.info(f"_combine_pathways received processed_data with keys: {list(processed_data.keys())}")
+        for proc_name, proc_results in processed_data.items():
+            logger.info(f"  Processed data for {proc_name} has {len(proc_results)} entries")
+            for elem_name, elem_result in proc_results.items():
+                logger.info(f"    Element {elem_name} result has keys: {list(elem_result.keys())}")
         
         # Constants for tensor dimensions
         frame_dim = 2
