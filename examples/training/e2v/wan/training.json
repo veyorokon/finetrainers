@@ -50,8 +50,7 @@
 
       "tensor_combinations": {
         "reference_latents": [ "vae" ],
-        "combined_condition_latents": [ "vae" ],
-        "reference_embeddings": [ "clip" ]
+        "combined_condition_latents": [ "vae" ]
       },
 
       "visualization": {

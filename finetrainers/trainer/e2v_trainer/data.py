@@ -287,6 +287,9 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         # Initialize processors based on configuration
         self.processors = {}
         
+        # Log processor initialization
+        logger.info(f"Initializing E2V processors. Have CLIP processor: {clip_processor is not None}")
+        
         # Initialize all processors defined in the configuration
         for proc_name, proc_config in config.get("processors", {}).items():
             if proc_name == "vae":
@@ -295,17 +298,36 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                     config=proc_config,
                     device=device
                 )
+                logger.info(f"Initialized VAE processor with config: {proc_config}")
             elif proc_name == "clip":
-                self.processors["clip"] = CLIPPathwayProcessor(
-                    output_names=["clip_output"],
-                    config=proc_config,
-                    device=device,
-                    clip_processor=clip_processor
-                )
+                if clip_processor is None:
+                    logger.warning(f"CLIP processor requested but no clip_processor provided - CLIP pathway will not work")
+                    # Skip initializing CLIP processor if no model available
+                    if "tensor_combinations" in config:
+                        # Check if CLIP is required in tensor_combinations
+                        is_clip_required = any("clip" in procs for procs in config["tensor_combinations"].values())
+                        if is_clip_required:
+                            logger.error(f"CLIP is required in tensor_combinations but no clip_processor provided")
+                else:
+                    self.processors["clip"] = CLIPPathwayProcessor(
+                        output_names=["clip_output"],
+                        config=proc_config,
+                        device=device,
+                        clip_processor=clip_processor
+                    )
+                    logger.info(f"Initialized CLIP processor with config: {proc_config}")
             else:
                 logger.warning(f"Unknown processor type: {proc_name}")
         
         logger.info(f"Initialized processors: {list(self.processors.keys())}")
+        
+        # Check if required processors for tensor_combinations are available
+        if "tensor_combinations" in config:
+            all_procs = set(sum(config["tensor_combinations"].values(), []))
+            missing_procs = [p for p in all_procs if p not in self.processors]
+            if missing_procs:
+                logger.warning(f"Missing required processors for tensor_combinations: {missing_procs}")
+                logger.warning(f"This may cause errors during processing")
         
         # Create element lookup - assume elements are dictionaries
         self.elements = {}
@@ -621,11 +643,28 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             
             return combined
         
+        # Log tensor combinations for debugging
+        logger.info(f"Using tensor_combinations: {tensor_combinations}")
+        
+        # Get list of all required processors from tensor_combinations
+        required_procs = set(sum(tensor_combinations.values(), []))
+        logger.info(f"Required processors from tensor_combinations: {required_procs}")
+        logger.info(f"Available processors: {list(self.processors.keys())}")
+        
         # Process all processor types
-        for proc_name in set(sum(tensor_combinations.values(), [])):
-            collected_tensors[proc_name] = collect_processor_tensors(proc_name)
-            # Log the shape of each collected tensor
-            logger.info(f"Collected tensor for {proc_name}: shape={collected_tensors[proc_name].shape}")
+        for proc_name in required_procs:
+            if proc_name not in self.processors:
+                logger.error(f"Required processor '{proc_name}' not found in available processors {list(self.processors.keys())}")
+                raise ValueError(f"Required processor '{proc_name}' not available - check tensor_combinations configuration")
+                
+            # Process this processor type
+            try:
+                collected_tensors[proc_name] = collect_processor_tensors(proc_name)
+                # Log the shape of each collected tensor
+                logger.info(f"Collected tensor for {proc_name}: shape={collected_tensors[proc_name].shape}")
+            except Exception as e:
+                logger.error(f"Error collecting tensors for processor {proc_name}: {e}")
+                raise
         
         # Now create the output combinations
         for output_name, processor_list in tensor_combinations.items():

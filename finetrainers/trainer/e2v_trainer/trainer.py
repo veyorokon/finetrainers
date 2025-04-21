@@ -399,9 +399,14 @@ class E2VTrainer:
         logger.info("Loading condition models")
         
         components = self.model_specification.load_condition_models()
+        logger.info(f"Loaded condition models: {list(components.keys())}")
         
         for name, component in components.items():
             setattr(self, name, component)
+            
+        logger.info(f"Have image_encoder: {hasattr(self, 'image_encoder')}")
+        if hasattr(self, 'image_encoder'):
+            logger.info(f"image_encoder type: {type(self.image_encoder)}")
         
         self._are_condition_models_loaded = True
 
@@ -666,11 +671,17 @@ class E2VTrainer:
         e2v_config = self._extract_e2v_config(self.args.dataset_config)
         
         # Wrap with E2V dataset, following same pattern as control_trainer
+        # Check image_encoder availability before dataset initialization
+        image_encoder = getattr(self, "image_encoder", None)
+        logger.info(f"Using image_encoder for CLIP: {image_encoder is not None}")
+        if image_encoder is None:
+            logger.warning("No image_encoder found for CLIP processing - this may cause issues if CLIP pathway is required")
+            
         dataset = IterableE2VDataset(
             dataset, 
             e2v_config,
             device=self.state.parallel_backend.device,
-            clip_processor=getattr(self, "image_encoder", None),
+            clip_processor=image_encoder,
             vae=self.vae
         )
         
