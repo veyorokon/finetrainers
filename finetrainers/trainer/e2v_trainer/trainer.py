@@ -262,11 +262,10 @@ class E2VTrainer:
             
             # E2V is configuration-driven
             if self.args.training_type == TrainingType.E2V_LORA:
-                # Use getattr for LoRA parameters
-                lora_rank = getattr(self.args, "rank", 64)
-                lora_alpha = getattr(self.args, "lora_alpha", 64)
-                logger.info(f"LoRA rank: {lora_rank}")
-                logger.info(f"LoRA alpha: {lora_alpha}")
+                # Access values directly from args
+                logger.info(f"LoRA rank: {self.args.rank}")
+                logger.info(f"LoRA alpha: {self.args.lora_alpha}")
+                logger.info(f"LoRA target modules: {self.args.target_modules}")
     
     def _init_trackers(self) -> None:
         """Initialize model trackers like WandB."""
@@ -441,26 +440,14 @@ class E2VTrainer:
         if isinstance(self.args, E2VLowRankConfig) or getattr(self.args, "training_type", None) == TrainingType.E2V_LORA:
             # Configure LoRA
             if not hasattr(self.transformer, "peft_config"):
-                # Use getattr to access attributes with defaults
-                rank = getattr(self.args, "rank", 64)  # Default rank 64
-                lora_alpha = getattr(self.args, "lora_alpha", 64)  # Default alpha 64
+                # Access attributes directly from self.args
+                # These values should be available after being properly mapped in the config.py
+                rank = self.args.rank
+                lora_alpha = self.args.lora_alpha
+                target_modules = self.args.target_modules
                 
-                # Find target_modules using framework standard approach
-                
-                # Get target_modules using standard approach
-                if hasattr(self.args, "target_modules") and self.args.target_modules:
-                    # Direct attribute access
-                    target_modules = self.args.target_modules
-                elif hasattr(self.args, "_registered_config_mixins"):
-                    # Try to get from registered config mixins
-                    for config in self.args._registered_config_mixins:
-                        if hasattr(config, "target_modules") and config.target_modules:
-                            target_modules = config.target_modules
-                            break
-                    else:
-                        raise ValueError("target_modules must be specified for LoRA training")
-                else:
-                    # Raise error instead of using a default that might not work
+                # Simple validation, consistent with other trainers
+                if target_modules is None:
                     raise ValueError("target_modules must be specified for LoRA training")
                 
                 lora_config = LoraConfig(
@@ -478,23 +465,16 @@ class E2VTrainer:
                 import re
                 
                 # Handle either string or list of strings
-                if isinstance(lora_config.target_modules, str):
-                    target_modules_patterns = [lora_config.target_modules]
-                else:
-                    target_modules_patterns = lora_config.target_modules
+                patterns = [lora_config.target_modules] if isinstance(lora_config.target_modules, str) else lora_config.target_modules
                 
+                # Find matching modules
                 filtered_modules = []
-                
-                for pattern in target_modules_patterns:
-                    pattern_matches = []
-                    
+                for pattern in patterns:
                     for name, module in self.transformer.named_modules():
-                        if re.search(pattern, name):
-                            if hasattr(module, "weight") and isinstance(module.weight, torch.nn.Parameter):
-                                pattern_matches.append(name)
-                                filtered_modules.append(name)
+                        if re.search(pattern, name) and hasattr(module, "weight") and isinstance(module.weight, torch.nn.Parameter):
+                            filtered_modules.append(name)
                                 
-                logger.info(f"Found {len(filtered_modules)} modules matching target patterns")
+                logger.info(f"Found {len(filtered_modules)} modules matching LoRA target patterns")
                 lora_config.target_modules = filtered_modules
                 
                 from peft import get_peft_model
@@ -1135,7 +1115,7 @@ class E2VTrainer:
     def _get_lora_target_modules(self, target_modules):
         """Process target modules for LoRA training.
         
-        This ensures consistency with existing patterns in the model.
+        Ensures consistency with existing patterns in the model.
         
         Args:
             target_modules: The target modules string or list from args
@@ -1143,14 +1123,8 @@ class E2VTrainer:
         Returns:
             Modified target_modules for use with LoRA
         """
-        # Make a copy to avoid modifying original args
-        if isinstance(target_modules, list):
-            target_modules = list(target_modules)
-        
-        # Handle special e2v-specific module patterns if needed
-        # For now, we just return the target_modules as-is
-        # but this method allows for future customization
-        
+        # Return target_modules directly
+        # The E2V trainer doesn't need any special transformations like Control does
         return target_modules
     
     def _upload_to_hub(self):

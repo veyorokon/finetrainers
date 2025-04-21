@@ -202,19 +202,24 @@ class E2VLowRankConfig(E2VConfig):
         
     def map_args(self, argparse_args, mapped_args):
         super().map_args(argparse_args, mapped_args)
-        self.rank = getattr(argparse_args, "rank", self.rank)
-        self.lora_alpha = getattr(argparse_args, "lora_alpha", self.lora_alpha)
+        # Get values directly from argparse_args, not using getattr with defaults
+        self.rank = argparse_args.rank
+        self.lora_alpha = argparse_args.lora_alpha
+        
+        # Map these values to the main args object for direct access
+        mapped_args.rank = self.rank
+        mapped_args.lora_alpha = self.lora_alpha
         
         # Handle target_modules as a list from the command line
-        target_modules = getattr(argparse_args, "target_modules", None)
-        if target_modules:
-            # Convert to a single string if there's only one element
-            self.target_modules = target_modules[0] if len(target_modules) == 1 else target_modules
-            
-            # Also map to the main args object for direct attribute access
-            mapped_args.target_modules = self.target_modules
+        target_modules = argparse_args.target_modules
+        # Convert to a single string if there's only one element
+        self.target_modules = target_modules[0] if len(target_modules) == 1 else target_modules
         
-        self.train_qk_norm = getattr(argparse_args, "train_qk_norm", self.train_qk_norm)
+        # Map to the main args object for direct attribute access
+        mapped_args.target_modules = self.target_modules
+        
+        # Handle QK norm training flag
+        self.train_qk_norm = argparse_args.train_qk_norm
         mapped_args.train_qk_norm = self.train_qk_norm
 
 
