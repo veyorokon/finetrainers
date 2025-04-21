@@ -10,21 +10,21 @@
 
       "elements": [
         {
-          "name": "main_subject",
-          "suffixes": [ "_mask.png", "_person.png" ],
-          "required": true,
-          "processors": {
-            "vae": { "repeat": 4, "position": 0 },
-            "mask": { "repeat": 1, "position": 0, "binarize": true }
-          }
-        },
-        {
           "name": "object",
           "suffixes": [ "_object.png" ],
           "required": false,
           "processors": {
-            "vae": { "repeat": 4, "position": 1 },
+            "vae": { "repeat": 4, "position": 0 },
             "clip": { "position": 1 }
+          }
+        },
+        {
+          "name": "mask",
+          "suffixes": [ "_mask.png" ],
+          "required": true,
+          "processors": {
+            "vae": { "repeat": 4, "position": 1 },
+            "mask": { "repeat": 1, "position": 0, "binarize": true }
           }
         },
         {
@@ -41,15 +41,19 @@
       "processors": {
         "vae": {
           "resolution": [ 480, 854 ],
-          "preprocessor": "letterbox_image"
+          "preprocessor": "letterbox"
         },
         "clip": {
           "resolution": [ 512, 512 ],
-          "preprocessor": "letterbox_image"
+          "preprocessor": "letterbox",
+          "padding_color": 1.0,
+          "trim_alpha": true,
+          "alpha_threshold": 0.1,
+          "padding_buffer": 8
         },
         "mask": {
           "resolution": [ 480, 854 ],
-          "preprocessor": "letterbox_image",
+          "preprocessor": "letterbox",
           "binarize": true,
           "threshold": 0.5
         }

@@ -26,24 +26,34 @@
             "vae": { "repeat": 4, "position": 1 },
             "clip": { "position": 1 }
           }
+        },
+        {
+          "name": "background",
+          "suffixes": [ "_background.png" ],
+          "required": false,
+          "processors": {
+            "vae": { "repeat": 1, "position": 2 },
+            "clip": { "position": 1 }
+          }
         }
       ],
 
       "processors": {
         "vae": {
           "resolution": [ 480, 854 ],
-          "preprocessor": "resize",
-          "default_preprocess": "resize"
+          "preprocessor": "letterbox"
         },
         "clip": {
           "resolution": [ 512, 512 ],
-          "preprocessor": "center_crop",
-          "default_preprocess": "center_crop"
+          "preprocessor": "letterbox",
+          "padding_color": 1.0,
+          "trim_alpha": true,
+          "alpha_threshold": 0.1,
+          "padding_buffer": 8
         },
         "mask": {
           "resolution": [ 480, 854 ],
-          "preprocessor": "resize",
-          "default_preprocess": "resize",
+          "preprocessor": "letterbox",
           "binarize": true,
           "threshold": 0.5
         }
