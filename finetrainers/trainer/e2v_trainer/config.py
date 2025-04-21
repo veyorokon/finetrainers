@@ -210,8 +210,12 @@ class E2VLowRankConfig(E2VConfig):
         if target_modules:
             # Convert to a single string if there's only one element
             self.target_modules = target_modules[0] if len(target_modules) == 1 else target_modules
+            
+            # Also map to the main args object for direct attribute access
+            mapped_args.target_modules = self.target_modules
         
         self.train_qk_norm = getattr(argparse_args, "train_qk_norm", self.train_qk_norm)
+        mapped_args.train_qk_norm = self.train_qk_norm
 
 
 class E2VFullRankConfig(E2VConfig):

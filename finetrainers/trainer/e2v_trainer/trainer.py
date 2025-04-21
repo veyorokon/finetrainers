@@ -468,14 +468,36 @@ class E2VTrainer:
                 all_attrs = [attr for attr in dir(self.args) if not attr.startswith('_')]
                 logger.info(f"All attributes: {all_attrs}")
                 
-                # Log all args for debugging 
-                all_args = {attr: getattr(self.args, attr) for attr in all_attrs}
-                logger.info(f"All args: {all_args}")
+                # Log registered config mixins
+                if hasattr(self.args, "_registered_config_mixins"):
+                    for i, config in enumerate(self.args._registered_config_mixins):
+                        logger.info(f"Config mixin {i}: {type(config)}")
+                        logger.info(f"  Has target_modules: {hasattr(config, 'target_modules')}")
+                        if hasattr(config, 'target_modules'):
+                            logger.info(f"  target_modules value: {config.target_modules}")
                 
-                # Get target_modules but don't provide a default
+                # Was it passed on CLI?
+                import sys
+                logger.info(f"CLI args: {sys.argv}")
+                if '--target_modules' in sys.argv:
+                    target_idx = sys.argv.index('--target_modules')
+                    logger.info(f"CLI target_modules at index {target_idx}: {sys.argv[target_idx+1:target_idx+2]}")
+                
+                # Try to get target_modules from different sources
                 if hasattr(self.args, "target_modules") and self.args.target_modules:
+                    # Direct attribute access
                     target_modules = self.args.target_modules
-                    logger.info(f"Found target_modules: {target_modules}")
+                    logger.info(f"Found target_modules via direct attribute: {target_modules}")
+                elif hasattr(self.args, "_registered_config_mixins"):
+                    # Try to get from registered config mixins
+                    for config in self.args._registered_config_mixins:
+                        if hasattr(config, "target_modules") and config.target_modules:
+                            target_modules = config.target_modules
+                            logger.info(f"Found target_modules in config mixin: {target_modules}")
+                            break
+                    else:
+                        logger.error("No target_modules found in config mixins")
+                        raise ValueError("target_modules must be specified for LoRA training")
                 else:
                     # Log keys to help debug
                     logger.error(f"target_modules not found in args. Available args: {', '.join(dir(self.args))}")
