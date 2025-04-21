@@ -601,6 +601,10 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 logger.error(f"No {field_name} found in results for processor {proc_name}")
                 raise ValueError(f"No {field_name} found in results for processor {proc_name}")
                 
+            # Log available fields in processor results for debugging
+            for i, r in enumerate(proc_results):
+                logger.info(f"  Result {i} from {proc_name} has fields: {list(r.keys())}")
+            
             # Log tensor shapes before concatenation
             logger.info(f"Tensors for {proc_name} before concatenation:")
             for i, t in enumerate(tensors):

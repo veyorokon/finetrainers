@@ -320,17 +320,19 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
         if clip_processor is not None:
             features = self._encode_with_clip(processed, clip_processor)
             
-            # 4. Return result with metadata
+            # 4. Return result with metadata using standardized field names
             result = {
-                "features": features,
-                "position": config.get("position", 0)
+                "latents": features,  # Use "latents" consistently across all processors
+                "position": config.get("position", 0),
+                "frames": features.shape[1] if len(features.shape) > 2 else 1  # Add frames field like VAE processor
             }
             return {self.output_names[0]: result}
         else:
-            # If no CLIP model, just return preprocessed image
+            # If no CLIP model, just return preprocessed image as latents for consistency
             result = {
-                "preprocessed": processed,
-                "position": config.get("position", 0)
+                "latents": processed,  # Use "latents" consistently even for preprocessed image
+                "position": config.get("position", 0),
+                "frames": processed.shape[1] if len(processed.shape) > 2 else 1  # Add frames field like VAE processor
             }
             return {self.output_names[0]: result}
     
@@ -440,8 +442,9 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
                         continue
                     
                     result = {
-                        "features": features[idx:idx+1] if hasattr(features, "shape") else features,
-                        "position": positions[idx]
+                        "latents": features[idx:idx+1] if hasattr(features, "shape") else features,
+                        "position": positions[idx],
+                        "frames": features.shape[1] if hasattr(features, "shape") and len(features.shape) > 2 else 1
                     }
                     results[i] = result
                     idx += 1
@@ -458,8 +461,9 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
                         continue
                     
                     result = {
-                        "preprocessed": stacked_inputs[idx],
-                        "position": positions[idx]
+                        "latents": stacked_inputs[idx],  # Use "latents" consistently
+                        "position": positions[idx],
+                        "frames": stacked_inputs[idx].shape[1] if len(stacked_inputs[idx].shape) > 2 else 1
                     }
                     results[i] = result
                     idx += 1
@@ -478,13 +482,15 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
             if clip_processor is not None:
                 features = self._encode_with_clip(processed, clip_processor)
                 result = {
-                    "features": features,
-                    "position": positions[idx]
+                    "latents": features,  # Use "latents" consistently
+                    "position": positions[idx],
+                    "frames": features.shape[1] if len(features.shape) > 2 else 1
                 }
             else:
                 result = {
-                    "preprocessed": processed,
-                    "position": positions[idx]
+                    "latents": processed,  # Use "latents" consistently
+                    "position": positions[idx],
+                    "frames": processed.shape[1] if len(processed.shape) > 2 else 1
                 }
             
             results[i] = result
