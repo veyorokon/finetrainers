@@ -285,11 +285,15 @@ class VAEPathwayProcessor(BasePathwayProcessor):
 class CLIPPathwayProcessor(BasePathwayProcessor):
     """Processor for the CLIP semantic pathway in E2V training."""
     
-    def forward(self, clip_vision_model=None, image=None, element_config=None, **kwargs):
+    def __init__(self, output_names=None, input_names=None, config=None, device=None, clip_processor=None):
+        super().__init__(output_names, input_names, config, device)
+        self.clip_processor = clip_processor
+    
+    def forward(self, clip_processor=None, image=None, element_config=None, **kwargs):
         """Process image through CLIP pathway.
         
         Args:
-            clip_vision_model: CLIP vision model for encoding
+            clip_processor: CLIP vision model for encoding (defaults to self.clip_processor if not provided)
             image: Image tensor (B, C, H, W)
             element_config: Configuration for this element
             
@@ -305,12 +309,16 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
                 # CLIP pathway disabled for this element
                 return {self.output_names[0]: None}
         
+        # Use the provided clip_processor or fall back to the stored one
+        if clip_processor is None:
+            clip_processor = self.clip_processor
+            
         # 2. Preprocess image
         processed = self._preprocess_input(image, config)
         
         # 3. Run CLIP encoder if available
-        if clip_vision_model is not None:
-            features = self._encode_with_clip(processed, clip_vision_model)
+        if clip_processor is not None:
+            features = self._encode_with_clip(processed, clip_processor)
             
             # 4. Return result with metadata
             result = {
@@ -354,16 +362,16 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
             logger.warning(f"Unknown preprocessor: {preprocessor}, using center_crop")
             return FF.center_crop_image(image, resolution)
     
-    def _encode_with_clip(self, image, clip_vision_model):
+    def _encode_with_clip(self, image, clip_processor):
         """Encode image with CLIP vision model."""
         # Move to the same device as the model
-        device = clip_vision_model.device
+        device = clip_processor.device
         image = image.to(device)
         
         # Encode through CLIP vision model
         with torch.no_grad():
             # Get CLIP features
-            outputs = clip_vision_model(image, output_hidden_states=True)
+            outputs = clip_processor(image, output_hidden_states=True)
             
             # Extract features from the model's output
             if hasattr(outputs, "last_hidden_state"):
@@ -381,7 +389,7 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
         
         return features
     
-    def _process_batch(self, clip_vision_model, inputs, configs):
+    def _process_batch(self, clip_processor, inputs, configs):
         """Process a batch of inputs more efficiently."""
         # 1. Preprocess all inputs
         processed_inputs = []
@@ -419,8 +427,8 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
             stacked_inputs = torch.cat(processed_inputs, dim=0)
             
             # 3. Encode through CLIP in one go
-            if clip_vision_model is not None:
-                features = self._encode_with_clip(stacked_inputs, clip_vision_model)
+            if clip_processor is not None:
+                features = self._encode_with_clip(stacked_inputs, clip_processor)
                 
                 # 4. Split results
                 results = {}
@@ -467,8 +475,8 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
                 results[i] = None
                 continue
                 
-            if clip_vision_model is not None:
-                features = self._encode_with_clip(processed, clip_vision_model)
+            if clip_processor is not None:
+                features = self._encode_with_clip(processed, clip_processor)
                 result = {
                     "features": features,
                     "position": positions[idx]
