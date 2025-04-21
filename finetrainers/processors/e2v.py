@@ -403,8 +403,12 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
         if self.device is not None:
             image = image.to(self.device)
             
-        # Extract preprocessing parameters
+        # Log the exact config received by this method
+        logger.info(f"CLIP _preprocess_input received config: {config}")
+        
+        # Extract preprocessing parameters - use "preprocessor" key to match config in training.json
         preprocessor = config.get("preprocessor", "center_crop")
+        logger.info(f"Using preprocessor: {preprocessor}")
         resolution = config.get("resolution", [224, 224])
         
         # Extract additional kwargs for preprocessor
@@ -412,11 +416,16 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
                   if k not in ["preprocessor", "resolution", "position"]}
         
         # Apply preprocessing based on type
+        logger.info(f"Applying preprocessor: {preprocessor} with resolution: {resolution} and kwargs: {kwargs}")
+        
         if preprocessor == "center_crop":
+            logger.info("Using center_crop_image function")
             return FF.center_crop_image(image, resolution)
         elif preprocessor == "letterbox":
+            logger.info("Using letterbox_image function")
             return FF.letterbox_image(image, resolution, **kwargs)
         elif preprocessor == "resize_crop":
+            logger.info("Using resize_crop_image function")
             return FF.resize_crop_image(image, resolution)
         else:
             logger.warning(f"Unknown preprocessor: {preprocessor}, using center_crop")
@@ -434,62 +443,96 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
         logger.info(f"Image shape: {image.shape}")
         logger.info(f"CLIP processor available methods: {[m for m in dir(clip_processor) if not m.startswith('_') and callable(getattr(clip_processor, m))]}")
         
+        # Key insight from logs: CLIPVisionModel has a vision_model attribute
+        # This suggests we need to use it differently than directly calling the model
+        
         # Encode through CLIP vision model
         with torch.no_grad():
             try:
-                # Get CLIP features - THIS IS WHERE THE ERROR MIGHT BE HAPPENING
-                logger.info("About to call CLIP processor with output_hidden_states=True")
-                
-                # Check if this is a standard CLIPVisionModel or something else
-                if hasattr(clip_processor, "forward"):
-                    # This is a standard PyTorch module, call with kwargs
-                    logger.info("Calling CLIPVisionModel.forward")
-                    try:
-                        outputs = clip_processor(image, output_hidden_states=True)
-                        logger.info(f"CLIP processor call succeeded, output type: {type(outputs)}")
-                    except Exception as e:
-                        logger.error(f"Error in CLIP processor call: {e}")
-                        logger.error(f"Error type: {type(e).__name__}")
-                        
-                        # Try alternative call patterns
-                        logger.info("Trying alternative call pattern without output_hidden_states")
-                        try:
-                            outputs = clip_processor(image)
-                            logger.info(f"Alternative call pattern succeeded, output type: {type(outputs)}")
-                        except Exception as e2:
-                            logger.error(f"Alternative call also failed: {e2}")
-                            raise
-                else:
-                    logger.error("CLIP processor doesn't have a forward method")
-                    raise ValueError("CLIP processor doesn't have a forward method")
-                
-                # Log output details
-                logger.info(f"CLIP outputs type: {type(outputs)}")
-                if hasattr(outputs, "__dict__"):
-                    logger.info(f"CLIP outputs attributes: {list(outputs.__dict__.keys())}")
-                
-                # Extract features from the model's output
-                if hasattr(outputs, "last_hidden_state"):
-                    # For transformers CLIPVisionModel
-                    logger.info(f"Using last_hidden_state, shape: {outputs.last_hidden_state.shape}")
-                    features = outputs.last_hidden_state
-                elif hasattr(outputs, "image_embeds"):
-                    # For open_clip models
-                    logger.info(f"Using image_embeds, shape: {outputs.image_embeds.shape}")
-                    features = outputs.image_embeds
-                elif hasattr(outputs, "pooler_output"):
-                    # Another possible transformers format
-                    logger.info(f"Using pooler_output, shape: {outputs.pooler_output.shape}")
-                    features = outputs.pooler_output.unsqueeze(1)  # Add sequence dim
-                elif hasattr(outputs, "hidden_states") and outputs.hidden_states is not None:
-                    # Try to get the penultimate hidden states
-                    logger.info(f"Using hidden_states, length: {len(outputs.hidden_states)}")
-                    features = outputs.hidden_states[-2]
-                else:
-                    # Fallback - assume features are the direct output
-                    logger.info(f"Using direct outputs, type: {type(outputs)}")
-                    features = outputs
+                # Special handling for CLIP model based on the model type
+                if hasattr(clip_processor, "vision_model"):
+                    # Direct approach: use vision_model directly since that's what we want
+                    logger.info("Using vision_model directly from CLIPVisionModel")
                     
+                    # Pre-process image to expected resolution
+                    # CLIP vision model expects 224x224 images by default
+                    from torchvision import transforms
+                    
+                    # Check if we can get image_size from config
+                    image_size = 224  # Default CLIP size
+                    if hasattr(clip_processor, "config") and hasattr(clip_processor.config, "image_size"):
+                        image_size = clip_processor.config.image_size
+                        logger.info(f"Using image_size from config: {image_size}")
+                    
+                    # Create preprocess transform
+                    preprocess = transforms.Compose([
+                        transforms.Resize((image_size, image_size), antialias=True),
+                        transforms.Normalize(
+                            mean=(0.48145466, 0.4578275, 0.40821073),
+                            std=(0.26862954, 0.26130258, 0.27577711)
+                        )
+                    ])
+                    
+                    # Prepare pixel values
+                    try:
+                        logger.info(f"Original image shape: {image.shape}")
+                        # Apply preprocessing
+                        preprocessed_image = preprocess(image)
+                        logger.info(f"Preprocessed image shape: {preprocessed_image.shape}")
+                        
+                        # Call vision model directly
+                        logger.info("Calling vision_model directly")
+                        vision_outputs = clip_processor.vision_model(preprocessed_image)
+                        
+                        # Get last hidden state - this is what we want for feature embedding
+                        logger.info(f"Vision model output type: {type(vision_outputs)}")
+                        if hasattr(vision_outputs, "__dict__"):
+                            logger.info(f"Vision output attributes: {list(vision_outputs.__dict__.keys())}")
+                        
+                        # Get the last_hidden_state which should be the feature representation
+                        if hasattr(vision_outputs, "last_hidden_state"):
+                            logger.info(f"Using last_hidden_state with shape: {vision_outputs.last_hidden_state.shape}")
+                            features = vision_outputs.last_hidden_state
+                        elif hasattr(vision_outputs, "pooler_output"):
+                            logger.info(f"Using pooler_output with shape: {vision_outputs.pooler_output.shape}")
+                            features = vision_outputs.pooler_output.unsqueeze(1)  # Add sequence dim
+                        elif hasattr(vision_outputs, "hidden_states") and vision_outputs.hidden_states is not None:
+                            logger.info(f"Using hidden_states with length: {len(vision_outputs.hidden_states)}")
+                            features = vision_outputs.hidden_states[-2]
+                        else:
+                            logger.error("Couldn't find expected outputs in vision model results")
+                            # Fall back to using direct forwarding
+                            features = clip_processor(image, output_hidden_states=True).last_hidden_state
+                            
+                    except Exception as ve:
+                        logger.error(f"Error using vision_model directly: {ve}")
+                        logger.error("Falling back to using CLIPVisionModel directly")
+                        # Fall back to using full model
+                        outputs = clip_processor(image, output_hidden_states=True)
+                        features = outputs.last_hidden_state
+                        
+                else:
+                    # Standard approach for models without vision_model
+                    logger.info("Using standard CLIPVisionModel approach")
+                    outputs = clip_processor(image, output_hidden_states=True)
+                    
+                    # Extract features from the model's output
+                    if hasattr(outputs, "last_hidden_state"):
+                        logger.info(f"Using last_hidden_state, shape: {outputs.last_hidden_state.shape}")
+                        features = outputs.last_hidden_state
+                    elif hasattr(outputs, "image_embeds"):
+                        logger.info(f"Using image_embeds, shape: {outputs.image_embeds.shape}")
+                        features = outputs.image_embeds
+                    elif hasattr(outputs, "pooler_output"):
+                        logger.info(f"Using pooler_output, shape: {outputs.pooler_output.shape}")
+                        features = outputs.pooler_output.unsqueeze(1)  # Add sequence dim
+                    elif hasattr(outputs, "hidden_states") and outputs.hidden_states is not None:
+                        logger.info(f"Using hidden_states, length: {len(outputs.hidden_states)}")
+                        features = outputs.hidden_states[-2]
+                    else:
+                        logger.info(f"Using direct outputs, type: {type(outputs)}")
+                        features = outputs
+                
                 logger.info(f"Final features shape: {features.shape}")
                 return features
                 

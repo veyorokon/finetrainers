@@ -365,6 +365,11 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                             for key, procs in list(config["tensor_combinations"].items()):
                                 config["tensor_combinations"][key] = [p for p in procs if p != "clip"]
                 else:
+                    # Additional debug logging for config
+                    logger.info(f"CLIP config contains preprocessor: {'preprocessor' in proc_config}")
+                    logger.info(f"CLIP config contains default_preprocess: {'default_preprocess' in proc_config}")
+                    logger.info(f"CLIP processor init config FULL DUMP: {proc_config}")
+                    
                     self.processors["clip"] = CLIPPathwayProcessor(
                         output_names=["clip_output"],
                         config=proc_config,

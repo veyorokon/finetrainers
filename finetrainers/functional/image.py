@@ -8,36 +8,71 @@ def center_crop_image(image: torch.Tensor, size: Tuple[int, int]) -> torch.Tenso
     """Crop the center of the image to the target size.
     
     Args:
-        image: Input tensor [C, H, W]
+        image: Input tensor [C, H, W] or [B, C, H, W]
         size: Target (height, width)
     
     Returns:
-        Center-cropped tensor [C, target_h, target_w]
+        Center-cropped tensor [C, target_h, target_w] or [B, C, target_h, target_w]
     """
-    num_channels, height, width = image.shape
-    crop_h, crop_w = size
-    if height < crop_h or width < crop_w:
-        raise ValueError(f"Image size {(height, width)} is smaller than the target size {size}.")
-    top = (height - crop_h) // 2
-    left = (width - crop_w) // 2
-    return image[:, top : top + crop_h, left : left + crop_w]
+    from finetrainers.logging import get_logger
+    logger = get_logger()
+    
+    # Log what we're receiving
+    logger.info(f"center_crop_image received image shape: {image.shape}, size: {size}")
+    
+    # Handle batch dimension
+    if len(image.shape) == 4:
+        # Batch dimension present [B, C, H, W]
+        batch_size, num_channels, height, width = image.shape
+        crop_h, crop_w = size
+        if height < crop_h or width < crop_w:
+            logger.error(f"Image size {(height, width)} is smaller than target size {size}")
+            raise ValueError(f"Image size {(height, width)} is smaller than the target size {size}.")
+        top = (height - crop_h) // 2
+        left = (width - crop_w) // 2
+        cropped = image[:, :, top : top + crop_h, left : left + crop_w]
+        logger.info(f"Cropped to shape: {cropped.shape}")
+        return cropped
+    else:
+        # No batch dimension [C, H, W]
+        num_channels, height, width = image.shape
+        crop_h, crop_w = size
+        if height < crop_h or width < crop_w:
+            logger.error(f"Image size {(height, width)} is smaller than target size {size}")
+            raise ValueError(f"Image size {(height, width)} is smaller than the target size {size}.")
+        top = (height - crop_h) // 2
+        left = (width - crop_w) // 2
+        cropped = image[:, top : top + crop_h, left : left + crop_w]
+        logger.info(f"Cropped to shape: {cropped.shape}")
+        return cropped
 
 
 def resize_crop_image(image: torch.Tensor, size: Tuple[int, int]) -> torch.Tensor:
     """Resize the image to cover the target size, then crop the center.
     
     Args:
-        image: Input tensor [C, H, W]
+        image: Input tensor [C, H, W] or [B, C, H, W]
         size: Target (height, width)
     
     Returns:
-        Resized and cropped tensor [C, target_h, target_w]
+        Resized and cropped tensor [C, target_h, target_w] or [B, C, target_h, target_w]
     """
-    num_channels, height, width = image.shape
-    target_h, target_w = size
-    scale = max(target_h / height, target_w / width)
-    new_h, new_w = int(height * scale), int(width * scale)
-    image = F.interpolate(image.unsqueeze(0), size=(new_h, new_w), mode="bilinear", align_corners=False)[0]
+    # Handle batch dimension
+    if len(image.shape) == 4:
+        # Batch dimension present [B, C, H, W]
+        batch_size, num_channels, height, width = image.shape
+        target_h, target_w = size
+        scale = max(target_h / height, target_w / width)
+        new_h, new_w = int(height * scale), int(width * scale)
+        image = F.interpolate(image, size=(new_h, new_w), mode="bilinear", align_corners=False)
+    else:
+        # No batch dimension [C, H, W]
+        num_channels, height, width = image.shape
+        target_h, target_w = size
+        scale = max(target_h / height, target_w / width)
+        new_h, new_w = int(height * scale), int(width * scale)
+        image = F.interpolate(image.unsqueeze(0), size=(new_h, new_w), mode="bilinear", align_corners=False)[0]
+    
     return center_crop_image(image, size)
 
 
