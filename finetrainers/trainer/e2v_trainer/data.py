@@ -14,7 +14,7 @@ from finetrainers.logging import get_logger
 from finetrainers.processors import ProcessorMixin
 from finetrainers.typing import ArtifactType
 
-from .config import E2VType, ElementConfig, FrameConditioningType
+from .config import ElementConfig, FrameConditioningType
 
 
 logger = get_logger()
@@ -390,30 +390,34 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         self.vae = vae  # VAE for encoding reference images
         
         
-        # Initialize processors
+        # Initialize processors based on configuration
         self.processors = {}
-        if "vae" in config.get("processors", {}):
-            self.processors["vae"] = VAEPathwayProcessor(
-                output_names=["vae_output"],
-                config=config["processors"]["vae"],
-                device=device
-            )
         
-        if config.get("e2v_type") in [E2VType.CLIP, E2VType.DUAL]:
-            if "clip" in config.get("processors", {}):
+        # Initialize all processors defined in the configuration
+        for proc_name, proc_config in config.get("processors", {}).items():
+            if proc_name == "vae":
+                self.processors["vae"] = VAEPathwayProcessor(
+                    output_names=["vae_output"],
+                    config=proc_config,
+                    device=device
+                )
+            elif proc_name == "clip":
                 self.processors["clip"] = CLIPPathwayProcessor(
                     output_names=["clip_output"],
-                    config=config["processors"]["clip"],
+                    config=proc_config,
                     device=device,
                     clip_processor=clip_processor
                 )
+            elif proc_name == "mask":
+                self.processors["mask"] = MaskPathwayProcessor(
+                    output_names=["mask_output"],
+                    config=proc_config,
+                    device=device
+                )
+            else:
+                logger.warning(f"Unknown processor type: {proc_name}")
         
-        if "mask" in config.get("processors", {}):
-            self.processors["mask"] = MaskPathwayProcessor(
-                output_names=["mask_output"],
-                config=config["processors"]["mask"],
-                device=device
-            )
+        logger.info(f"Initialized processors: {list(self.processors.keys())}")
         
         # Create element lookup - assume elements are dictionaries
         self.elements = {}

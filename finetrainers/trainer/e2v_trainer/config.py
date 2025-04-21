@@ -9,12 +9,7 @@ if TYPE_CHECKING:
     from finetrainers.args import BaseArgs
 
 
-class E2VType(str, Enum):
-    """Enum class for the E2V processing types."""
-
-    VAE = "vae"
-    CLIP = "clip"
-    DUAL = "dual"  # Both pathways enabled
+# Removed E2VType enum as it's redundant with configuration-driven approach
 
 
 class FrameConditioningType(str, Enum):
@@ -98,7 +93,7 @@ class MaskProcessorConfig(ProcessorConfig):
 class E2VConfig(ConfigMixin):
     """Base configuration for E2V training."""
 
-    e2v_type: str = E2VType.DUAL
+    # e2v_type removed in favor of configuration-driven approach
     elements: List[ElementConfig] = []  # Default to empty list
     processors: Dict[str, Union[VaeProcessorConfig, ClipProcessorConfig, MaskProcessorConfig]] = {}  # Default to empty dict
     tensor_combinations: Dict[str, List[str]] = {}  # Configuration for tensor combinations
@@ -107,15 +102,11 @@ class E2VConfig(ConfigMixin):
     frame_conditioning_concatenate_mask: bool = True
 
     def validate_args(self, args):
-        # Only validate e2v_type during CLI parsing
-        assert self.e2v_type in E2VType.__members__.values(), f"Invalid E2V type: {self.e2v_type}"
-        
         # Skip detailed validation during initial arg parsing
         # Full validation will happen in the trainer after dataset config is loaded
     
     def map_args(self, argparse_args, mapped_args):
         # Map CLI args to this config
-        self.e2v_type = getattr(argparse_args, "e2v_type", self.e2v_type)
         self.frame_conditioning_type = getattr(argparse_args, "frame_conditioning_type", self.frame_conditioning_type)
         self.frame_conditioning_index = getattr(argparse_args, "frame_conditioning_index", self.frame_conditioning_index)
         self.frame_conditioning_concatenate_mask = getattr(
@@ -124,12 +115,6 @@ class E2VConfig(ConfigMixin):
     
     def add_args(self, parser):
         # Add E2V base args
-        parser.add_argument(
-            "--e2v_type",
-            type=str,
-            default=E2VType.DUAL.value,
-            choices=[x.value for x in E2VType.__members__.values()],
-        )
         parser.add_argument(
             "--frame_conditioning_type",
             type=str,
