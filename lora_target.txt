@@ -1,152 +1,203 @@
-Key Modules for E2V LoRA Training
+# LoRA Training Strategies for E2V Model Customization
 
-  Information Flow in A2 Architecture:
+## Overview
 
-  1. Input Processing Path:
-    - Patch Embedding: Processes input video latents via patch_embedding (3D Conv layer)
-    - Condition Embedder: Handles time, text, and image embeddings via condition_embedder
-    - Dual Conditioning:
-        - VAE path: Spatial features concatenated along channel dimension
-      - CLIP path: Semantic features passed through cross-attention
-  2. Transformer Blocks:
-    - Self-Attention: to_q, to_k, to_v, and to_out.0 in each block
-    - Cross-Attention: Additional add_k_proj and add_v_proj for image conditioning
-    - Feed-Forward: ff.net.0.proj and ff.net.2 in each block
+This document outlines strategies for effective LoRA (Low-Rank Adaptation) training of the Elements-to-Video (E2V) model. It provides a technical breakdown of module targeting approaches, justifications based on model architecture, and practical implementation guidance for different use cases.
 
-  Target Modules Recommendations:
+## Model Architecture Analysis
 
-  For New Control Type (Canny, Segmentation, Frame conditioning):
+Understanding the E2V/A2 model architecture is essential for effective LoRA targeting. The model processes data through two primary pathways:
 
-  "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)|patch_embedding"
+### Dual Conditioning Pathways
 
-  Rationale:
-  - Targets the standard self-attention and FF networks from the control trainer pattern
-  - Adds patch_embedding since this layer handles the initial processing of conditioning
-  - This focuses on the spatial features pathway - how new control signals are embedded
+1. **Spatial Pathway (VAE-based)**:
+   - Processes reference images through VAE encoder
+   - Creates a "mini-video" of reference frames
+   - Encodes spatial details and structural information
+   - Concatenated with video latents along channel dimension
+   - Primary entry point: `patch_embedding` (3D Conv layer)
 
-  For Aesthetic and Style Training:
+2. **Semantic Pathway (CLIP-based)**:
+   - Processes reference images through CLIP vision encoder
+   - Extracts high-level semantic understanding
+   - Projected to match text embedding dimensions
+   - Integrated via cross-attention mechanism
+   - Primary entry points: `add_k_proj` and `add_v_proj`
 
-  "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)|(add_k_proj|add_v_
-  proj)"
+### Key Model Components
 
-  Rationale:
-  - Includes the standard attention and FF layers
-  - Adds add_k_proj and add_v_proj which handle CLIP image embeddings
-  - This focuses on the semantic conditioning pathway which is crucial for style and aesthetics
+```
+# Simplified component flow
+Inputs → patch_embedding → transformer_blocks[0..N] → Output Projection
+                      ↑
+                      └── condition_embedder (time, text, image)
+                                ↑
+                                └── CLIP embeddings via add_k_proj/add_v_proj
+```
 
-  Comprehensive Pattern (Both Control and Aesthetic):
+From code analysis (A2/models/transformer_a2.py), the following components are identified:
 
-  "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)|(add_k_proj|add_v_
-  proj)|patch_embedding"
+```python
+# In WanAttnProcessor2_0.__call__
+if encoder_hidden_states_img is not None:
+    key_img = attn.add_k_proj(encoder_hidden_states_img)  # CLIP pathway entry
+    value_img = attn.add_v_proj(encoder_hidden_states_img)
+    # ... process and integrate with main flow
 
-  Rationale:
-  - Targets both the spatial and semantic pathways
-  - Provides comprehensive coverage of conditioning-related modules
-  - Allows for simultaneous control and style modification
+# In A2Model.forward
+hidden_states = self.patch_embedding(hidden_states)  # Spatial pathway entry
+# ... process conditions and images
+```
 
-  High-Level Module Overview:
+References in pipeline_a2.py confirm this dual-pathway approach, with VAE-encoded latents concatenated with noisy video latents at the channel dimension, and CLIP embeddings passed separately.
 
-  1. Spatial Conditioning Modules (Control Type):
-    - patch_embedding: Processes the input latents and conditions
-    - Transformer attention layers: Process the combined conditioning
-  2. Semantic Conditioning Modules (Aesthetic/Style):
-    - add_k_proj and add_v_proj: Process CLIP embeddings
-    - Cross-attention layers: Integrate semantic features into generation
-  3. Core Generation Modules (Both):
-    - Self-attention components: to_q, to_k, to_v, to_out.0
-    - Feed-forward components: ff.net.0.proj, ff.net.2
+## LoRA Training Strategies
 
-  Following the recent fixes to the E2V trainer, these target module patterns should now work correctly when passed
-  from the command line to enable effective LoRA training for different objectives.
+Based on this architecture analysis, we propose three strategic approaches for LoRA training:
 
+### Strategy 1: Specialized Non-Overlapping LoRAs
 
-To enable separate style and control fine-tuning that can be loaded independently, we need to create
-   distinct non-overlapping target module patterns. Here's how we can separate them:
+This approach creates completely independent adapters for different aspects of generation:
 
-  Non-Overlapping Target Module Patterns
+#### Control-Specific LoRA
+```
+"patch_embedding"
+```
+- **Justification**: This module is the entry point for spatial conditioning, directly handling how control signals are encoded and processed.
+- **References**: The `prepare_latents` function in pipeline_a2.py (lines 288-394) shows how control conditions are encoded through VAE and concatenated before passing through patch_embedding.
+- **Use Cases**: New control types (canny edges, segmentation maps, depth maps, first/last frame conditioning)
 
-  1. Control-Specific Modules (Spatial Pathway)
+#### Style/Aesthetic LoRA
+```
+"(add_k_proj|add_v_proj)"
+```
+- **Justification**: These modules exclusively handle the CLIP embeddings that provide high-level semantic understanding and style information.
+- **References**: Lines 570-575 in pipeline_a2.py show how CLIP embeddings are processed and passed to the model via these projections.
+- **Use Cases**: Visual style (cinematic, anime, photorealistic), lighting adjustments, color grading effects
 
-  "patch_embedding"
+#### Core Generation LoRA
+```
+"(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
+```
+- **Justification**: These modules handle the core generative process after conditioning is applied.
+- **References**: WanTransformerBlock in transformer_a2.py shows how these components process information in each block.
+- **Use Cases**: General quality improvements, coherence enhancements, universal adjustments
 
-  Rationale:
-  - Specifically targets only the patch embedding layer which handles spatial conditioning
-  - This is where different control types (canny, segmentation, first/last frame) are processed
-  - Doesn't include any modules used for style/aesthetic conditioning
-  - Extremely targeted for clean separation
+### Strategy 2: Product-Focused Base LoRA
 
-  2. Style/Aesthetic-Specific Modules (Semantic Pathway)
+For product-centric video generation without humans, we recommend:
 
-  "(add_k_proj|add_v_proj)"
+```
+"(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0)|patch_embedding|(add_k_proj|add_v_proj)"
+```
 
-  Rationale:
-  - Targets only the projections that handle CLIP image embeddings
-  - These modules specifically process reference images for semantic understanding
-  - Doesn't overlap with modules used for control signal processing
-  - Focuses on the semantic pathway essential for style transfer
+- **Justification**: This comprehensive pattern targets both spatial and semantic pathways while focusing on attention mechanisms crucial for product representation.
+- **Deliberately Excludes**: Feedforward networks (`ff.net.0.proj|ff.net.2`) to reduce parameter count.
+- **References**: The A2 paper (sections 2.2-2.3) discusses how both spatial and semantic features are essential for composition quality.
 
-  3. General Fine-Tuning Modules (Optional)
+This approach provides several advantages for product-focused generation:
 
-  "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
+1. **Complete Conditioning Coverage**:
+   - Spatial pathway (via patch_embedding): Essential for capturing detailed product structure
+   - Semantic pathway (via add_k_proj/add_v_proj): Critical for cinematic style application
 
-  Rationale:
-  - These affect both control and style processing
-  - Could be used for a generic "quality improvement" adapter
-  - Independent from the specialized adapters above
+2. **Focused Attention Refinement**:
+   - Self-attention mechanisms handle spatial relationships between products and environments
+   - Cross-attention integrates style information into the generation process
+   - Attention to detail is especially important for product features, textures, and branding
 
-  How to Use These Separately
+3. **Parameter Efficiency**:
+   - By excluding feedforward networks, the LoRA focuses only on the most impactful modules
+   - Reduces training time and resource requirements without significantly impacting quality
 
-  1. Train separate LoRA adapters with each pattern:
-    - Control adapter: Using only "patch_embedding"
-    - Style adapter: Using only "(add_k_proj|add_v_proj)"
-  2. Implement adapter swapping during inference:
-    - Load the base model
-    - Load control adapter for specific control type
-    - Load style adapter for desired aesthetic
-    - Both can be activated simultaneously without interference
-  3. Benefits of this approach:
-    - Complete separation between control signal and style
-    - Mix and match different control types with different styles
-    - Scale the influence of each independently using LoRA alpha
-    - Much smaller adapters since they target fewer layers
+### Strategy 3: Hierarchical LoRA Combination
 
-  This approach allows for modular fine-tuning where you can create a library of control adapters (canny, depth,
-  segmentation) and a separate library of style adapters (cinematic, anime, photorealistic), then combine them freely
-  at inference time without interference.
+This strategy builds on the product-focused base to create a modular ecosystem:
 
+1. **Base LoRA**: Product-centric foundation using Strategy 2
+2. **Style Variants**: Additional small LoRAs targeting only `"(add_k_proj|add_v_proj)"` for different moods/styles
+3. **Category Specialists**: Additional small LoRAs targeting only `"patch_embedding"` for different product categories
 
- For your product-focused cinematic ads without humans, I'll recommend a targeted approach for the "base" LoRA to
-  achieve maximum impact with minimal training.
+This hierarchical approach allows for:
+- Maximum flexibility during inference
+- Efficient training of specialized components
+- Mix-and-match capabilities without interference
+- Independent scaling of each component's influence via LoRA alpha
 
-  Recommended Target Modules for Product Ad Base LoRA
+## Practical Implementation
 
-  "(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0)|patch_embedding|(add_k_proj|add_v_proj)"
+### Command Line Usage
 
-  Rationale:
+When training LoRAs with the E2V trainer, use the `--target_modules` parameter:
 
-  1. Complete Conditioning Coverage
-    - patch_embedding: Critical for spatial conditioning of product objects
-    - add_k_proj|add_v_proj: Essential for semantic style transfer for cinematic look
-  2. Focused Attention Modules
-    - to_q|to_k|to_v|to_out.0: Attention mechanisms that handle relationship between product and environment
-    - Deliberately excludes feedforward networks (ff.net.0.proj|ff.net.2) to reduce parameter count
-  3. Product-Specific Advantages
-    - Products require precise detail rendering (textures, reflections, branding)
-    - Cinematic style (like Austen Paul) needs strong attention to lighting, camera movement, and focal effects
-    - Both spatial and semantic pathways are crucial for product videos that "feel" like advertisements
-  4. Why This Combination
-    - Products often have specific relationships with camera movements (rotating, zooming, tracking shots)
-    - Removing humans simplifies composition but requires stronger focus on product as subject
-    - Cinematic style requires both control of movement and understanding of aesthetic features
+```bash
+python train.py \
+  --config=example/training.json \
+  --training_type=e2v \
+  --use_peft=True \
+  --rank=32 \
+  --target_modules="(transformer_blocks|single_transformer_blocks).*(to_q|to_k|to_v|to_out.0)|patch_embedding|(add_k_proj|add_v_proj)"
+```
 
-  This approach gives you a solid foundation that:
-  1. Transforms the model's understanding of object-centric composition (without humans)
-  2. Enhances cinematic qualities (lighting, movement, timing)
-  3. Maintains reasonable parameter count for efficient training
+For style-only LoRAs:
+```bash
+python train.py \
+  --config=example/training.json \
+  --training_type=e2v \
+  --use_peft=True \
+  --rank=16 \
+  --target_modules="(add_k_proj|add_v_proj)"
+```
 
-  You can then create targeted "flavor" LoRAs on top of this base for:
-  - "(add_k_proj|add_v_proj)" → Different mood variations (colorful vs. moody)
-  - "patch_embedding" → Different product categories or shooting styles
+### Loading Multiple LoRAs
 
-  This layered approach will allow you to efficiently create a versatile system for generating product-focused
-  cinematic ads in various styles.
+During inference, multiple LoRAs can be loaded simultaneously:
+
+```python
+# Load base product LoRA
+pipe.load_lora_weights("path/to/product_base_lora", adapter_name="base")
+
+# Add style LoRA with specific scaling
+pipe.load_lora_weights("path/to/cinematic_style_lora", adapter_name="style")
+
+# Set different scaling for each adapter
+pipe.set_adapters(["base", "style"], adapter_weights=[1.0, 0.8])
+
+# Generate with combined adapters
+pipe(prompt="Luxury watch on marble surface with dramatic lighting", 
+     image_vae=[product_image, background_image])
+```
+
+## Recommendations and Best Practices
+
+1. **Experiment with rank values**:
+   - Larger rank (32-64) for comprehensive base LoRAs
+   - Smaller rank (8-16) for specialized style/category LoRAs
+
+2. **Data considerations**:
+   - For product-centric training: Focus on high-quality product videos with diverse angles and movements
+   - For style training: Curate datasets with consistent aesthetic qualities
+   - For control training: Ensure paired data with appropriate control signals
+
+3. **Validation approach**:
+   - Test combinations of LoRAs with different alpha values
+   - Validate that non-overlapping LoRAs can be combined without interference
+   - Compare different targeting strategies on the same dataset
+
+4. **Potential issues**:
+   - Some module patterns may need adjustment based on specific model versions
+   - Very small LoRAs might have limited impact on generation
+   - Excessively large LoRAs might overfit to training data
+
+## References
+
+1. A2 paper (SkyReels-A2: Compose Anything in Video Diffusion Transformers) - See sections 2.2-2.3 for architecture details
+2. A2/models/transformer_a2.py - Key implementation of attention mechanisms and conditioning
+3. A2/models/pipeline_a2.py - Reference processing and conditioning application
+4. finetrainers/trainer/control_trainer/ - Pattern for LoRA implementation in control training
+5. finetrainers/trainer/e2v_trainer/ - E2V-specific training implementation
+
+---
+
+Document Version: 1.0  
+Last Updated: April 21, 2025
