@@ -438,7 +438,7 @@ class E2VTrainer:
         parallel_backend = self.state.parallel_backend
         
         # For LoRA training
-        if isinstance(self.args, E2VLowRankConfig):
+        if isinstance(self.args, E2VLowRankConfig) or getattr(self.args, "training_type", None) == TrainingType.E2V_LORA:
             # Configure LoRA
             if not hasattr(self.transformer, "peft_config"):
                 lora_config = LoraConfig(
@@ -598,9 +598,12 @@ class E2VTrainer:
             if "vae" not in processors:
                 raise ValueError(f"VAE processor configuration is required in {data_root or dataset_file}")
                 
-            if e2v_config.get("e2v_type") in [E2VType.CLIP.value, E2VType.DUAL.value]:
-                if "clip" not in processors:
-                    raise ValueError(f"CLIP processor configuration is required for CLIP or DUAL e2v_type in {data_root or dataset_file}")
+            # Check if tensor_combinations requires clip processor
+            tensor_combinations = e2v_config.get("tensor_combinations", {})
+            requires_clip = any("clip" in procs for procs in tensor_combinations.values())
+            
+            if requires_clip and "clip" not in processors:
+                raise ValueError(f"CLIP processor configuration is required when used in tensor_combinations in {data_root or dataset_file}")
 
             if data_root is not None and dataset_file is not None:
                 raise ValueError("Both data_root and dataset_file cannot be provided in the same dataset config.")
