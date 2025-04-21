@@ -142,7 +142,7 @@ class E2VTrainer:
                     all_suffixes.extend(element["suffixes"])
             e2v_config["reference_suffixes"] = all_suffixes
         
-        # We no longer need e2v_type as it's now configuration-driven
+        # Set frame conditioning parameters
         e2v_config["frame_conditioning_type"] = getattr(self.args, "frame_conditioning_type", "full")
         e2v_config["frame_conditioning_index"] = getattr(self.args, "frame_conditioning_index", 0)
         e2v_config["frame_conditioning_concatenate_mask"] = getattr(self.args, "frame_conditioning_concatenate_mask", True)
@@ -599,7 +599,6 @@ class E2VTrainer:
             # If still no e2v_config, create with prioritizing config elements
             if not e2v_config:
                 e2v_config = {
-                    "e2v_type": getattr(self.args, "e2v_type", "dual"),
                     "elements": config_elements or getattr(self.args, "elements", []),  # Try config first
                     "processors": config.get("processors", {}) or getattr(self.args, "processors", {}),
                     "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
@@ -716,7 +715,6 @@ class E2VTrainer:
                 # If still no e2v_config, create with prioritizing config elements
                 if not e2v_config:
                     e2v_config = {
-                        "e2v_type": getattr(self.args, "e2v_type", "dual"),
                         "elements": config_elements or getattr(self.args, "elements", []),  # Try config first
                         "processors": config.get("processors", {}) or getattr(self.args, "processors", {}),
                         "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
@@ -737,9 +735,12 @@ class E2VTrainer:
                 if "vae" not in processors:
                     raise ValueError(f"VAE processor configuration is required in validation for {data_root or dataset_file}")
                     
-                if e2v_config.get("e2v_type") in [E2VType.CLIP.value, E2VType.DUAL.value]:
-                    if "clip" not in processors:
-                        raise ValueError(f"CLIP processor configuration is required for CLIP or DUAL e2v_type in validation for {data_root or dataset_file}")
+                # Check if tensor_combinations requires clip processor
+                tensor_combinations = e2v_config.get("tensor_combinations", {})
+                requires_clip = any("clip" in procs for procs in tensor_combinations.values())
+                
+                if requires_clip and "clip" not in processors:
+                    raise ValueError(f"CLIP processor configuration is required when used in tensor_combinations in validation for {data_root or dataset_file}")
                 
                 if data_root is not None and dataset_file is not None:
                     raise ValueError("Both data_root and dataset_file cannot be provided in the same validation config.")
