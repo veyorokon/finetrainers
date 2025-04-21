@@ -31,7 +31,6 @@ class ElementConfig(ConfigMixin):
     placeholder: Any = None  # Default value for placeholder elements
     vae: Dict[str, Any] = {"repeat": 1, "position": 0}
     clip: Union[Dict[str, Any], bool] = {"preprocess": "center_crop"}
-    mask: Union[Dict[str, Any], bool] = None  # Mask processor configuration
 
     def validate_args(self, args):
         assert isinstance(self.name, str), "Element name must be a string"
@@ -89,15 +88,29 @@ class E2VConfig(ConfigMixin):
 
     # e2v_type removed in favor of configuration-driven approach
     elements: List[ElementConfig] = []  # Default to empty list
-    processors: Dict[str, Union[VaeProcessorConfig, ClipProcessorConfig, MaskProcessorConfig]] = {}  # Default to empty dict
+    processors: Dict[str, Union[VaeProcessorConfig, ClipProcessorConfig]] = {}  # Default to empty dict
     tensor_combinations: Dict[str, List[str]] = {}  # Configuration for tensor combinations
     frame_conditioning_type: str = FrameConditioningType.FULL
     frame_conditioning_index: int = 0
     frame_conditioning_concatenate_mask: bool = True
 
     def validate_args(self, args):
-        # Skip detailed validation during initial arg parsing
-        # Full validation will happen in the trainer after dataset config is loaded
+        # Validate essential configuration properties
+        if hasattr(self, 'elements') and self.elements:
+            for elem in self.elements:
+                assert isinstance(elem, ElementConfig), "Elements must be of type ElementConfig"
+        
+        if hasattr(self, 'processors') and self.processors:
+            for proc_name, proc_config in self.processors.items():
+                assert proc_name in ['vae', 'clip'], f"Unknown processor type: {proc_name}"
+                assert isinstance(proc_config, (VaeProcessorConfig, ClipProcessorConfig)), \
+                    f"Processor {proc_name} config must be of appropriate type"
+                
+        if hasattr(self, 'tensor_combinations') and self.tensor_combinations:
+            for output_name, processor_list in self.tensor_combinations.items():
+                assert isinstance(processor_list, list), f"Processor list for {output_name} must be a list"
+                for proc_name in processor_list:
+                    assert proc_name in ['vae', 'clip'], f"Unknown processor in tensor_combinations: {proc_name}"
     
     def map_args(self, argparse_args, mapped_args):
         # Map CLI args to this config
@@ -179,6 +192,13 @@ class E2VLowRankConfig(E2VConfig):
         super().validate_args(args)
         assert self.rank > 0, "Rank must be a positive integer."
         assert self.lora_alpha > 0, "lora_alpha must be a positive integer."
+        if isinstance(self.target_modules, str):
+            # Single regex pattern is valid
+            pass
+        elif isinstance(self.target_modules, list):
+            assert all(isinstance(m, str) for m in self.target_modules), "All target_modules entries must be strings"
+        else:
+            raise TypeError("target_modules must be a string or list of strings")
         
     def map_args(self, argparse_args, mapped_args):
         super().map_args(argparse_args, mapped_args)

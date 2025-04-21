@@ -1,7 +1,7 @@
 {
   "datasets": [
     {
-      "data_root": "/path/to/dataset",
+      "data_root": "/workspace/dataset",
       "dataset_type": "video_references",
       "target_resolution": [ 480, 854 ],
       "auto_frame_buckets": true,
@@ -12,19 +12,10 @@
         {
           "name": "object",
           "suffixes": [ "_object.png" ],
-          "required": false,
+          "required": true,
           "processors": {
             "vae": { "repeat": 4, "position": 0 },
             "clip": { "position": 1 }
-          }
-        },
-        {
-          "name": "mask",
-          "suffixes": [ ],
-          "required": false,
-          "placeholder": 1,
-          "processors": {
-            "mask": { "frame_conditioning": "source_length", "source": "vae", "source_field": "latents", "position": 0 }
           }
         },
         {
@@ -53,11 +44,6 @@
           "trim_alpha": true,
           "alpha_threshold": 0.1,
           "padding_buffer": 8,
-          "batch_size": 1
-        },
-        "mask": {
-          "resolution": [ 480, 854 ],
-          "preprocessor": null,
           "batch_size": 1
         }
       },
