@@ -4,9 +4,12 @@ This module implements the E2V trainer, which handles training Wan models
 using multiple reference images (elements) as conditioning for video generation.
 
 The trainer follows the separation of concerns pattern where:
-1. Preprocessing is done in the dataset layer
-2. Model inference is done in the trainer layer
+1. Preprocessing is done in the dataset (IterableE2VDataset)
+2. Model inference is done in the trainer (this file)
 3. Configuration is strictly driven by the config file
+
+No legacy code support or implicit defaults are provided - all functionality
+is driven explicitly by configuration values.
 """
 import functools
 import json
@@ -14,14 +17,17 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union, Iterable
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
 
 import datasets.distributed
+import safetensors.torch
 import torch
 import torch.backends
 import wandb
 from diffusers import DiffusionPipeline
+from diffusers.hooks import apply_layerwise_casting
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
+from diffusers.training_utils import cast_training_params
 from diffusers.utils import export_to_video
 from huggingface_hub import create_repo, upload_folder
 from peft import LoraConfig, get_peft_model_state_dict
@@ -37,215 +43,99 @@ from finetrainers.state import State, TrainState
 from .config import E2VFullRankConfig, E2VLowRankConfig
 from .data import IterableE2VDataset, ValidationE2VDataset
 from .encoders import ENCODER_REGISTRY, encode_vae, encode_clip
-from .combiners import COMBINER_REGISTRY, combine_vae_features, combine_clip_features
+from .combiners import COMBINER_REGISTRY, combine_vae_features, combine_clip_features, get_encoder, get_combiner
 from .utils import validate_e2v_config, validate_tensor_combinations, find_tensor_by_key_pattern
+
+
+if TYPE_CHECKING:
+    from finetrainers.args import BaseArgs
+    from finetrainers.models import ControlModelSpecification
+
+ArgsType = Union["BaseArgs", E2VFullRankConfig, E2VLowRankConfig]
 
 logger = get_logger()
 
 
 class E2VTrainer:
-    """Trainer for Elements-to-Video (E2V) models.
-    
-    Handles the full training lifecycle including:
-    - Model initialization and setup
-    - Dataset preparation
-    - Training loop management
-    - Validation and visualization
-    - Checkpointing and logging
-    
-    The E2V approach uses multiple reference images to condition video generation,
-    processing them through both VAE (spatial) and CLIP (semantic) pathways.
-    """
-    
-    # Component lists for organized handling
-    _all_component_names = [
-        "tokenizer", "tokenizer_2", "tokenizer_3", 
-        "text_encoder", "text_encoder_2", "text_encoder_3", 
-        "transformer", "unet", "vae", "scheduler", "image_encoder"
-    ]
-    _condition_component_names = [
-        "tokenizer", "tokenizer_2", "tokenizer_3", 
-        "text_encoder", "text_encoder_2", "text_encoder_3", "image_encoder"
-    ]
+    # fmt: off
+    _all_component_names = ["tokenizer", "tokenizer_2", "tokenizer_3", "text_encoder", "text_encoder_2", "text_encoder_3", "transformer", "unet", "vae", "scheduler", "image_encoder"]
+    _condition_component_names = ["tokenizer", "tokenizer_2", "tokenizer_3", "text_encoder", "text_encoder_2", "text_encoder_3", "image_encoder"]
     _latent_component_names = ["vae"]
     _diffusion_component_names = ["transformer", "unet", "scheduler"]
+    # fmt: on
 
-    def __init__(self, args: Union[E2VFullRankConfig, E2VLowRankConfig], model_specification):
+    def __init__(self, args: ArgsType, model_specification: "ControlModelSpecification") -> None:
         """Initialize the E2V trainer.
         
         Args:
-            args: Configuration containing training parameters
-            model_specification: Model specification defining architecture
+            args: Training arguments
+            model_specification: Model specification
         """
         self.args = args
         self.state = State()
         self.state.train_state = TrainState()
-        
-        # Initialize components
-        self._init_component_attributes()
-        
-        # Initialize training environment
-        self._init_distributed()
-        self._init_config_options()
-        self._init_logging()
-        self._init_directories_and_repositories()
-        
-        # Set up model specification
-        patches.perform_patches_for_training(self.args, self.state.parallel_backend)
-        self.model_specification = model_specification
-        self._are_condition_models_loaded = False
-        
-        # Pass frame conditioning parameters to model specification
-        self._init_frame_conditioning()
 
-    def _init_component_attributes(self):
-        """Initialize all model component attributes to None."""
+        # Initialize components to None
         # Tokenizers
         self.tokenizer = None
         self.tokenizer_2 = None
         self.tokenizer_3 = None
-        
-        # Encoders
+
+        # Text encoders
         self.text_encoder = None
         self.text_encoder_2 = None
         self.text_encoder_3 = None
-        self.image_encoder = None
         
-        # Generation components
+        # Image encoder for CLIP pathway
+        self.image_encoder = None
+
+        # Denoisers
         self.transformer = None
         self.unet = None
+
+        # Autoencoders
         self.vae = None
+
+        # Scheduler
         self.scheduler = None
-        
-        # Training components
+
+        # Optimizer & LR scheduler
         self.optimizer = None
         self.lr_scheduler = None
+
+        # Checkpoint manager
         self.checkpointer = None
         
-        # Track parameters
+        # Training state
         self.state.num_trainable_parameters = 0
-
-    def _init_distributed(self):
-        """Initialize distributed training backend."""
-        world_size = int(os.environ.get("WORLD_SIZE", torch.cuda.device_count()))
-
-        backend_cls = parallel.get_parallel_backend_cls(self.args.parallel_backend)
-        self.state.parallel_backend = backend_cls(
-            world_size=world_size,
-            pp_degree=self.args.pp_degree,
-            dp_degree=self.args.dp_degree,
-            dp_shards=self.args.dp_shards,
-            cp_degree=self.args.cp_degree,
-            tp_degree=self.args.tp_degree,
-            backend="nccl",
-            timeout=self.args.init_timeout,
-            logging_dir=self.args.logging_dir,
-            output_dir=self.args.output_dir,
-            gradient_accumulation_steps=self.args.gradient_accumulation_steps,
-        )
-
-        if self.args.seed is not None:
-            self.state.parallel_backend.enable_determinism(self.args.seed)
-
-    def _init_config_options(self):
-        """Initialize configuration options and system settings."""
-        # Gradient accumulation
-        self.state.gradient_accumulation_steps = self.args.gradient_accumulation_steps
         
-        # Logging and precision options
-        self.state.logging_nan_or_inf = getattr(self.args, "logging_nan_or_inf", False)
-        self.state.allow_tf32 = self.args.allow_tf32
-        if self.state.allow_tf32:
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
+        # Initialize distributed training first
+        self._init_distributed()
+        self._init_config_options()
         
-        # Batch sizes
-        if not hasattr(self.args, "train_batch_size") or not self.args.train_batch_size:
-            self.args.train_batch_size = 1
-        
-        if not hasattr(self.args, "eval_batch_size") or not self.args.eval_batch_size:
-            self.args.eval_batch_size = 1
-        
-        # Torch compilation settings
-        if hasattr(self.args, "setup_torch_compile") and self.args.setup_torch_compile:
-            os.environ["TORCHINDUCTOR_DISABLE_CUDAGRAPHS"] = "1"
+        # Initialize logging and directories
+        self._init_logging()
+        self._init_directories_and_repositories()
 
-    def _init_frame_conditioning(self):
-        """Initialize frame conditioning parameters for model specification."""
-        # Get frame conditioning params with defaults
-        frame_conditioning_type = getattr(self.args, "frame_conditioning_type", "full")
-        frame_conditioning_index = getattr(self.args, "frame_conditioning_index", 0)
-        frame_conditioning_concatenate_mask = getattr(self.args, "frame_conditioning_concatenate_mask", True)
+        # Perform any patches that might be necessary for training to work as expected
+        patches.perform_patches_for_training(self.args, self.state.parallel_backend)
+
+        self.model_specification = model_specification
+        self._are_condition_models_loaded = False
+
+        # Pass frame conditioning parameters to model specification
+        # Use getattr with default values for potentially missing parameters
+        frame_conditioning_type = getattr(args, "frame_conditioning_type", "full")
+        frame_conditioning_index = getattr(args, "frame_conditioning_index", 0)
+        frame_conditioning_concatenate_mask = getattr(args, "frame_conditioning_concatenate_mask", True)
         
-        # Initialize model specification with these parameters
-        self.model_specification._trainer_init(
+        model_specification._trainer_init(
             frame_conditioning_type, frame_conditioning_index, frame_conditioning_concatenate_mask
         )
-
-    def _init_logging(self):
-        """Initialize logging functionality."""
-        # Only log from main process
-        if self.state.parallel_backend.is_main_process:
-            logger.info(f"E2V training: {self.args.training_type}")
-            logger.info(f"Output directory: {self.args.output_dir}")
-            
-            # Log key configuration parameters
-            logger.info(f"Training batch size: {self.args.train_batch_size}")
-            logger.info(f"Gradient accumulation steps: {self.args.gradient_accumulation_steps}")
-            
-            # Log LoRA parameters if applicable
-            if self.args.training_type == TrainingType.E2V_LORA:
-                logger.info(f"LoRA rank: {self.args.rank}")
-                logger.info(f"LoRA alpha: {self.args.lora_alpha}")
-                logger.info(f"LoRA target modules: {self.args.target_modules}")
-
-    def _init_trackers(self):
-        """Initialize training trackers (e.g., Weights & Biases)."""
-        parallel_backend = self.state.parallel_backend
         
-        # Configure trackers following framework pattern
-        trackers = [self.args.report_to]
-        experiment_name = getattr(self.args, "tracker_name", None) or "finetrainers-experiment"
-        parallel_backend.initialize_trackers(
-            trackers, 
-            experiment_name=experiment_name, 
-            config=self._get_training_info(), 
-            log_dir=self.args.logging_dir
-        )
+        # We'll initialize trackers in _prepare_for_training, not here
 
-    def _get_training_info(self):
-        """Get training information for logging to trackers."""
-        info = self.args.to_dict()
-        
-        # Filter out irrelevant diffusion arguments
-        diffusion_args = info.get("diffusion_arguments", {})
-        scheduler_name = self.scheduler.__class__.__name__ if self.scheduler is not None else ""
-        if scheduler_name != "FlowMatchEulerDiscreteScheduler":
-            filtered_diffusion_args = {k: v for k, v in diffusion_args.items() if "flow" not in k}
-        else:
-            filtered_diffusion_args = diffusion_args
-        
-        info.update({"diffusion_arguments": filtered_diffusion_args})
-        return info
-
-    def _init_directories_and_repositories(self):
-        """Initialize output directories and HF Hub repositories."""
-        if self.state.parallel_backend.is_main_process:
-            # Ensure output directory exists
-            self.args.output_dir = Path(self.args.output_dir)
-            self.args.output_dir.mkdir(parents=True, exist_ok=True)
-            self.state.output_dir = Path(self.args.output_dir)
-            
-            # Initialize Hub repository if configured
-            if self.args.push_to_hub:
-                repo_id = self.args.hub_model_id or Path(self.args.output_dir).name
-                self.state.repo_id = create_repo(
-                    token=self.args.hub_token, 
-                    repo_id=repo_id, 
-                    exist_ok=True
-                ).repo_id
-
-    def run(self):
+    def run(self) -> None:
         """Main entry point for training - follows framework pattern."""
         parallel_backend = self.state.parallel_backend
         start_time = time.time()
@@ -279,7 +169,7 @@ class E2VTrainer:
             if hasattr(self, "validation_dataloader") and self.validation_dataloader is not None and \
                hasattr(self.args, "run_validation_on_train_end") and self.args.run_validation_on_train_end:
                 logger.info("Running final validation")
-                self._validate(step=self.state.train_state.step, final_validation=True)
+                self._validate(step=train_state.step, final_validation=True)
                 
         except KeyboardInterrupt:
             logger.warning("Training interrupted by user")
@@ -298,33 +188,110 @@ class E2VTrainer:
         finally:
             # Cleanup resources regardless of success/failure
             self._cleanup()
+
+    def _init_distributed(self) -> None:
+        """Initialize distributed training."""
+        world_size = int(os.environ.get("WORLD_SIZE", torch.cuda.device_count()))
+
+        backend_cls: parallel.ParallelBackendType = parallel.get_parallel_backend_cls(self.args.parallel_backend)
+        self.state.parallel_backend = backend_cls(
+            world_size=world_size,
+            pp_degree=self.args.pp_degree,
+            dp_degree=self.args.dp_degree,
+            dp_shards=self.args.dp_shards,
+            cp_degree=self.args.cp_degree,
+            tp_degree=self.args.tp_degree,
+            backend="nccl",
+            timeout=self.args.init_timeout,
+            logging_dir=self.args.logging_dir,
+            output_dir=self.args.output_dir,
+            gradient_accumulation_steps=self.args.gradient_accumulation_steps,
+        )
+
+        if self.args.seed is not None:
+            self.state.parallel_backend.enable_determinism(self.args.seed)
+
+    def _init_config_options(self) -> None:
+        """Initialize configuration options."""
+        # Set up configuration options
+        self.state.gradient_accumulation_steps = self.args.gradient_accumulation_steps
+
+        # Use getattr with default False in case the attribute doesn't exist in BaseArgs
+        self.state.logging_nan_or_inf = getattr(self.args, "logging_nan_or_inf", False)
+        self.state.allow_tf32 = self.args.allow_tf32
+        if self.state.allow_tf32:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+
+        if not hasattr(self.args, "train_batch_size") or not self.args.train_batch_size:
+            self.args.train_batch_size = 1
+
+        if not hasattr(self.args, "eval_batch_size") or not self.args.eval_batch_size:
+            self.args.eval_batch_size = 1
+
+        if hasattr(self.args, "setup_torch_compile") and self.args.setup_torch_compile:
+            # Reset compilation cache
+            os.environ["TORCHINDUCTOR_DISABLE_CUDAGRAPHS"] = "1"
             
-    def _cleanup(self):
-        """Clean up resources after training."""
-        logger.info("Cleaning up resources")
+    def _init_logging(self) -> None:
+        """Initialize logging functionality."""
+        # Only log once from the main process
+        if self.state.parallel_backend.is_main_process:
+            logger.info(f"E2V training: {self.args.training_type}")
+            logger.info(f"Output directory: {self.args.output_dir}")
+            
+            # Log some important args
+            logger.info(f"Training batch size: {self.args.train_batch_size}")
+            logger.info(f"Gradient accumulation steps: {self.args.gradient_accumulation_steps}")
+            
+            # E2V is configuration-driven
+            if self.args.training_type == TrainingType.E2V_LORA:
+                # Access values directly from args
+                logger.info(f"LoRA rank: {self.args.rank}")
+                logger.info(f"LoRA alpha: {self.args.lora_alpha}")
+                logger.info(f"LoRA target modules: {self.args.target_modules}")
+    
+    def _init_trackers(self) -> None:
+        """Initialize model trackers like WandB."""
+        parallel_backend = self.state.parallel_backend
         
-        # 1. Clean up trackers
-        try:
-            self.state.parallel_backend.cleanup_trackers()
-        except Exception as e:
-            logger.warning(f"Error cleaning up trackers: {e}")
+        # Follow the same pattern as other trainers for consistency
+        trackers = [self.args.report_to]
+        experiment_name = getattr(self.args, "tracker_name", None) or "finetrainers-experiment"
+        parallel_backend.initialize_trackers(
+            trackers, 
+            experiment_name=experiment_name, 
+            config=self._get_training_info(), 
+            log_dir=self.args.logging_dir
+        )
         
-        # 2. Free up GPU memory
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
-        except Exception as e:
-            logger.warning(f"Error cleaning GPU memory: {e}")
-            
-        # 3. Destroy process group for distributed training
-        if self.state.parallel_backend is not None:
-            try:
-                self.state.parallel_backend.cleanup()
-            except Exception as e:
-                logger.warning(f"Error cleaning up parallel backend: {e}")
-            
-    def _prepare_models(self):
+    def _get_training_info(self) -> Dict[str, Any]:
+        """Get training information for logging."""
+        info = self.args.to_dict()
+
+        # Removing flow matching arguments when not using flow-matching objective
+        diffusion_args = info.get("diffusion_arguments", {})
+        scheduler_name = self.scheduler.__class__.__name__ if self.scheduler is not None else ""
+        if scheduler_name != "FlowMatchEulerDiscreteScheduler":
+            filtered_diffusion_args = {k: v for k, v in diffusion_args.items() if "flow" not in k}
+        else:
+            filtered_diffusion_args = diffusion_args
+
+        info.update({"diffusion_arguments": filtered_diffusion_args})
+        return info
+    
+    def _init_directories_and_repositories(self) -> None:
+        """Initialize output directories and repositories."""
+        if self.state.parallel_backend.is_main_process:
+            self.args.output_dir = Path(self.args.output_dir)
+            self.args.output_dir.mkdir(parents=True, exist_ok=True)
+            self.state.output_dir = Path(self.args.output_dir)
+
+            if self.args.push_to_hub:
+                repo_id = self.args.hub_model_id or Path(self.args.output_dir).name
+                self.state.repo_id = create_repo(token=self.args.hub_token, repo_id=repo_id, exist_ok=True).repo_id
+
+    def _prepare_models(self) -> None:
         """Prepare models for training following framework patterns."""
         parallel_backend = self.state.parallel_backend
         logger.info("Preparing models")
@@ -357,12 +324,6 @@ class E2VTrainer:
             )
             
         # 6. Apply distributed data parallelism or sharding if needed
-        self._apply_distributed_strategy()
-            
-    def _apply_distributed_strategy(self):
-        """Apply appropriate distributed training strategy."""
-        parallel_backend = self.state.parallel_backend
-        
         if parallel_backend.data_sharding_enabled:
             # Handle FSDP or HSDP
             if parallel_backend.data_replication_enabled:
@@ -395,7 +356,7 @@ class E2VTrainer:
         else:
             parallel_backend.prepare_model(self.transformer)
             
-    def _move_components_to_device(self):
+    def _move_components_to_device(self) -> None:
         """Move all model components to the appropriate device."""
         device = self.state.parallel_backend.device
         logger.info(f"Moving model components to device: {device}")
@@ -417,7 +378,7 @@ class E2VTrainer:
         # Note: Diffusion components will be moved as part of the distributed 
         # preparation process, so we don't need to explicitly move them here.
 
-    def _load_condition_models(self):
+    def _load_condition_models(self) -> None:
         """Load text encoders, tokenizers, and image encoder."""
         logger.info("Loading condition models")
         
@@ -428,10 +389,16 @@ class E2VTrainer:
             setattr(self, name, component)
             
         logger.info(f"Have image_encoder: {hasattr(self, 'image_encoder')}")
+        if hasattr(self, 'image_encoder'):
+            logger.info(f"image_encoder type: {type(self.image_encoder)}")
+        else:
+            logger.warning("No image_encoder loaded - E2V training requires CLIP image_encoder")
+            logger.warning("This might be because we're not using WanE2VModelSpecification")
+            logger.warning(f"Using model specification type: {type(self.model_specification)}")
         
         self._are_condition_models_loaded = True
 
-    def _load_latent_models(self):
+    def _load_latent_models(self) -> None:
         """Load VAE for encoding/decoding latents."""
         logger.info("Loading latent models")
         
@@ -440,7 +407,7 @@ class E2VTrainer:
         for name, component in components.items():
             setattr(self, name, component)
 
-    def _load_diffusion_models(self):
+    def _load_diffusion_models(self) -> None:
         """Load transformer with expanded patch embedding for control channels."""
         logger.info("Loading diffusion models")
         
@@ -456,109 +423,105 @@ class E2VTrainer:
         
         for name, component in components.items():
             setattr(self, name, component)
-            
-    def _prepare_trainable_parameters(self):
+
+    def _prepare_trainable_parameters(self) -> None:
         """Prepare trainable parameters for optimization."""
         logger.info("Preparing trainable parameters")
         parallel_backend = self.state.parallel_backend
         
         # For LoRA training
         if isinstance(self.args, E2VLowRankConfig) or getattr(self.args, "training_type", None) == TrainingType.E2V_LORA:
-            self._prepare_lora_parameters()
+            # Configure LoRA
+            if not hasattr(self.transformer, "peft_config"):
+                # Access attributes directly from self.args
+                # These values should be available after being properly mapped in the config.py
+                rank = self.args.rank
+                lora_alpha = self.args.lora_alpha
+                target_modules = self.args.target_modules
+                
+                # Simple validation, consistent with other trainers
+                if target_modules is None:
+                    raise ValueError("target_modules must be specified for LoRA training")
+                
+                lora_config = LoraConfig(
+                    r=rank,
+                    lora_alpha=lora_alpha,
+                    target_modules=target_modules,
+                    init_lora_weights="gaussian",
+                    lora_dropout=0.0,
+                    bias="none",
+                )
+                
+                # Convert regex patterns to actual module names
+                import re
+                
+                # Handle either string or list of strings
+                patterns = [lora_config.target_modules] if isinstance(lora_config.target_modules, str) else lora_config.target_modules
+                
+                # Find matching modules
+                filtered_modules = []
+                for pattern in patterns:
+                    for name, module in self.transformer.named_modules():
+                        if re.search(pattern, name) and hasattr(module, "weight") and isinstance(module.weight, torch.nn.Parameter):
+                            filtered_modules.append(name)
+                                
+                logger.info(f"Found {len(filtered_modules)} modules matching LoRA target patterns")
+                lora_config.target_modules = filtered_modules
+                
+                from peft import get_peft_model
+                
+                # Apply LoRA to the transformer
+                logger.info(f"Applying LoRA with rank {lora_config.r} and alpha {lora_config.lora_alpha}")
+                get_peft_model(self.transformer, lora_config)
+                
+                # Add QK norm if needed
+                if getattr(self.args, "train_qk_norm", False):
+                    qk_norm_count = 0
+                    for name, param in self.transformer.named_parameters():
+                        if "norm_q" in name or "norm_k" in name:
+                            param.requires_grad = True
+                            qk_norm_count += 1
+                    
+                    logger.info(f"Added {qk_norm_count} QK norm layers to trainable parameters")
+            
+            # Set training modules and mark lora parameters as trainable
+            logger.info("Setting up LoRA training parameters")
+            
+            # Count trainable parameters (only LoRA params should be trainable)
+            trainable_params = [p for p in self.transformer.parameters() if p.requires_grad]
+            total_trainable = sum(p.numel() for p in trainable_params)
+            
+            # Calculate percentage of trainable parameters
+            all_params = [p for p in self.transformer.parameters()]
+            total_params = sum(p.numel() for p in all_params)
+            trainable_percentage = (total_trainable / total_params) * 100 if total_params > 0 else 0
+            
+            logger.info(f"Total trainable parameters: {total_trainable:,} ({trainable_percentage:.2f}% of model)")
+            self.state.num_trainable_parameters = total_trainable
+        
         # For full fine-tuning
         else:
-            self._prepare_full_finetune_parameters()
+            logger.info("Setting up full fine-tuning")
+            # Set all transformer parameters to trainable
+            for param in self.transformer.parameters():
+                param.requires_grad = True
+            
+            # Count trainable parameters
+            trainable_params = [p for p in self.transformer.parameters() if p.requires_grad]
+            total_trainable = sum(p.numel() for p in trainable_params)
+            
+            # Calculate percentage of trainable parameters (for full fine-tuning should be 100%)
+            all_params = [p for p in self.transformer.parameters()]
+            total_params = sum(p.numel() for p in all_params)
+            trainable_percentage = (total_trainable / total_params) * 100 if total_params > 0 else 0
+            
+            logger.info(f"Total trainable parameters: {total_trainable:,} ({trainable_percentage:.2f}% of model)")
+            self.state.num_trainable_parameters = total_trainable
         
         # Store trainable modules for later use
         self.trainable_modules = [self.transformer]
 
-    def _prepare_lora_parameters(self):
-        """Configure model with LoRA parameters."""
-        # Configure LoRA
-        if not hasattr(self.transformer, "peft_config"):
-            # Get LoRA configuration parameters
-            rank = self.args.rank
-            lora_alpha = self.args.lora_alpha
-            target_modules = self.args.target_modules
-            
-            # Simple validation, consistent with other trainers
-            if target_modules is None:
-                raise ValueError("target_modules must be specified for LoRA training")
-            
-            # Create LoRA configuration
-            lora_config = LoraConfig(
-                r=rank,
-                lora_alpha=lora_alpha,
-                target_modules=target_modules,
-                init_lora_weights="gaussian",
-                lora_dropout=0.0,
-                bias="none",
-            )
-            
-            # Convert regex patterns to actual module names
-            import re
-            
-            # Handle either string or list of strings
-            patterns = [lora_config.target_modules] if isinstance(lora_config.target_modules, str) else lora_config.target_modules
-            
-            # Find matching modules
-            filtered_modules = []
-            for pattern in patterns:
-                for name, module in self.transformer.named_modules():
-                    if re.search(pattern, name) and hasattr(module, "weight") and isinstance(module.weight, torch.nn.Parameter):
-                        filtered_modules.append(name)
-                            
-            logger.info(f"Found {len(filtered_modules)} modules matching LoRA target patterns")
-            lora_config.target_modules = filtered_modules
-            
-            # Apply LoRA to the transformer
-            from peft import get_peft_model
-            
-            logger.info(f"Applying LoRA with rank {lora_config.r} and alpha {lora_config.lora_alpha}")
-            get_peft_model(self.transformer, lora_config)
-            
-            # Add QK norm if needed
-            if getattr(self.args, "train_qk_norm", False):
-                qk_norm_count = 0
-                for name, param in self.transformer.named_parameters():
-                    if "norm_q" in name or "norm_k" in name:
-                        param.requires_grad = True
-                        qk_norm_count += 1
-                
-                logger.info(f"Added {qk_norm_count} QK norm layers to trainable parameters")
-        
-        # Count trainable parameters (only LoRA params should be trainable)
-        trainable_params = [p for p in self.transformer.parameters() if p.requires_grad]
-        total_trainable = sum(p.numel() for p in trainable_params)
-        
-        # Calculate percentage of trainable parameters
-        all_params = [p for p in self.transformer.parameters()]
-        total_params = sum(p.numel() for p in all_params)
-        trainable_percentage = (total_trainable / total_params) * 100 if total_params > 0 else 0
-        
-        logger.info(f"Total trainable parameters: {total_trainable:,} ({trainable_percentage:.2f}% of model)")
-        self.state.num_trainable_parameters = total_trainable
-
-    def _prepare_full_finetune_parameters(self):
-        """Configure model for full fine-tuning."""
-        logger.info("Setting up full fine-tuning")
-        # Set all transformer parameters to trainable
-        for param in self.transformer.parameters():
-            param.requires_grad = True
-        
-        # Count trainable parameters
-        trainable_params = [p for p in self.transformer.parameters() if p.requires_grad]
-        total_trainable = sum(p.numel() for p in trainable_params)
-        
-        # Calculate percentage of trainable parameters (for full fine-tuning should be 100%)
-        all_params = [p for p in self.transformer.parameters()]
-        total_params = sum(p.numel() for p in all_params)
-        trainable_percentage = (total_trainable / total_params) * 100 if total_params > 0 else 0
-        
-        logger.info(f"Total trainable parameters: {total_trainable:,} ({trainable_percentage:.2f}% of model)")
-        self.state.num_trainable_parameters = total_trainable
-        
-    def _prepare_for_training(self):
+    def _prepare_for_training(self) -> None:
         """Prepare optimizer, learning rate scheduler and other training components."""
         logger.info("Preparing for training")
         parallel_backend = self.state.parallel_backend
@@ -599,7 +562,7 @@ class E2VTrainer:
         # 5. Initialize trackers
         self._init_trackers()
 
-    def _prepare_dataset(self):
+    def _prepare_dataset(self) -> None:
         """Initialize dataset and dataloaders."""
         logger.info("Initializing dataset and dataloader")
 
@@ -618,15 +581,50 @@ class E2VTrainer:
         # Initialize datasets based on config
         datasets = []
         for config in dataset_configs:
-            dataset = self._initialize_dataset_from_config(config)
+            # Extract basic dataset parameters
+            data_root = config.pop("data_root", None)
+            dataset_file = config.pop("dataset_file", None)
+            dataset_type = config.pop("dataset_type")
+            caption_options = config.pop("caption_options", {})
+            
+            if data_root is not None and dataset_file is not None:
+                raise ValueError("Both data_root and dataset_file cannot be provided in the same dataset config.")
+            
+            if data_root is None and dataset_file is None:
+                raise ValueError("Either data_root or dataset_file must be provided in dataset config.")
+            
+            # When using video_references, extract reference_suffixes from elements
+            if dataset_type == "video_references":
+                # Extract suffix patterns from elements configuration
+                reference_suffixes = []
+                for element in config.get("elements", []):
+                    if "suffixes" in element:
+                        reference_suffixes.extend(element["suffixes"])
+                        
+                # Add to caption options
+                if caption_options is None:
+                    caption_options = {}
+                caption_options["reference_suffixes"] = reference_suffixes
+                
+            # Initialize dataset using framework pattern
+            dataset_name_or_root = data_root or dataset_file
+            dataset = data.initialize_dataset(
+                dataset_name_or_root, dataset_type, streaming=True, infinite=True, _caption_options=caption_options
+            )
+            
+            # Validate dataset supports precomputation if requested
+            if not dataset._precomputable_once and self.args.precomputation_once:
+                raise ValueError(
+                    f"Dataset {dataset_name_or_root} does not support precomputing all embeddings at once."
+                )
+            
+            logger.info(f"Initialized dataset: {dataset_name_or_root}")
+            dataset = self.state.parallel_backend.prepare_dataset(dataset)
+            dataset = data.wrap_iterable_dataset_for_preprocessing(dataset, dataset_type, config)
             datasets.append(dataset)
 
         # Combine datasets with framework's approach
-        dataset = data.combine_datasets(
-            datasets, 
-            buffer_size=self.args.dataset_shuffle_buffer_size, 
-            shuffle=True
-        )
+        dataset = data.combine_datasets(datasets, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True)
         
         # Get E2V configuration from the first dataset
         e2v_config = self._extract_e2v_config(self.args.dataset_config)
@@ -638,68 +636,6 @@ class E2VTrainer:
             device=self.state.parallel_backend.device
         )
         
-        # Use DPDataLoader to better handle state
-        self._prepare_training_dataloader(dataset)
-        
-        # Handle validation dataset if configured
-        if self.args.validation_dataset_file:
-            self._prepare_validation_dataset()
-        else:
-            logger.info("No validation dataset provided")
-            self.validation_dataset = None
-            self.validation_dataloader = None
-    
-    def _initialize_dataset_from_config(self, config):
-        """Initialize dataset from configuration."""
-        # Extract basic dataset parameters
-        data_root = config.pop("data_root", None)
-        dataset_file = config.pop("dataset_file", None)
-        dataset_type = config.pop("dataset_type")
-        caption_options = config.pop("caption_options", {})
-        
-        if data_root is not None and dataset_file is not None:
-            raise ValueError("Both data_root and dataset_file cannot be provided in the same dataset config.")
-        
-        if data_root is None and dataset_file is None:
-            raise ValueError("Either data_root or dataset_file must be provided in dataset config.")
-        
-        # When using video_references, extract reference_suffixes from elements
-        if dataset_type == "video_references":
-            # Extract suffix patterns from elements configuration
-            reference_suffixes = []
-            for element in config.get("elements", []):
-                if "suffixes" in element:
-                    reference_suffixes.extend(element["suffixes"])
-                    
-            # Add to caption options
-            if caption_options is None:
-                caption_options = {}
-            caption_options["reference_suffixes"] = reference_suffixes
-            
-        # Initialize dataset using framework pattern
-        dataset_name_or_root = data_root or dataset_file
-        dataset = data.initialize_dataset(
-            dataset_name_or_root, 
-            dataset_type, 
-            streaming=True, 
-            infinite=True, 
-            _caption_options=caption_options
-        )
-        
-        # Validate dataset supports precomputation if requested
-        if not dataset._precomputable_once and self.args.precomputation_once:
-            raise ValueError(
-                f"Dataset {dataset_name_or_root} does not support precomputing all embeddings at once."
-            )
-        
-        logger.info(f"Initialized dataset: {dataset_name_or_root}")
-        dataset = self.state.parallel_backend.prepare_dataset(dataset)
-        dataset = data.wrap_iterable_dataset_for_preprocessing(dataset, dataset_type, config)
-        
-        return dataset
-    
-    def _prepare_training_dataloader(self, dataset):
-        """Prepare training dataloader from dataset."""
         # Use the same dataloader setup as control_trainer
         parallel_backend = self.state.parallel_backend
         
@@ -711,7 +647,7 @@ class E2VTrainer:
                 local_rank = dp_mesh.get_local_rank()
         
         # Use DPDataLoader with hardcoded batch_size=1 like control_trainer
-        dataloader = DPDataLoader(
+        dataloader = data.DPDataLoader(
             local_rank,
             dataset,
             batch_size=1,  # Hardcoded to 1 like control_trainer
@@ -719,73 +655,106 @@ class E2VTrainer:
             collate_fn=lambda items: items  # Match control_trainer's collate_fn
         )
         
-        # Store references
+        # Use the same variable names as other trainers
         self.dataset = dataset
         self.dataloader = dataloader
         
-    def _prepare_validation_dataset(self):
-        """Prepare validation dataset and dataloader."""
-        logger.info("Initializing validation dataset")
-        
-        try:
-            # Load validation dataset config
-            with open(self.args.validation_dataset_file, "r") as file:
-                validation_configs = json.load(file)
-                if "datasets" not in validation_configs:
-                    raise ValueError(f"'datasets' key not found in config file: {self.args.validation_dataset_file}")
-                validation_configs = validation_configs["datasets"]
-        except Exception as e:
-            raise ValueError(f"Failed to load validation dataset config: {e}")
-        
-        logger.info(f"Validation configured to use {len(validation_configs)} datasets")
-        
-        # Initialize validation datasets
-        validation_datasets = []
-        for config in validation_configs:
-            dataset = self._initialize_dataset_from_config(config)
-            validation_datasets.append(dataset)
-        
-        # Combine validation datasets
-        validation_dataset = data.combine_datasets(
-            validation_datasets, 
-            buffer_size=1, 
-            shuffle=False
-        )
-        
-        # Get E2V validation configuration
-        validation_e2v_config = self._extract_e2v_config(self.args.validation_dataset_file)
-        
-        # Wrap with E2V validation dataset
-        validation_dataset = ValidationE2VDataset(
-            validation_dataset,
-            validation_e2v_config,
-            device=self.state.parallel_backend.device
-        )
-        
-        # Setup validation dataloader exactly like control_trainer
-        parallel_backend = self.state.parallel_backend
-        
-        # Handle distributed scenario (same as control_trainer)
-        local_rank = 0
-        if parallel_backend.world_size > 1:
-            dp_mesh = parallel_backend.get_mesh("dp_replicate")
-            if dp_mesh is not None:
-                local_rank = dp_mesh.get_local_rank()
-        
-        # Use DPDataLoader with hardcoded batch_size=1 (exactly like control_trainer)
-        validation_dataloader = DPDataLoader(
-            local_rank,
-            validation_dataset,
-            batch_size=1,  # Hardcoded to 1 like control_trainer
-            num_workers=self.args.dataloader_num_workers,
-            collate_fn=lambda items: items  # Same collate_fn as control_trainer
-        )
-        
-        # Store validation dataset and dataloader
-        self.validation_dataset = validation_dataset
-        self.validation_dataloader = validation_dataloader
+        # Handle validation dataset if configured
+        if self.args.validation_dataset_file:
+            logger.info("Initializing validation dataset")
+            
+            try:
+                # Load validation dataset config
+                with open(self.args.validation_dataset_file, "r") as file:
+                    validation_configs = json.load(file)
+                    if "datasets" not in validation_configs:
+                        raise ValueError(f"'datasets' key not found in config file: {self.args.validation_dataset_file}")
+                    validation_configs = validation_configs["datasets"]
+            except Exception as e:
+                raise ValueError(f"Failed to load validation dataset config: {e}")
+            
+            logger.info(f"Validation configured to use {len(validation_configs)} datasets")
+            
+            # Initialize validation datasets
+            validation_datasets = []
+            for config in validation_configs:
+                # Extract basic dataset parameters
+                data_root = config.pop("data_root", None)
+                dataset_file = config.pop("dataset_file", None)
+                dataset_type = config.pop("dataset_type")
+                caption_options = config.pop("caption_options", {})
+                
+                if data_root is not None and dataset_file is not None:
+                    raise ValueError("Both data_root and dataset_file cannot be provided in the same validation config.")
+                
+                if data_root is None and dataset_file is None:
+                    raise ValueError("Either data_root or dataset_file must be provided in validation config.")
+                
+                # When using video_references, extract reference_suffixes from elements
+                if dataset_type == "video_references":
+                    # Extract suffix patterns from elements configuration
+                    reference_suffixes = []
+                    for element in config.get("elements", []):
+                        if "suffixes" in element:
+                            reference_suffixes.extend(element["suffixes"])
+                            
+                    # Add to caption options
+                    if caption_options is None:
+                        caption_options = {}
+                    caption_options["reference_suffixes"] = reference_suffixes
+                
+                # Initialize validation dataset
+                dataset_name_or_root = data_root or dataset_file
+                validation_dataset = data.initialize_dataset(
+                    dataset_name_or_root, dataset_type, streaming=True, infinite=False, _caption_options=caption_options
+                )
+                
+                logger.info(f"Initialized validation dataset: {dataset_name_or_root}")
+                validation_dataset = self.state.parallel_backend.prepare_dataset(validation_dataset)
+                validation_dataset = data.wrap_iterable_dataset_for_preprocessing(validation_dataset, dataset_type, config)
+                validation_datasets.append(validation_dataset)
+            
+            # Combine validation datasets
+            validation_dataset = data.combine_datasets(validation_datasets, buffer_size=1, shuffle=False)
+            
+            # Get E2V validation configuration
+            validation_e2v_config = self._extract_e2v_config(self.args.validation_dataset_file)
+            
+            # Wrap with E2V validation dataset
+            validation_dataset = ValidationE2VDataset(
+                validation_dataset,
+                validation_e2v_config,
+                device=self.state.parallel_backend.device
+            )
+            
+            # Setup validation dataloader exactly like control_trainer
+            parallel_backend = self.state.parallel_backend
+            
+            # Handle distributed scenario (same as control_trainer)
+            local_rank = 0
+            if parallel_backend.world_size > 1:
+                dp_mesh = parallel_backend.get_mesh("dp_replicate")
+                if dp_mesh is not None:
+                    local_rank = dp_mesh.get_local_rank()
+            
+            # Use DPDataLoader with hardcoded batch_size=1 (exactly like control_trainer)
+            validation_dataloader = data.DPDataLoader(
+                local_rank,
+                validation_dataset,
+                batch_size=1,  # Hardcoded to 1 like control_trainer
+                num_workers=self.args.dataloader_num_workers,
+                collate_fn=lambda items: items  # Same collate_fn as control_trainer
+            )
+            
+            # Store validation dataset and dataloader
+            self.validation_dataset = validation_dataset
+            self.validation_dataloader = validation_dataloader
+        else:
+            logger.info("No validation dataset provided")
+            self.validation_dataset = None
+            self.validation_dataloader = None
 
-    def _extract_e2v_config(self, config_file):
+    def _extract_e2v_config(self, config_file: str) -> Dict[str, Any]:
         """Extract E2V-specific configuration from a dataset config file.
         
         Args:
@@ -851,18 +820,17 @@ class E2VTrainer:
             e2v_config["frame_conditioning_concatenate_mask"] = getattr(self.args, "frame_conditioning_concatenate_mask", True)
         
         return e2v_config
-        
-    def _prepare_checkpointing(self):
+
+    def _prepare_checkpointing(self) -> None:
         """Set up checkpointing for the trainer."""
         parallel_backend = self.state.parallel_backend
         
-        def save_model_hook(state_dict):
-            """Hook called during checkpoint saving."""
+        def save_model_hook(state_dict: Dict[str, Any]) -> None:
             state_dict = utils.get_unwrapped_model_state_dict(state_dict)
             if parallel_backend.is_main_process:
                 if self.args.training_type == TrainingType.E2V_LORA:
                     state_dict = get_peft_model_state_dict(self.transformer, state_dict)
-                    # Prepare metadata for LoRA
+                    # fmt: off
                     metadata = {
                         "r": self.args.rank,
                         "lora_alpha": self.args.lora_alpha,
@@ -870,7 +838,7 @@ class E2VTrainer:
                         "target_modules": self.args.target_modules,
                     }
                     metadata = {"lora_config": json.dumps(metadata, indent=4)}
-                    
+                    # fmt: on
                     self.model_specification._save_lora_weights(
                         self.args.output_dir, state_dict, self.scheduler, metadata
                     )
@@ -901,8 +869,8 @@ class E2VTrainer:
             resume_from_checkpoint = -1
         if resume_from_checkpoint is not None:
             self.checkpointer.load(resume_from_checkpoint)
-            
-    def _train(self):
+
+    def _train(self) -> None:
         """Run the training loop."""
         logger.info("Starting training")
         
@@ -917,7 +885,8 @@ class E2VTrainer:
         logger.info(f"  Gradient accumulation steps = {self.state.gradient_accumulation_steps}")
         logger.info(f"  Total optimization steps = {self.args.train_steps}")
         
-        # Initialize training state and counters
+        # TrainState uses 'step' not 'global_step'
+        # Set initial values if needed
         current_step = train_state.step
         max_steps = self.args.train_steps
         train_state.max_steps = max_steps  # Store for reference
@@ -930,17 +899,23 @@ class E2VTrainer:
         if not hasattr(train_state, "log_steps"):
             train_state.log_steps = []
         
-        # Create progress bar
         progress_bar = tqdm(
             range(current_step, max_steps),
             disable=not self.state.parallel_backend.is_local_main_process,
             desc="Training steps",
         )
         
-        # Initialize data iterator
-        data_iterator = iter(self.dataloader)
+        # Initialize in a try-except block to catch potential dataloader issues
+        try:
+            data_iterator = iter(self.dataloader)
+        except Exception as e:
+            logger.error(f"Error initializing dataloader: {e}")
+            # Try to add any missing keys to dataloader state
+            if hasattr(self.dataloader, "dl_state_dict") and "_sampler_iter_yielded" not in self.dataloader.dl_state_dict:
+                self.dataloader.dl_state_dict["_sampler_iter_yielded"] = 0
+            # Reinitialize
+            data_iterator = iter(self.dataloader)
         
-        # Run training loop until we reach max steps or run out of data
         while current_step < max_steps:
             try:
                 # Get next batch
@@ -977,136 +952,69 @@ class E2VTrainer:
             if current_step % self.args.gradient_accumulation_steps == 0:
                 self._update_parameters()
                     
-                # Update counters and trackers
-                progress_bar.update(1)
-                current_step += 1
-                train_state.step = current_step  # Update the step in train_state
-                train_state.observed_data_samples += self.args.batch_size * parallel_backend._dp_degree
-                
-                # Track token count
-                try:
-                    # Get latents from batch to calculate tokens
-                    latents = batch.get("latents")
-                    if latents is not None:
-                        # Get patch size from transformer config if available
-                        patch_size = self._get_patch_size()
+                    # Update counters and trackers following control_trainer pattern
+                    progress_bar.update(1)
+                    current_step += 1
+                    train_state.step = current_step  # Update the step in train_state
+                    train_state.observed_data_samples += self.args.batch_size * parallel_backend._dp_degree
+                    
+                    # Track token count (similar to control_trainer)
+                    try:
+                        # Get latents from batch to calculate tokens
+                        latents = batch.get("latents")
+                        if latents is not None:
+                            # Get patch size from transformer config if available
+                            patch_size = 1
+                            if hasattr(self.transformer, "config"):
+                                if hasattr(self.transformer.config, "patch_size") and hasattr(self.transformer.config, "patch_size_t"):
+                                    patch_size = self.transformer.config.patch_size * self.transformer.config.patch_size_t
+                                elif isinstance(getattr(self.transformer.config, "patch_size", None), int):
+                                    patch_size = self.transformer.config.patch_size
+                                elif isinstance(getattr(self.transformer.config, "patch_size", None), (list, tuple)):
+                                    patch_size = math.prod(self.transformer.config.patch_size)
+                            
+                            # Calculate tokens
+                            train_state.observed_num_tokens += math.prod(latents.shape[:-1]) // patch_size
+                    except Exception as e:
+                        # Don't break training if token tracking fails
+                        logger.warning(f"Failed to track tokens: {e}")
+                    
+                    # Log metrics like control_trainer
+                    if parallel_backend.is_main_process:
+                        # Prepare metrics like control_trainer
+                        metrics = {
+                            "loss": loss.detach().item(),
+                            "lr": self.lr_scheduler.get_last_lr()[0] if hasattr(self.lr_scheduler, "get_last_lr") else 0,
+                            "step": current_step,
+                            "observed_data_samples": train_state.observed_data_samples,
+                            "observed_num_tokens": train_state.observed_num_tokens
+                        }
                         
-                        # Calculate tokens
-                        train_state.observed_num_tokens += math.prod(latents.shape[:-1]) // patch_size
-                except Exception as e:
-                    # Don't break training if token tracking fails
-                    logger.warning(f"Failed to track tokens: {e}")
-                
-                # Log metrics
-                if parallel_backend.is_main_process:
-                    # Prepare metrics
-                    metrics = {
-                        "loss": loss.detach().item(),
-                        "lr": self.lr_scheduler.get_last_lr()[0] if hasattr(self.lr_scheduler, "get_last_lr") else 0,
-                        "step": current_step,
-                        "observed_data_samples": train_state.observed_data_samples,
-                        "observed_num_tokens": train_state.observed_num_tokens
-                    }
+                        # Log step information
+                        logger.info(f"Step {current_step}: loss = {metrics['loss']:.4f}, lr = {metrics['lr']:.6f}")
+                        
+                        # Log to trackers at regular intervals
+                        if current_step % self.args.logging_steps == 0:
+                            parallel_backend.log(metrics, step=current_step)
+                            train_state.log_steps.append(current_step)
                     
-                    # Log step information
-                    logger.info(f"Step {current_step}: loss = {metrics['loss']:.4f}, lr = {metrics['lr']:.6f}")
+                    # Run validation if configured
+                    if self.validation_dataloader is not None and \
+                       self.args.validation_steps > 0 and \
+                       current_step % self.args.validation_steps == 0:
+                        self._validate(step=current_step, final_validation=False)
                     
-                    # Log to trackers at regular intervals
-                    if current_step % self.args.logging_steps == 0:
-                        parallel_backend.log(metrics, step=current_step)
-                        train_state.log_steps.append(current_step)
-                
-                # Run validation if configured
-                if self.validation_dataloader is not None and \
-                   self.args.validation_steps > 0 and \
-                   current_step % self.args.validation_steps == 0:
-                    self._validate(step=current_step, final_validation=False)
-                
-                # Create checkpoint if configured
-                if self.checkpointer and self.checkpointer.should_save(current_step):
-                    self.checkpointer.save()
+                    # Create checkpoint if configured
+                    if self.checkpointer and self.checkpointer.should_save(current_step):
+                        self.checkpointer.save()
         
         # Make sure we create a final checkpoint
         if current_step > 0 and self.checkpointer:
             self.checkpointer.save()
             
-    def _get_patch_size(self):
-        """Get patch size from transformer configuration."""
-        patch_size = 1
-        if hasattr(self.transformer, "config"):
-            if hasattr(self.transformer.config, "patch_size") and hasattr(self.transformer.config, "patch_size_t"):
-                patch_size = self.transformer.config.patch_size * self.transformer.config.patch_size_t
-            elif isinstance(getattr(self.transformer.config, "patch_size", None), int):
-                patch_size = self.transformer.config.patch_size
-            elif isinstance(getattr(self.transformer.config, "patch_size", None), (list, tuple)):
-                patch_size = math.prod(self.transformer.config.patch_size)
-        return patch_size
-        
-    def _validate(self, step: int = None, final_validation: bool = False):
-        """Run validation.
-        
-        Args:
-            step: Current training step (if None, uses train_state.step)
-            final_validation: Whether this is the final validation run
-        """
-        if self.validation_dataloader is None:
-            return
-        
-        logger.info("Running validation")
-        parallel_backend = self.state.parallel_backend
-        train_state = self.state.train_state
-        
-        # Use provided step or get from train_state
-        if step is None:
-            step = train_state.step
-        
-        with torch.no_grad():
-            total_val_loss = 0.0
-            val_steps = 0
-            
-            for i, batch in enumerate(self.validation_dataloader):
-                # Only process a few batches
-                if i >= self.args.max_validation_batches:
-                    break
-                
-                # Move batch to device
-                batch = self._move_batch_to_device(batch)
-                
-                # Forward pass
-                loss = self._forward_pass(batch)
-                total_val_loss += loss.detach().item()
-                val_steps += 1
-            
-            # Calculate average validation loss
-            if val_steps > 0:
-                avg_val_loss = total_val_loss / val_steps
-                
-                # Log validation metrics
-                if parallel_backend.is_main_process:
-                    logger.info(f"Validation loss: {avg_val_loss:.4f}")
-                    
-                    metrics = {
-                        "val_loss": avg_val_loss,
-                        "step": step,
-                    }
-                    
-                    # Log to trackers
-                    parallel_backend.log(metrics, step=step)
-                
-                # Generate sample if requested and we have validation data
-                if self.args.validation_generate_samples and self.validation_dataloader is not None:
-                    try:
-                        batch = next(iter(self.validation_dataloader))
-                        batch = self._move_batch_to_device(batch)
-                        self._generate_samples(batch)
-                    except (StopIteration, Exception) as e:
-                        logger.warning(f"Failed to generate validation sample: {e}")
-                        
-    def _generate_samples(self, batch):
-        """Generate video samples using the current model."""
-        # This would be nice to have but is beyond the scope of this initial implementation
-        # Would need to create a proper pipeline that supports E2V generation
-        pass
+            # Upload to Hugging Face Hub if specified
+            if self.args.push_to_hub and self.state.parallel_backend.is_main_process:
+                self._upload_to_hub()
 
     def _encode_elements(self, preprocessed_elements):
         """Process preprocessed elements through models.
@@ -1332,27 +1240,24 @@ class E2VTrainer:
         )
         
         return loss
-        
+
     def _update_parameters(self):
         """Update model parameters with the optimizer."""
-        # Clip gradients
+        # Clip gradients - pattern from control_trainer
         if self.args.clip_grad_norm is not None and self.args.clip_grad_norm > 0:
-            # Use utils helper for gradient clipping
             model_parts = [self.transformer]
             grad_norm = utils.torch._clip_grad_norm_while_handling_failing_dtensor_cases(
                 [p for m in model_parts for p in m.parameters()],
                 self.args.clip_grad_norm,
                 foreach=True,
-                pp_mesh=self.state.parallel_backend.get_mesh("pp") 
-                    if self.state.parallel_backend.pipeline_parallel_enabled 
-                    else None,
+                pp_mesh=self.state.parallel_backend.get_mesh("pp") if self.state.parallel_backend.pipeline_parallel_enabled else None,
             )
         
         # Take optimizer step
         self.optimizer.step()
         self.lr_scheduler.step()
         self.optimizer.zero_grad()
-        
+    
     def _move_batch_to_device(self, batch):
         """Move batch to the correct device."""
         device = self.state.parallel_backend.device
@@ -1368,7 +1273,7 @@ class E2VTrainer:
                 return obj
         
         return _move(batch)
-    
+
     def _check_for_nan_in_loss_and_grads(self, modules):
         """Check for NaN/Inf in loss and gradients."""
         for module in modules:
@@ -1378,3 +1283,121 @@ class E2VTrainer:
                         logger.warning(f"NaN detected in gradient for {name}")
                     if torch.isinf(param.grad).any().item():
                         logger.warning(f"Inf detected in gradient for {name}")
+
+    def _validate(self, step: int = None, final_validation: bool = False):
+        """Run validation.
+        
+        Args:
+            step: Current training step (if None, uses train_state.step)
+            final_validation: Whether this is the final validation run
+        """
+        if self.validation_dataloader is None:
+            return
+        
+        logger.info("Running validation")
+        parallel_backend = self.state.parallel_backend
+        train_state = self.state.train_state
+        
+        # Use provided step or get from train_state
+        if step is None:
+            step = train_state.step
+        
+        with torch.no_grad():
+            total_val_loss = 0.0
+            val_steps = 0
+            
+            for i, batch in enumerate(self.validation_dataloader):
+                # Only process a few batches
+                if i >= self.args.max_validation_batches:
+                    break
+                
+                # Move batch to device
+                batch = self._move_batch_to_device(batch)
+                
+                # Forward pass
+                loss = self._forward_pass(batch)
+                total_val_loss += loss.detach().item()
+                val_steps += 1
+            
+            # Calculate average validation loss
+            if val_steps > 0:
+                avg_val_loss = total_val_loss / val_steps
+                
+                # Log validation metrics
+                if parallel_backend.is_main_process:
+                    logger.info(f"Validation loss: {avg_val_loss:.4f}")
+                    
+                    metrics = {
+                        "val_loss": avg_val_loss,
+                        "step": step,
+                    }
+                    
+                    # Log to trackers
+                    parallel_backend.log_metrics(metrics, step)
+                
+                # Generate sample if requested and we have validation data
+                if self.args.validation_generate_samples and self.validation_dataloader is not None:
+                    try:
+                        batch = next(iter(self.validation_dataloader))
+                        batch = self._move_batch_to_device(batch)
+                        self._generate_samples(batch)
+                    except (StopIteration, Exception) as e:
+                        logger.warning(f"Failed to generate validation sample: {e}")
+
+    def _generate_samples(self, batch):
+        """Generate video samples using the current model."""
+        # This would be nice to have but is beyond the scope of this initial implementation
+        # Would need to create a proper pipeline that supports E2V generation
+        pass
+
+    def _upload_to_hub(self):
+        """Upload the final model to Hugging Face Hub."""
+        if not self.state.parallel_backend.is_main_process:
+            return
+        
+        logger.info("Uploading model to Hugging Face Hub")
+        
+        hub_model_id = self.args.hub_model_id or Path(self.args.output_dir).name
+        
+        repo_id = None
+        if "/" in hub_model_id:
+            repo_id = hub_model_id
+        else:
+            # Get organization name
+            repo_id = f"{self.args.hub_organization}/{hub_model_id}" if self.args.hub_organization else hub_model_id
+        
+        # Create repo
+        create_repo(repo_id, private=self.args.hub_private, token=self.args.hub_token, exist_ok=True)
+        
+        # Upload folder contents
+        upload_folder(
+            folder_path=self.args.output_dir,
+            repo_id=repo_id,
+            commit_message=f"Upload model {hub_model_id}",
+            token=self.args.hub_token,
+        )
+
+    def _cleanup(self):
+        """Clean up resources after training."""
+        logger.info("Cleaning up resources")
+        
+        # 1. Clean up trackers
+        try:
+            self.state.parallel_backend.cleanup_trackers()
+        except Exception as e:
+            logger.warning(f"Error cleaning up trackers: {e}")
+        
+        # 2. Free up GPU memory
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+        except Exception as e:
+            logger.warning(f"Error cleaning GPU memory: {e}")
+            
+        # 3. Destroy process group for distributed training
+        if self.state.parallel_backend is not None:
+            try:
+                self.state.parallel_backend.cleanup()
+            except Exception as e:
+                logger.warning(f"Error cleaning up parallel backend: {e}")
