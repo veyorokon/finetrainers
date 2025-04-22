@@ -177,7 +177,12 @@ class CLIPPathwayProcessor(ProcessorMixin):
                         processed = transform(processed)
                         logger.info(f"Resized to CLIP expected size: {image_size}x{image_size}")
                         
-                        # Now try standard call with correctly sized image
+                        # Ensure the tensor is on the same device as the model
+                        device = self.clip_processor.device 
+                        processed = processed.to(device)
+                        logger.info(f"Moved tensor to device: {device}")
+                        
+                        # Now try standard call with correctly sized image on the right device
                         outputs = self.clip_processor(processed, output_hidden_states=True)
                     except Exception as e:
                         logger.error(f"Error calling CLIP processor with output_hidden_states=True: {e}")
