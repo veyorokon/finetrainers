@@ -680,6 +680,9 @@ class E2VTrainer:
         logger.info(f"Using image_encoder for CLIP: {image_encoder is not None}")
         if image_encoder is not None:
             logger.info(f"image_encoder type: {type(image_encoder)}")
+            # Get the image_size from the model config if available
+            if hasattr(image_encoder, "config") and hasattr(image_encoder.config, "image_size"):
+                logger.info(f"image_encoder expects size: {image_encoder.config.image_size}x{image_encoder.config.image_size}")
         else:
             logger.warning("No image_encoder found for CLIP processing - this may cause issues if CLIP pathway is required")
             
