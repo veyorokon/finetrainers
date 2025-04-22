@@ -5,6 +5,7 @@ from .image import (
     find_nearest_resolution_image,
     letterbox_image,
     resize_crop_image,
+    resize_image,
     resize_to_nearest_bucket_image,
     trim_transparency,
 )

@@ -89,6 +89,30 @@ def bicubic_resize_image(image: torch.Tensor, size: Tuple[int, int]) -> torch.Te
     return F.interpolate(image.unsqueeze(0), size=size, mode="bicubic", align_corners=False)[0]
 
 
+def resize_image(image: torch.Tensor, size: Tuple[int, int], mode: str = "bicubic") -> torch.Tensor:
+    """Resize the image using specified interpolation mode.
+    
+    Args:
+        image: Input tensor [C, H, W] or [B, C, H, W]
+        size: Target (height, width)
+        mode: Interpolation mode ('bicubic', 'bilinear', 'nearest')
+        
+    Returns:
+        Resized tensor [C, target_h, target_w] or [B, C, target_h, target_w]
+    """
+    align_corners = None
+    if mode in ['bicubic', 'bilinear']:
+        align_corners = False
+        
+    # Handle batch dimension
+    if len(image.shape) == 4:
+        # Batch dimension present [B, C, H, W]
+        return F.interpolate(image, size=size, mode=mode, align_corners=align_corners)
+    else:
+        # No batch dimension [C, H, W]
+        return F.interpolate(image.unsqueeze(0), size=size, mode=mode, align_corners=align_corners)[0]
+
+
 def find_nearest_resolution_image(image: torch.Tensor, resolution_buckets: List[Tuple[int, int]]) -> Tuple[int, int]:
     """Find the resolution bucket that best matches the image's aspect ratio.
     
