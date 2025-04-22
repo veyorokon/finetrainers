@@ -1,3 +1,16 @@
+"""E2V (Elements-to-Video) Trainer implementation.
+
+This module implements the E2V trainer, which handles training Wan models
+using multiple reference images (elements) as conditioning for video generation.
+
+The trainer follows the separation of concerns pattern where:
+1. Preprocessing is done in the dataset (IterableE2VDataset)
+2. Model inference is done in the trainer (this file)
+3. Configuration is strictly driven by the config file
+
+No legacy code support or implicit defaults are provided - all functionality
+is driven explicitly by configuration values.
+"""
 import functools
 import json
 import math
@@ -27,6 +40,9 @@ from finetrainers.state import State, TrainState
 
 from .config import E2VFullRankConfig, E2VLowRankConfig
 from .data import IterableE2VDataset, ValidationE2VDataset
+from .encoders import ENCODER_REGISTRY, encode_vae, encode_clip
+from .combiners import COMBINER_REGISTRY, combine_vae_features, combine_clip_features, get_encoder, get_combiner
+from .utils import validate_e2v_config, validate_tensor_combinations, find_tensor_by_key_pattern
 
 
 if TYPE_CHECKING:
@@ -35,7 +51,7 @@ if TYPE_CHECKING:
 
 ArgsType = Union["BaseArgs", E2VFullRankConfig, E2VLowRankConfig]
 
-logger = logging.get_logger()
+logger = get_logger()
 
 
 class E2VTrainer:
@@ -47,6 +63,12 @@ class E2VTrainer:
     # fmt: on
 
     def __init__(self, args: ArgsType, model_specification: "ControlModelSpecification") -> None:
+        """Initialize the E2V trainer.
+        
+        Args:
+            args: Training arguments
+            model_specification: Model specification
+        """
         self.args = args
         self.state = State()
         self.state.train_state = TrainState()
@@ -110,49 +132,6 @@ class E2VTrainer:
         )
         
         # We'll initialize trackers in _prepare_for_training, not here
-        
-    def _extract_e2v_config(self, config_file: str) -> Dict[str, Any]:
-        """Extract E2V-specific configuration from a dataset config file.
-        
-        Args:
-            config_file: Path to the dataset config JSON file
-            
-        Returns:
-            Dictionary with E2V configuration parameters
-        """
-        # Initialize E2V config with defaults
-        e2v_config = {}
-        
-        # Read the first config from the file
-        with open(config_file, "r") as file:
-            first_config = json.load(file)["datasets"][0]
-        
-        # Copy essential configuration parts
-        for key in ["elements", "processors", "data_root", "tensor_combinations", "visualization"]:
-            if key in first_config:
-                e2v_config[key] = first_config[key]
-        
-        # Derive reference_suffixes from elements if not explicitly provided
-        if "reference_suffixes" in first_config:
-            e2v_config["reference_suffixes"] = first_config["reference_suffixes"]
-        elif "elements" in e2v_config:
-            # Extract all suffixes from the elements
-            all_suffixes = []
-            for element in e2v_config["elements"]:
-                if "suffixes" in element:
-                    all_suffixes.extend(element["suffixes"])
-            e2v_config["reference_suffixes"] = all_suffixes
-        
-        # Set frame conditioning parameters
-        e2v_config["frame_conditioning_type"] = getattr(self.args, "frame_conditioning_type", "full")
-        e2v_config["frame_conditioning_index"] = getattr(self.args, "frame_conditioning_index", 0)
-        e2v_config["frame_conditioning_concatenate_mask"] = getattr(self.args, "frame_conditioning_concatenate_mask", True)
-        
-        # Log the tensor_combinations configuration if present
-        if "tensor_combinations" in e2v_config:
-            logger.info(f"Using tensor combinations configuration: {e2v_config['tensor_combinations']}")
-        
-        return e2v_config
 
     def run(self) -> None:
         """Main entry point for training - follows framework pattern."""
@@ -185,7 +164,8 @@ class E2VTrainer:
             logger.info(f"E2V training completed in {total_time:.2f} seconds")
             
             # Final validation on training completion if requested
-            if self.validation_dataloader is not None and hasattr(self.args, "run_validation_on_train_end") and self.args.run_validation_on_train_end:
+            if hasattr(self, "validation_dataloader") and self.validation_dataloader is not None and \
+               hasattr(self.args, "run_validation_on_train_end") and self.args.run_validation_on_train_end:
                 logger.info("Running final validation")
                 self._validate()
                 
@@ -208,9 +188,9 @@ class E2VTrainer:
             self._cleanup()
 
     def _init_distributed(self) -> None:
+        """Initialize distributed training."""
         world_size = int(os.environ.get("WORLD_SIZE", torch.cuda.device_count()))
 
-        # TODO(aryan): handle other backends
         backend_cls: parallel.ParallelBackendType = parallel.get_parallel_backend_cls(self.args.parallel_backend)
         self.state.parallel_backend = backend_cls(
             world_size=world_size,
@@ -230,6 +210,7 @@ class E2VTrainer:
             self.state.parallel_backend.enable_determinism(self.args.seed)
 
     def _init_config_options(self) -> None:
+        """Initialize configuration options."""
         # Set up configuration options
         self.state.gradient_accumulation_steps = self.args.gradient_accumulation_steps
 
@@ -463,13 +444,11 @@ class E2VTrainer:
                 lora_config = LoraConfig(
                     r=rank,
                     lora_alpha=lora_alpha,
-                    target_modules=self._get_lora_target_modules(target_modules),
+                    target_modules=target_modules,
                     init_lora_weights="gaussian",
                     lora_dropout=0.0,
                     bias="none",
                 )
-                
-                # Module pattern matching will be done below
                 
                 # Convert regex patterns to actual module names
                 import re
@@ -582,67 +561,37 @@ class E2VTrainer:
         self._init_trackers()
 
     def _prepare_dataset(self) -> None:
+        """Initialize dataset and dataloaders."""
         logger.info("Initializing dataset and dataloader")
 
         # Load dataset config directly from JSON file, matching other trainers
-        with open(self.args.dataset_config, "r") as file:
-            dataset_configs = json.load(file)["datasets"]
+        try:
+            with open(self.args.dataset_config, "r") as file:
+                dataset_configs = json.load(file)
+                if "datasets" not in dataset_configs:
+                    raise ValueError(f"'datasets' key not found in config file: {self.args.dataset_config}")
+                dataset_configs = dataset_configs["datasets"]
+        except Exception as e:
+            raise ValueError(f"Failed to load dataset config: {e}")
+        
         logger.info(f"Training configured to use {len(dataset_configs)} datasets")
 
+        # Initialize datasets based on config
         datasets = []
         for config in dataset_configs:
+            # Extract basic dataset parameters
             data_root = config.pop("data_root", None)
             dataset_file = config.pop("dataset_file", None)
             dataset_type = config.pop("dataset_type")
             caption_options = config.pop("caption_options", {})
             
-            # Get or create E2V specific configuration
-            e2v_config = config.get("e2v_config", {})
-            
-            # Check if elements exist directly in the config (where they're supposed to be in training.json)
-            config_elements = config.get("elements", [])
-            
-            # If e2v_config exists but has no elements, use elements from config
-            if e2v_config and not e2v_config.get("elements") and config_elements:
-                e2v_config["elements"] = config_elements
-            
-            # If still no e2v_config, create with prioritizing config elements
-            if not e2v_config:
-                e2v_config = {
-                    "elements": config_elements or getattr(self.args, "elements", []),  # Try config first
-                    "processors": config.get("processors", {}) or getattr(self.args, "processors", {}),
-                    "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
-                    "frame_conditioning_index": getattr(self.args, "frame_conditioning_index", 0),
-                    "frame_conditioning_concatenate_mask": getattr(self.args, "frame_conditioning_concatenate_mask", True),
-                }
-                config["e2v_config"] = e2v_config
-            
-            # Validate E2V specific configuration
-            elements = e2v_config.get("elements", [])
-            if not elements:
-                raise ValueError(f"At least one element must be specified in the E2V configuration for {data_root or dataset_file}")
-            
-            processors = e2v_config.get("processors", {})
-            if not processors:
-                raise ValueError(f"Processors configuration is required in the E2V configuration for {data_root or dataset_file}")
-            
-            if "vae" not in processors:
-                raise ValueError(f"VAE processor configuration is required in {data_root or dataset_file}")
-                
-            # Check if tensor_combinations requires clip processor
-            tensor_combinations = e2v_config.get("tensor_combinations", {})
-            requires_clip = any("clip" in procs for procs in tensor_combinations.values())
-            
-            if requires_clip and "clip" not in processors:
-                raise ValueError(f"CLIP processor configuration is required when used in tensor_combinations in {data_root or dataset_file}")
-
             if data_root is not None and dataset_file is not None:
                 raise ValueError("Both data_root and dataset_file cannot be provided in the same dataset config.")
-
-            # Initialize dataset using framework pattern
-            dataset_name_or_root = data_root or dataset_file
             
-            # If using video_references, pass reference_suffixes derived from elements
+            if data_root is None and dataset_file is None:
+                raise ValueError("Either data_root or dataset_file must be provided in dataset config.")
+            
+            # When using video_references, extract reference_suffixes from elements
             if dataset_type == "video_references":
                 # Extract suffix patterns from elements configuration
                 reference_suffixes = []
@@ -654,16 +603,19 @@ class E2VTrainer:
                 if caption_options is None:
                     caption_options = {}
                 caption_options["reference_suffixes"] = reference_suffixes
-            
+                
+            # Initialize dataset using framework pattern
+            dataset_name_or_root = data_root or dataset_file
             dataset = data.initialize_dataset(
                 dataset_name_or_root, dataset_type, streaming=True, infinite=True, _caption_options=caption_options
             )
-
+            
+            # Validate dataset supports precomputation if requested
             if not dataset._precomputable_once and self.args.precomputation_once:
                 raise ValueError(
                     f"Dataset {dataset_name_or_root} does not support precomputing all embeddings at once."
                 )
-
+            
             logger.info(f"Initialized dataset: {dataset_name_or_root}")
             dataset = self.state.parallel_backend.prepare_dataset(dataset)
             dataset = data.wrap_iterable_dataset_for_preprocessing(dataset, dataset_type, config)
@@ -672,23 +624,10 @@ class E2VTrainer:
         # Combine datasets with framework's approach
         dataset = data.combine_datasets(datasets, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True)
         
-        # Get E2V configuration using our helper method
+        # Get E2V configuration from the first dataset
         e2v_config = self._extract_e2v_config(self.args.dataset_config)
         
-        # Wrap with E2V dataset, following same pattern as control_trainer
-        # Check image_encoder availability before dataset initialization
-        image_encoder = getattr(self, "image_encoder", None)
-        logger.info(f"Using image_encoder for CLIP: {image_encoder is not None}")
-        if image_encoder is not None:
-            logger.info(f"image_encoder type: {type(image_encoder)}")
-            # Get the image_size from the model config if available
-            if hasattr(image_encoder, "config") and hasattr(image_encoder.config, "image_size"):
-                logger.info(f"image_encoder expects size: {image_encoder.config.image_size}x{image_encoder.config.image_size}")
-        else:
-            logger.warning("No image_encoder found for CLIP processing - this may cause issues if CLIP pathway is required")
-            
-        # Note: No longer passing model instances to dataset
-        # Models will be used in the trainer for inference
+        # Wrap with E2V dataset
         dataset = IterableE2VDataset(
             dataset, 
             e2v_config,
@@ -707,69 +646,38 @@ class E2VTrainer:
         self.dataset = dataset
         self.dataloader = dataloader
         
-        # For validation
+        # Handle validation dataset if configured
         if self.args.validation_dataset_file:
             logger.info("Initializing validation dataset")
             
-            # Load validation dataset config
-            with open(self.args.validation_dataset_file, "r") as file:
-                validation_configs = json.load(file)["datasets"]
+            try:
+                # Load validation dataset config
+                with open(self.args.validation_dataset_file, "r") as file:
+                    validation_configs = json.load(file)
+                    if "datasets" not in validation_configs:
+                        raise ValueError(f"'datasets' key not found in config file: {self.args.validation_dataset_file}")
+                    validation_configs = validation_configs["datasets"]
+            except Exception as e:
+                raise ValueError(f"Failed to load validation dataset config: {e}")
+            
             logger.info(f"Validation configured to use {len(validation_configs)} datasets")
             
+            # Initialize validation datasets
             validation_datasets = []
             for config in validation_configs:
+                # Extract basic dataset parameters
                 data_root = config.pop("data_root", None)
                 dataset_file = config.pop("dataset_file", None)
                 dataset_type = config.pop("dataset_type")
                 caption_options = config.pop("caption_options", {})
                 
-                # Get or create E2V specific configuration
-                e2v_config = config.get("e2v_config", {})
-                
-                # Check if elements exist directly in the config (where they're supposed to be in validation.json)
-                config_elements = config.get("elements", [])
-                
-                # If e2v_config exists but has no elements, use elements from config
-                if e2v_config and not e2v_config.get("elements") and config_elements:
-                    e2v_config["elements"] = config_elements
-                
-                # If still no e2v_config, create with prioritizing config elements
-                if not e2v_config:
-                    e2v_config = {
-                        "elements": config_elements or getattr(self.args, "elements", []),  # Try config first
-                        "processors": config.get("processors", {}) or getattr(self.args, "processors", {}),
-                        "frame_conditioning_type": getattr(self.args, "frame_conditioning_type", "full"),
-                        "frame_conditioning_index": getattr(self.args, "frame_conditioning_index", 0),
-                        "frame_conditioning_concatenate_mask": getattr(self.args, "frame_conditioning_concatenate_mask", True),
-                    }
-                    config["e2v_config"] = e2v_config
-                
-                # Validate E2V specific configuration
-                elements = e2v_config.get("elements", [])
-                if not elements:
-                    raise ValueError(f"At least one element must be specified in the validation configuration for {data_root or dataset_file}")
-                
-                processors = e2v_config.get("processors", {})
-                if not processors:
-                    raise ValueError(f"Processors configuration is required in the validation configuration for {data_root or dataset_file}")
-                
-                if "vae" not in processors:
-                    raise ValueError(f"VAE processor configuration is required in validation for {data_root or dataset_file}")
-                    
-                # Check if tensor_combinations requires clip processor
-                tensor_combinations = e2v_config.get("tensor_combinations", {})
-                requires_clip = any("clip" in procs for procs in tensor_combinations.values())
-                
-                if requires_clip and "clip" not in processors:
-                    raise ValueError(f"CLIP processor configuration is required when used in tensor_combinations in validation for {data_root or dataset_file}")
-                
                 if data_root is not None and dataset_file is not None:
                     raise ValueError("Both data_root and dataset_file cannot be provided in the same validation config.")
                 
-                # Initialize validation dataset
-                dataset_name_or_root = data_root or dataset_file
+                if data_root is None and dataset_file is None:
+                    raise ValueError("Either data_root or dataset_file must be provided in validation config.")
                 
-                # If using video_references, pass reference_suffixes derived from elements
+                # When using video_references, extract reference_suffixes from elements
                 if dataset_type == "video_references":
                     # Extract suffix patterns from elements configuration
                     reference_suffixes = []
@@ -782,6 +690,8 @@ class E2VTrainer:
                         caption_options = {}
                     caption_options["reference_suffixes"] = reference_suffixes
                 
+                # Initialize validation dataset
+                dataset_name_or_root = data_root or dataset_file
                 validation_dataset = data.initialize_dataset(
                     dataset_name_or_root, dataset_type, streaming=True, infinite=False, _caption_options=caption_options
                 )
@@ -794,11 +704,10 @@ class E2VTrainer:
             # Combine validation datasets
             validation_dataset = data.combine_datasets(validation_datasets, buffer_size=1, shuffle=False)
             
-            # Get E2V validation configuration using our helper method
+            # Get E2V validation configuration
             validation_e2v_config = self._extract_e2v_config(self.args.validation_dataset_file)
             
             # Wrap with E2V validation dataset
-            # Note: No longer passing model instances to dataset
             validation_dataset = ValidationE2VDataset(
                 validation_dataset,
                 validation_e2v_config,
@@ -813,7 +722,7 @@ class E2VTrainer:
                 pin_memory=self.args.pin_memory
             )
             
-            # Use consistent variable names
+            # Store validation dataset and dataloader
             self.validation_dataset = validation_dataset
             self.validation_dataloader = validation_dataloader
         else:
@@ -821,7 +730,75 @@ class E2VTrainer:
             self.validation_dataset = None
             self.validation_dataloader = None
 
+    def _extract_e2v_config(self, config_file: str) -> Dict[str, Any]:
+        """Extract E2V-specific configuration from a dataset config file.
+        
+        Args:
+            config_file: Path to the dataset config JSON file
+            
+        Returns:
+            Dictionary with E2V configuration parameters
+        
+        Raises:
+            ValueError: If required configuration elements are missing
+        """
+        # Initialize E2V config with empty dict (no defaults)
+        e2v_config = {}
+        
+        # Read the first config from the file
+        try:
+            with open(config_file, "r") as file:
+                config_data = json.load(file)
+                if "datasets" not in config_data or not config_data["datasets"]:
+                    raise ValueError(f"No datasets found in configuration file: {config_file}")
+                
+                first_config = config_data["datasets"][0]
+        except Exception as e:
+            raise ValueError(f"Failed to load configuration from {config_file}: {e}")
+        
+        # Copy essential configuration parts
+        for key in ["elements", "processors", "data_root", "tensor_combinations", "visualization"]:
+            if key in first_config:
+                e2v_config[key] = first_config[key]
+        
+        # Validate the configuration using shared function
+        validate_e2v_config(e2v_config)
+        
+        # Log the tensor combinations configuration
+        if "tensor_combinations" in e2v_config:
+            logger.info(f"Using tensor combinations configuration: {e2v_config['tensor_combinations']}")
+        
+        # Derive reference_suffixes from elements if not explicitly provided
+        if "reference_suffixes" in first_config:
+            e2v_config["reference_suffixes"] = first_config["reference_suffixes"]
+        elif "elements" in e2v_config:
+            # Extract all suffixes from the elements
+            all_suffixes = []
+            for element in e2v_config["elements"]:
+                if "suffixes" in element:
+                    all_suffixes.extend(element["suffixes"])
+            e2v_config["reference_suffixes"] = all_suffixes
+        
+        # Get frame conditioning parameters from config or args
+        if "frame_conditioning_type" in first_config:
+            e2v_config["frame_conditioning_type"] = first_config["frame_conditioning_type"]
+        else:
+            e2v_config["frame_conditioning_type"] = getattr(self.args, "frame_conditioning_type", "full")
+            
+        if "frame_conditioning_index" in first_config:
+            e2v_config["frame_conditioning_index"] = first_config["frame_conditioning_index"]
+        else:
+            e2v_config["frame_conditioning_index"] = getattr(self.args, "frame_conditioning_index", 0)
+            
+        if "frame_conditioning_concatenate_mask" in first_config:
+            e2v_config["frame_conditioning_concatenate_mask"] = first_config["frame_conditioning_concatenate_mask"]
+        else:
+            e2v_config["frame_conditioning_concatenate_mask"] = getattr(self.args, "frame_conditioning_concatenate_mask", True)
+        
+        return e2v_config
+
     def _prepare_checkpointing(self) -> None:
+        """Set up checkpointing for the trainer."""
         parallel_backend = self.state.parallel_backend
         
         def save_model_hook(state_dict: Dict[str, Any]) -> None:
@@ -870,6 +847,7 @@ class E2VTrainer:
             self.checkpointer.load(resume_from_checkpoint)
 
     def _train(self) -> None:
+        """Run the training loop."""
         logger.info("Starting training")
         
         parallel_backend = self.state.parallel_backend
@@ -884,10 +862,8 @@ class E2VTrainer:
         logger.info(f"  Total optimization steps = {self.args.train_steps}")
         
         # Set initial values
-        self.state.train_state.global_step = 0
-        self.state.train_state.max_steps = self.args.train_steps
-        
-        # Resume from checkpoint is handled in the _prepare_checkpointing method
+        train_state.global_step = train_state.global_step or 0
+        train_state.max_steps = self.args.train_steps
         
         progress_bar = tqdm(
             range(train_state.global_step, self.args.train_steps),
@@ -939,35 +915,169 @@ class E2VTrainer:
                         logger.info(f"Step {train_state.global_step}: loss = {metrics['loss']:.4f}, lr = {metrics['lr']:.6f}")
                         
                         # Log to trackers
-                        if hasattr(self, "tracker") and self.tracker is not None:
-                            self.tracker.log(metrics)
+                        parallel_backend.log_metrics(metrics, train_state.global_step)
                     
-                    # Run validation
-                    if self.args.validation_steps > 0 and train_state.global_step % self.args.validation_steps == 0:
+                    # Run validation if configured
+                    if self.validation_dataloader is not None and \
+                       self.args.validation_steps > 0 and \
+                       train_state.global_step % self.args.validation_steps == 0:
                         self._validate()
                     
-                    # Create checkpoint
-                    if self.checkpointer.should_save(train_state.global_step):
+                    # Create checkpoint if configured
+                    if self.checkpointer and self.checkpointer.should_save(train_state.global_step):
                         self.checkpointer.save()
         
         # Make sure we create a final checkpoint
-        if train_state.global_step != 0:
+        if train_state.global_step > 0 and self.checkpointer:
             self.checkpointer.save()
             
             # Upload to Hugging Face Hub if specified
             if self.args.push_to_hub and self.state.parallel_backend.is_main_process:
                 self._upload_to_hub()
-    
+
+    def _encode_elements(self, preprocessed_elements):
+        """Process preprocessed elements through models.
+        
+        This method:
+        1. Uses registered encoder functions for different processor types
+        2. Processes each element through the appropriate encoder
+        3. Returns all encoded features for combining
+        
+        Args:
+            preprocessed_elements: Dictionary of preprocessed tensors by processor type
+            
+        Returns:
+            Dictionary of encoded features by processor type
+        """
+        encoded_features = {}
+        
+        # Process elements for each registered processor type
+        for proc_name, elements in preprocessed_elements.items():
+            # Skip if no encoder registered for this processor type
+            if proc_name not in ENCODER_REGISTRY:
+                logger.warning(f"No encoder registered for processor type: {proc_name}")
+                continue
+            
+            # Get appropriate model for this processor type
+            model = None
+            if proc_name == "vae":
+                model = self.vae
+            elif proc_name == "clip":
+                model = self.image_encoder
+            
+            if model is None:
+                logger.warning(f"No model available for processor type: {proc_name}")
+                continue
+            
+            # Initialize processor entry in encoded_features
+            encoded_features[proc_name] = {}
+            
+            # Get encoder function
+            encoder_func = ENCODER_REGISTRY[proc_name]
+            
+            # Process each element
+            for element_name, element_info in elements.items():
+                # Encode element
+                try:
+                    result = encoder_func(element_info["tensor"], model, element_info["config"])
+                    encoded_features[proc_name][element_name] = result
+                except Exception as e:
+                    logger.error(f"Error encoding {element_name} with {proc_name}: {e}")
+                    # Continue with other elements
+                    continue
+        
+        return encoded_features
+
+    def _combine_features(self, encoded_features, tensor_combinations):
+        """Combine encoded features according to tensor_combinations configuration.
+        
+        This method:
+        1. For each output tensor defined in tensor_combinations
+        2. For each processor contributing to that tensor
+        3. Use the appropriate combiner function
+        4. Combine results from different processors if needed
+        
+        Args:
+            encoded_features: Dictionary of encoded features by processor type
+            tensor_combinations: Configuration for combining tensors
+            
+        Returns:
+            Dictionary of combined tensors for model input
+        """
+        combined_tensors = {}
+        
+        # For each output tensor defined in tensor_combinations
+        for output_name, processor_list in tensor_combinations.items():
+            processor_results = {}
+            
+            # For each processor contributing to this output
+            for proc_name in processor_list:
+                # Skip if processor not in encoded features
+                if proc_name not in encoded_features:
+                    logger.warning(f"Processor {proc_name} specified in tensor_combinations but not in encoded features")
+                    continue
+                    
+                # Skip if no combiner registered for this processor
+                if proc_name not in COMBINER_REGISTRY:
+                    logger.warning(f"No combiner registered for processor type: {proc_name}")
+                    continue
+                
+                # Get features for this processor
+                processor_features = encoded_features[proc_name]
+                if not processor_features:
+                    logger.warning(f"No features for processor {proc_name}")
+                    continue
+                
+                # Get combiner function
+                combiner_func = COMBINER_REGISTRY[proc_name]
+                
+                # Combine features using the registered combiner
+                try:
+                    result = combiner_func(processor_features)
+                    if result is not None:
+                        processor_results[proc_name] = result
+                except Exception as e:
+                    logger.error(f"Error combining features for {proc_name}: {e}")
+                    # Continue with other processors
+                    continue
+            
+            # Create output tensor based on number of processors
+            if len(processor_results) == 1:
+                # Only one processor, use its result directly
+                proc_name = list(processor_results.keys())[0]
+                combined_tensors[output_name] = processor_results[proc_name]
+            elif len(processor_results) > 1:
+                # Multiple processors, concatenate along channel dimension
+                try:
+                    tensors = list(processor_results.values())
+                    combined_tensors[output_name] = torch.cat(tensors, dim=1)  # Channel dimension
+                except Exception as e:
+                    logger.error(f"Error concatenating results for {output_name}: {e}")
+                    logger.error(f"Tensor shapes: {[t.shape for t in list(processor_results.values())]}")
+                    # Skip this output
+                    continue
+            else:
+                # No results, log warning
+                logger.warning(f"No valid results for output {output_name}")
+        
+        return combined_tensors
+
     def _forward_pass(self, batch):
         """Run forward pass with E2V conditioning.
         
         This method:
         1. Processes preprocessed tensors through models (VAE, CLIP)
-        2. Combines encoded features according to tensor_combinations
+        2. Combines encoded features according to tensor_combinations 
         3. Runs the model forward pass with prepared conditions
         
         This approach avoids CUDA multiprocessing issues by keeping all
         model inference in the main process.
+        
+        Args:
+            batch: Training batch with preprocessed elements
+            
+        Returns:
+            Loss tensor
         """
         # Process inputs
         text_embeddings = batch.get("text_embeddings")
@@ -977,33 +1087,36 @@ class E2VTrainer:
         
         # Get preprocessed elements and configs
         preprocessed_elements = batch.get("preprocessed_elements", {})
-        element_configs = batch.get("element_configs", {})
+        
+        # Get tensor_combinations from batch (provided by dataset)
+        tensor_combinations = batch.get("tensor_combinations")
+        if tensor_combinations is None:
+            raise ValueError(
+                "No tensor_combinations found in batch data. "
+                "E2V training requires explicit tensor_combinations configuration."
+            )
+        
+        # Validate tensor combinations before encoding
+        validate_tensor_combinations(tensor_combinations)
+        logger.debug(f"Using tensor_combinations: {tensor_combinations}")
         
         # Process preprocessed elements through models
         encoded_features = self._encode_elements(preprocessed_elements)
         
-        # Get tensor combinations from config
-        # First try to load from dataset_config_dict if available
-        tensor_combinations = {}
-        try:
-            # Parse JSON config file to get tensor_combinations
-            with open(self.args.dataset_config, "r") as f:
-                config_data = json.load(f)
-                tensor_combinations = config_data.get("datasets", [{}])[0].get("tensor_combinations", {})
-        except Exception as e:
-            logger.warning(f"Error loading tensor_combinations from config: {e}")
-            # Use default tensor combinations
-            tensor_combinations = {
-                "reference_latents": ["vae"],
-                "combined_condition_latents": ["vae"]
-            }
+        # Combine features according to tensor_combinations
         combined_tensors = self._combine_features(encoded_features, tensor_combinations)
         
-        # Get control latents and CLIP embeddings from combined tensors
-        control_latents = combined_tensors.get("combined_condition_latents", 
-                                            combined_tensors.get("reference_latents"))
-        clip_embeddings = combined_tensors.get("reference_embeddings", 
-                                            combined_tensors.get("clip_embeddings"))
+        # Find control_latents (required for model)
+        control_latents = find_tensor_by_key_pattern(combined_tensors, "condition_latents")
+        if control_latents is None:
+            raise ValueError(
+                "No 'condition_latents' found in combined tensors. "
+                "Please check your tensor_combinations configuration."
+            )
+        
+        # Find clip_embeddings (optional)
+        clip_embeddings = find_tensor_by_key_pattern(combined_tensors, "encoder_hidden_states") or \
+                        find_tensor_by_key_pattern(combined_tensors, "clip")
         
         # Generate random sigmas for flow matching
         generator = torch.Generator(device=self.state.parallel_backend.device).manual_seed(self.args.seed)
@@ -1046,7 +1159,7 @@ class E2VTrainer:
         )
         
         return loss
-    
+
     def _update_parameters(self):
         """Update model parameters with the optimizer."""
         # Clip gradients
@@ -1081,197 +1194,7 @@ class E2VTrainer:
                 return obj
         
         return _move(batch)
-    
-    def _encode_elements(self, preprocessed_elements):
-        """Process preprocessed elements through models.
-        
-        This method:
-        1. Encodes preprocessed VAE tensors through VAE model
-        2. Processes preprocessed CLIP tensors through CLIP model
-        3. Returns all encoded features for combining
-        
-        Args:
-            preprocessed_elements: Dictionary of preprocessed tensors by processor type
-            
-        Returns:
-            Dictionary of encoded features by processor type
-        """
-        encoded_features = {}
-        device = self.state.parallel_backend.device
-        
-        # Process VAE elements if present
-        if "vae" in preprocessed_elements:
-            vae_elements = preprocessed_elements["vae"]
-            encoded_features["vae"] = {}
-            
-            for element_name, element_info in vae_elements.items():
-                # Get element tensor and metadata
-                tensor = element_info["tensor"].to(device)
-                position = element_info["position"]
-                repeat = element_info["repeat"]
-                
-                # Apply repetition for temporal processing
-                if repeat > 1:
-                    # Add frame dimension if needed
-                    if len(tensor.shape) == 4:  # B, C, H, W
-                        tensor = tensor.unsqueeze(2)  # B, C, 1, H, W
-                        
-                    # Apply repeats along frame dimension
-                    repeated = []
-                    for i in range(tensor.shape[2]):  # For each frame
-                        frame = tensor[:, :, i:i+1, :, :]
-                        repeated.append(torch.cat([frame] * repeat, dim=2))
-                    tensor = torch.cat(repeated, dim=2)
-                
-                # Encode through VAE
-                with torch.no_grad():
-                    # Move to the same device as the VAE
-                    tensor = tensor.to(self.vae.device)
-                    
-                    # Encode tensor through VAE
-                    vae_output = self.vae.encode(tensor)
-                    
-                    # Handle DiagonalGaussianDistribution output
-                    if isinstance(vae_output, DiagonalGaussianDistribution):
-                        latents = vae_output.sample()
-                    else:
-                        latents = vae_output
-                    
-                    # Apply VAE scaling
-                    scale_factor = 1.0 / getattr(self.vae.config, "scaling_factor", 0.18215)
-                    latents = latents * scale_factor
-                
-                # Store encoded features with metadata
-                encoded_features["vae"][element_name] = {
-                    "latents": latents,
-                    "position": position,
-                    "frames": latents.shape[2] if len(latents.shape) > 3 else 1
-                }
-        
-        # Process CLIP elements if present
-        if "clip" in preprocessed_elements and hasattr(self, "image_encoder"):
-            clip_elements = preprocessed_elements["clip"]
-            encoded_features["clip"] = {}
-            
-            for element_name, element_info in clip_elements.items():
-                # Get element tensor and metadata
-                tensor = element_info["tensor"].to(device)
-                position = element_info["position"]
-                
-                # Preprocess for CLIP (ensure 224x224 and proper normalization)
-                from torchvision import transforms
-                transform = transforms.Compose([
-                    transforms.Resize((224, 224), antialias=True),
-                    transforms.Normalize(
-                        mean=(0.48145466, 0.4578275, 0.40821073),
-                        std=(0.26862954, 0.26130258, 0.27577711)
-                    )
-                ])
-                tensor = transform(tensor)
-                
-                # Encode through CLIP vision model
-                with torch.no_grad():
-                    # Move to the same device as CLIP
-                    tensor = tensor.to(self.image_encoder.device)
-                    
-                    # Get the vision model
-                    vision_model = self.image_encoder.vision_model
-                    
-                    # Process through vision model
-                    outputs = vision_model(tensor, output_hidden_states=True)
-                    
-                    # Extract features from penultimate layer
-                    features = outputs.hidden_states[-2]
-                
-                # Store encoded features with metadata
-                encoded_features["clip"][element_name] = {
-                    "latents": features,
-                    "position": position,
-                    "frames": features.shape[1] if len(features.shape) > 2 else 1
-                }
-        
-        return encoded_features
-    
-    def _combine_features(self, encoded_features, tensor_combinations):
-        """Combine encoded features according to tensor_combinations.
-        
-        This method:
-        1. Gets encoded features from different processors
-        2. Combines them according to tensor_combinations config
-        3. Returns final tensors for model input
-        
-        Args:
-            encoded_features: Dictionary of encoded features by processor type
-            tensor_combinations: Configuration for combining tensors
-            
-        Returns:
-            Dictionary of combined tensors for model input
-        """
-        combined_tensors = {}
-        device = self.state.parallel_backend.device
-        
-        # Constants for tensor dimensions
-        frame_dim = 2  # For VAE latents
-        channel_dim = 1  # For concatenation
-        
-        # Process each combination defined in config
-        for output_name, processor_list in tensor_combinations.items():
-            # Get all results for each processor type
-            processor_tensors = {}
-            
-            for proc_name in processor_list:
-                if proc_name not in encoded_features:
-                    logger.warning(f"Processor {proc_name} not found in encoded features")
-                    continue
-                
-                # Get tensors for this processor
-                proc_results = list(encoded_features[proc_name].values())
-                if not proc_results:
-                    logger.warning(f"No results for processor {proc_name}")
-                    continue
-                
-                # Sort by position
-                proc_results.sort(key=lambda x: x.get("position", 0))
-                
-                # Set concatenation parameters
-                concat_dim = frame_dim if proc_name == "vae" else 1  # Sequence dim for CLIP
-                
-                # Extract tensors from results
-                tensors = [r.get("latents") for r in proc_results if "latents" in r]
-                
-                # Concatenate tensors
-                try:
-                    combined = torch.cat(tensors, dim=concat_dim)
-                    processor_tensors[proc_name] = combined
-                except Exception as e:
-                    logger.error(f"Error concatenating tensors for {proc_name}: {e}")
-            
-            # Handle frame conditioning for VAE latents
-            if "vae" in processor_tensors:
-                vae_tensor = processor_tensors["vae"]
-                
-                # Create mask tensor for frame conditioning
-                mask = torch.zeros_like(vae_tensor)
-                
-                # Set mask values for actual frames (not padding)
-                num_frames = vae_tensor.shape[frame_dim]
-                mask[:, :, :num_frames] = 1.0
-                
-                # Concatenate mask with latents along channel dimension
-                processor_tensors["vae"] = torch.cat([mask, vae_tensor], dim=channel_dim)
-            
-            # Combine processor tensors for final output
-            if len(processor_tensors) == 1:
-                # Just use the single tensor if only one processor
-                proc_name = list(processor_tensors.keys())[0]
-                combined_tensors[output_name] = processor_tensors[proc_name]
-            elif len(processor_tensors) > 1:
-                # Concatenate multiple tensors along the channel dimension
-                tensors_to_combine = list(processor_tensors.values())
-                combined_tensors[output_name] = torch.cat(tensors_to_combine, dim=channel_dim)
-        
-        return combined_tensors
-    
+
     def _check_for_nan_in_loss_and_grads(self, modules):
         """Check for NaN/Inf in loss and gradients."""
         for module in modules:
@@ -1281,7 +1204,7 @@ class E2VTrainer:
                         logger.warning(f"NaN detected in gradient for {name}")
                     if torch.isinf(param.grad).any().item():
                         logger.warning(f"Inf detected in gradient for {name}")
-    
+
     def _validate(self):
         """Run validation."""
         if self.validation_dataloader is None:
@@ -1322,8 +1245,7 @@ class E2VTrainer:
                     }
                     
                     # Log to trackers
-                    if hasattr(self, "tracker") and self.tracker is not None:
-                        self.tracker.log(metrics)
+                    parallel_backend.log_metrics(metrics, train_state.global_step)
                 
                 # Generate sample if requested and we have validation data
                 if self.args.validation_generate_samples and self.validation_dataloader is not None:
@@ -1333,29 +1255,13 @@ class E2VTrainer:
                         self._generate_samples(batch)
                     except (StopIteration, Exception) as e:
                         logger.warning(f"Failed to generate validation sample: {e}")
-    
+
     def _generate_samples(self, batch):
         """Generate video samples using the current model."""
         # This would be nice to have but is beyond the scope of this initial implementation
         # Would need to create a proper pipeline that supports E2V generation
         pass
-    
-    
-    def _get_lora_target_modules(self, target_modules):
-        """Process target modules for LoRA training.
-        
-        Ensures consistency with existing patterns in the model.
-        
-        Args:
-            target_modules: The target modules string or list from args
-            
-        Returns:
-            Modified target_modules for use with LoRA
-        """
-        # Return target_modules directly
-        # The E2V trainer doesn't need any special transformations like Control does
-        return target_modules
-    
+
     def _upload_to_hub(self):
         """Upload the final model to Hugging Face Hub."""
         if not self.state.parallel_backend.is_main_process:
@@ -1376,35 +1282,28 @@ class E2VTrainer:
         create_repo(repo_id, private=self.args.hub_private, token=self.args.hub_token, exist_ok=True)
         
         # Upload folder contents
-        # For LoRA adapters, only upload the relevant files
-        upload_path = self.args.output_dir
         upload_folder(
-            folder_path=upload_path,
+            folder_path=self.args.output_dir,
             repo_id=repo_id,
             commit_message=f"Upload model {hub_model_id}",
             token=self.args.hub_token,
         )
-    
+
     def _cleanup(self):
         """Clean up resources after training."""
         logger.info("Cleaning up resources")
         
-        # 1. Close trackers
-        if hasattr(self, "tracker") and self.tracker is not None:
-            logger.info("Closing tracker")
-            try:
-                self.tracker.finish()
-            except Exception as e:
-                logger.warning(f"Error closing tracker: {e}")
+        # 1. Clean up trackers
+        try:
+            self.state.parallel_backend.cleanup_trackers()
+        except Exception as e:
+            logger.warning(f"Error cleaning up trackers: {e}")
         
         # 2. Free up GPU memory
         try:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
-                
-                # Clean up GPU memory
-                pass
         except Exception as e:
             logger.warning(f"Error cleaning GPU memory: {e}")
             
@@ -1414,5 +1313,3 @@ class E2VTrainer:
                 self.state.parallel_backend.cleanup()
             except Exception as e:
                 logger.warning(f"Error cleaning up parallel backend: {e}")
-                
-        logger.info("Cleanup completed")
