@@ -7,6 +7,7 @@ if TYPE_CHECKING:
 
 from finetrainers import data, logging, utils as ft_utils
 from finetrainers.trainer.control_trainer.trainer import ControlTrainer
+from finetrainers.config import TrainingType
 
 from .config import E2VConfig, E2VFullRankConfig, E2VLowRankConfig, FrameConditioningType
 from .data import IterableE2VDataset, ValidationE2VDataset
@@ -44,7 +45,8 @@ class E2VTrainer(ControlTrainer):
     def _prepare_trainable_parameters(self) -> None:
         """Set up trainable parameters for LoRA or full fine-tuning."""
         # For LoRA training
-        if hasattr(self.args, 'training_type') and self.args.training_type == "E2V_LORA":
+        if hasattr(self.args, 'training_type') and self.args.training_type == TrainingType.E2V_LORA:
+            logger.info("Setting up E2V LoRA parameters")
             # Set all parameters to non-trainable first
             ft_utils.set_requires_grad([self.transformer], False)
             
@@ -62,15 +64,23 @@ class E2VTrainer(ControlTrainer):
             # Add LoRA adapter to transformer
             self.transformer.add_adapter(lora_config)
             
+            # Count trainable parameters to verify
+            trainable_params = sum(p.numel() for p in self.transformer.parameters() if p.requires_grad)
             logger.info(f"Added LoRA adapter with rank={self.args.rank}, alpha={self.args.lora_alpha}")
+            logger.info(f"Trainable parameters: {trainable_params}")
             
         # For full fine-tuning
-        elif hasattr(self.args, 'training_type') and self.args.training_type == "E2V_FULL_FINETUNE":
+        elif hasattr(self.args, 'training_type') and self.args.training_type == TrainingType.E2V_FULL_FINETUNE:
+            logger.info("Setting up E2V full fine-tuning parameters")
             # Enable training for all parameters
             ft_utils.set_requires_grad([self.transformer], True)
+        else:
+            # If we get here, use the parent implementation without our customization
+            logger.info(f"Using default parameter setup for training type: {self.args.training_type}")
+            return super()._prepare_trainable_parameters()
             
-        # Call parent implementation after our E2V-specific setup
-        super()._prepare_trainable_parameters()
+        # Skip parent implementation since we've handled it
+        logger.info("E2V trainer parameter setup complete")
 
     def _prepare_dataset(self) -> None:
         """Prepare dataset with E2V-specific configuration."""
