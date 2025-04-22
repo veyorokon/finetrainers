@@ -177,13 +177,16 @@ class CLIPPathwayProcessor(ProcessorMixin):
                         processed = transform(processed)
                         logger.info(f"Resized to CLIP expected size: {image_size}x{image_size}")
                         
-                        # Ensure the tensor is on the same device as the model
-                        device = self.clip_processor.device 
-                        processed = processed.to(device)
-                        logger.info(f"Moved tensor to device: {device}")
-                        
-                        # Now try standard call with correctly sized image on the right device
-                        outputs = self.clip_processor(processed, output_hidden_states=True)
+                        # Create a simple helper function to encode, similar to VAE pattern
+                        def encode_with_clip(image, model):
+                            # Move to same device as model - similar to VAE's approach
+                            device = model.device
+                            image = image.to(device)
+                            # Process through CLIP
+                            return model(image, output_hidden_states=True)
+                            
+                        # Use the helper function 
+                        outputs = encode_with_clip(processed, self.clip_processor)
                     except Exception as e:
                         logger.error(f"Error calling CLIP processor with output_hidden_states=True: {e}")
                         logger.error(f"Error type: {type(e).__name__}")
