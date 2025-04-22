@@ -1,11 +1,14 @@
 import json
 import torch
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
+
+if TYPE_CHECKING:
+    from finetrainers.args import BaseArgs
 
 from finetrainers import data, logging, utils as ft_utils
 from finetrainers.trainer.control_trainer.trainer import ControlTrainer
 
-from .config import E2VConfig, E2VFullRankConfig, E2VLowRankConfig
+from .config import E2VConfig, E2VFullRankConfig, E2VLowRankConfig, FrameConditioningType
 from .data import IterableE2VDataset, ValidationE2VDataset
 from .combiners import get_combiner, get_encoder
 from .utils import group_by_resolution, create_batch_from_tensors
@@ -16,8 +19,16 @@ logger = logging.get_logger()
 class E2VTrainer(ControlTrainer):
     """Elements-to-Video trainer that extends ControlTrainer with E2V-specific functionality."""
 
-    def __init__(self, args: Union[E2VFullRankConfig, E2VLowRankConfig], model_specification: Any) -> None:
+    def __init__(self, args: Union["BaseArgs", E2VFullRankConfig, E2VLowRankConfig], model_specification: Any) -> None:
         """Initialize E2V trainer, reusing ControlTrainer initialization."""
+        # We need to ensure frame_conditioning attributes are present before calling super().__init__
+        if not hasattr(args, 'frame_conditioning_type'):
+            args.frame_conditioning_type = FrameConditioningType.FULL
+        if not hasattr(args, 'frame_conditioning_index'):
+            args.frame_conditioning_index = 0
+        if not hasattr(args, 'frame_conditioning_concatenate_mask'):
+            args.frame_conditioning_concatenate_mask = True
+            
         super().__init__(args, model_specification)
         # Minimal additional initialization specific to E2V
         self.args = args
