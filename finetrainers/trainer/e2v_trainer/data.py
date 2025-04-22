@@ -154,7 +154,30 @@ class CLIPPathwayProcessor(ProcessorMixin):
                         logger.info(f"CLIP processor available methods: {[m for m in dir(self.clip_processor) if not m.startswith('_')]}")
                         logger.info(f"Processed image shape: {processed.shape}")
                         
-                        # Try standard call
+                        # CLIP models require 224x224 input
+                        # Resize the image to the right size before processing
+                        from torchvision import transforms
+                        
+                        # Get the expected image size from config if available
+                        image_size = 224  # Default CLIP size
+                        if hasattr(self.clip_processor, "config") and hasattr(self.clip_processor.config, "image_size"):
+                            image_size = self.clip_processor.config.image_size
+                            logger.info(f"Using CLIP image_size from config: {image_size}")
+                        
+                        # Apply resize and normalization
+                        transform = transforms.Compose([
+                            transforms.Resize((image_size, image_size), antialias=True),
+                            transforms.Normalize(
+                                mean=(0.48145466, 0.4578275, 0.40821073),
+                                std=(0.26862954, 0.26130258, 0.27577711)
+                            )
+                        ])
+                        
+                        # Apply the transform
+                        processed = transform(processed)
+                        logger.info(f"Resized to CLIP expected size: {image_size}x{image_size}")
+                        
+                        # Now try standard call with correctly sized image
                         outputs = self.clip_processor(processed, output_hidden_states=True)
                     except Exception as e:
                         logger.error(f"Error calling CLIP processor with output_hidden_states=True: {e}")
