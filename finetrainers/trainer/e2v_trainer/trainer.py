@@ -131,7 +131,8 @@ class E2VTrainer(ControlTrainer):
         
         # Collect samples to process
         collected_samples = []
-        buffer_size = self.args.train_batch_size * self.args.gradient_accumulation_steps
+        # Use batch_size instead of train_batch_size 
+        buffer_size = getattr(self.args, "batch_size", 1) * getattr(self.args, "gradient_accumulation_steps", 1)
         
         for _ in range(buffer_size):
             try:
@@ -191,8 +192,9 @@ class E2VTrainer(ControlTrainer):
         
         # Group by token length (use first 10 chars as proxy for similar lengths)
         text_batches = []
-        for i in range(0, len(text_items), self.args.batch_size):
-            batch = text_items[i:i+self.args.batch_size]
+        batch_size = getattr(self.args, "batch_size", 1)
+        for i in range(0, len(text_items), batch_size):
+            batch = text_items[i:i+batch_size]
             text_batches.append(batch)
         
         # Process each batch
@@ -254,7 +256,8 @@ class E2VTrainer(ControlTrainer):
                 ))
         
         # Group by resolution for efficient batching
-        for batch in group_by_resolution(clip_items, self.args.batch_size):
+        batch_size = getattr(self.args, "batch_size", 1)
+        for batch in group_by_resolution(clip_items, batch_size):
             # Extract metadata and tensors
             metadatas = [item[0] for item in batch]
             tensors = [item[1] for item in batch]
@@ -330,7 +333,8 @@ class E2VTrainer(ControlTrainer):
                 video_items.append(({"sample_idx": sample_idx}, sample["video"]))
         
         # Process video batches
-        for batch in group_by_resolution(video_items, self.args.batch_size):
+        batch_size = getattr(self.args, "batch_size", 1)
+        for batch in group_by_resolution(video_items, batch_size):
             # Extract metadata and tensors
             metadatas = [item[0] for item in batch]
             tensors = [item[1] for item in batch]
@@ -396,7 +400,8 @@ class E2VTrainer(ControlTrainer):
                 ))
         
         # Process VAE element batches
-        for batch in group_by_resolution(vae_items, self.args.batch_size):
+        batch_size = getattr(self.args, "batch_size", 1)
+        for batch in group_by_resolution(vae_items, batch_size):
             # Extract metadata and tensors
             metadatas = [item[0] for item in batch]
             tensors = [item[1] for item in batch]
