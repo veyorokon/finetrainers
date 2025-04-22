@@ -45,9 +45,15 @@ def encode_vae(tensor, model, config=None):
     logger.debug(f"VAE config: {config}")
     
     try:
-        # Move to model device
+        # Move to model device and match model dtype
         device = model.device
-        tensor = tensor.to(device)
+        
+        # Get model dtype from model parameters
+        model_dtype = next(model.parameters()).dtype
+        logger.debug(f"Moving tensor to device {device} with dtype {model_dtype}")
+        
+        # Convert tensor to match model dtype
+        tensor = tensor.to(device, dtype=model_dtype)
         
         # Check if tensor is 2D, 3D, 4D, or 5D (B, C, [F], H, W)
         tensor_dim = len(tensor.shape)
@@ -155,9 +161,15 @@ def encode_clip(tensor, model, config=None):
     logger.debug(f"CLIP config: {config}")
     
     try:
-        # Move to model device
+        # Move to model device and match model dtype
         device = model.device
-        tensor = tensor.to(device)
+        
+        # Get model dtype from model parameters
+        model_dtype = next(model.parameters()).dtype
+        logger.debug(f"Moving tensor to device {device} with dtype {model_dtype}")
+        
+        # Convert tensor to match model dtype
+        tensor = tensor.to(device, dtype=model_dtype)
         
         # Check tensor dimensions
         tensor_dim = len(tensor.shape)
