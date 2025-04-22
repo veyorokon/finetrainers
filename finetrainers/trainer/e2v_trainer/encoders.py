@@ -112,13 +112,39 @@ def encode_vae(tensor, model, config=None):
             logger.debug(f"Sending to VAE encoder: shape={tensor.shape}")
             vae_output = model.encode(tensor)
             
-            # Handle DiagonalGaussianDistribution output
+            # Log the output type to help with debugging
+            logger.debug(f"VAE output type: {type(vae_output).__name__}")
+            
+            # Handle different output types
             if isinstance(vae_output, DiagonalGaussianDistribution):
                 latents = vae_output.sample()
                 logger.debug(f"Sampled from DiagonalGaussianDistribution: shape={latents.shape}")
+            elif hasattr(vae_output, "latent_dist") and hasattr(vae_output.latent_dist, "sample"):
+                # Handle AutoencoderKLOutput with latent_dist
+                latents = vae_output.latent_dist.sample()
+                logger.debug(f"Sampled from AutoencoderKLOutput.latent_dist: shape={latents.shape}")
+            elif hasattr(vae_output, "sample") and callable(vae_output.sample):
+                # Handle output with direct sample method
+                latents = vae_output.sample()
+                logger.debug(f"Sampled from output object: shape={latents.shape}")
+            elif hasattr(vae_output, "latents"):
+                # Handle output with direct latents attribute
+                latents = vae_output.latents
+                logger.debug(f"Used output.latents: shape={latents.shape}")
             else:
-                latents = vae_output
-                logger.debug(f"Used VAE output directly: shape={latents.shape}")
+                # Try to use output directly, but safely check for tensor first
+                if hasattr(vae_output, "shape") and isinstance(vae_output.shape, torch.Size):
+                    latents = vae_output
+                    logger.debug(f"Used VAE output directly: shape={latents.shape}")
+                else:
+                    # Last resort: try to convert to tensor if possible
+                    logger.warning(f"Unexpected VAE output type: {type(vae_output).__name__}")
+                    if isinstance(vae_output, torch.Tensor):
+                        latents = vae_output
+                    else:
+                        # Raise a clearer error with more info
+                        raise ValueError(f"Unable to extract latents from VAE output of type {type(vae_output).__name__}. "
+                                        f"Available attributes: {dir(vae_output)}")
             
             # Apply VAE scaling
             scale_factor = 1.0 / getattr(model.config, "scaling_factor", 0.18215)
