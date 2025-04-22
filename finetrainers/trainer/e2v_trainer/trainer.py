@@ -34,6 +34,7 @@ from peft import LoraConfig, get_peft_model_state_dict
 from tqdm import tqdm
 
 from finetrainers import data, logging, optimizer, parallel, patches, utils
+from finetrainers.data import DPDataLoader
 from finetrainers.config import TrainingType
 from finetrainers.logging import get_logger
 from finetrainers.patches import load_lora_weights
@@ -635,12 +636,23 @@ class E2VTrainer:
             device=self.state.parallel_backend.device
         )
         
-        # Create dataloader using framework pattern
-        dataloader = self.state.parallel_backend.prepare_dataloader(
-            dataset, 
-            batch_size=self.args.train_batch_size, 
-            num_workers=self.args.dataloader_num_workers, 
-            pin_memory=self.args.pin_memory
+        # Use the same dataloader setup as control_trainer
+        parallel_backend = self.state.parallel_backend
+        
+        # Handle distributed scenario like control_trainer
+        local_rank = 0
+        if parallel_backend.world_size > 1:
+            dp_mesh = parallel_backend.get_mesh("dp_replicate")
+            if dp_mesh is not None:
+                local_rank = dp_mesh.get_local_rank()
+        
+        # Use DPDataLoader with hardcoded batch_size=1 like control_trainer
+        dataloader = data.DPDataLoader(
+            local_rank,
+            dataset,
+            batch_size=1,  # Hardcoded to 1 like control_trainer
+            num_workers=self.args.dataloader_num_workers,
+            collate_fn=lambda items: items  # Match control_trainer's collate_fn
         )
         
         # Use the same variable names as other trainers
@@ -715,12 +727,23 @@ class E2VTrainer:
                 device=self.state.parallel_backend.device
             )
             
-            # Create validation dataloader
-            validation_dataloader = self.state.parallel_backend.prepare_dataloader(
+            # Setup validation dataloader exactly like control_trainer
+            parallel_backend = self.state.parallel_backend
+            
+            # Handle distributed scenario (same as control_trainer)
+            local_rank = 0
+            if parallel_backend.world_size > 1:
+                dp_mesh = parallel_backend.get_mesh("dp_replicate")
+                if dp_mesh is not None:
+                    local_rank = dp_mesh.get_local_rank()
+            
+            # Use DPDataLoader with hardcoded batch_size=1 (exactly like control_trainer)
+            validation_dataloader = data.DPDataLoader(
+                local_rank,
                 validation_dataset,
-                batch_size=self.args.eval_batch_size,
+                batch_size=1,  # Hardcoded to 1 like control_trainer
                 num_workers=self.args.dataloader_num_workers,
-                pin_memory=self.args.pin_memory
+                collate_fn=lambda items: items  # Same collate_fn as control_trainer
             )
             
             # Store validation dataset and dataloader
@@ -896,6 +919,10 @@ class E2VTrainer:
                 batch = next(data_iterator)
                 
             with self.state.parallel_backend.accumulate():
+                # Handle batch formatting like control_trainer
+                # DPDataLoader with collate_fn=lambda items: items returns a list
+                batch = batch[0] if isinstance(batch, list) else batch
+                
                 # Move batch to correct device
                 batch = self._move_batch_to_device(batch)
                 
