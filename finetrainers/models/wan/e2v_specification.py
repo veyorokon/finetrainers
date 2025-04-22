@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Dict, Optional
 
 import torch
@@ -70,7 +71,8 @@ class WanE2VModelSpecification(WanControlModelSpecification):
                 self.image_encoder_id, torch_dtype=self.image_encoder_dtype, **common_kwargs
             )
         else:
-            logger.info(f"Loading image encoder from {self.pretrained_model_name_or_path}/image_encoder")
+            image_encoder_path = str(Path(self.pretrained_model_name_or_path) / "image_encoder")
+            logger.info(f"Loading image encoder from {image_encoder_path}")
             try:
                 image_encoder = CLIPVisionModel.from_pretrained(
                     self.pretrained_model_name_or_path,
