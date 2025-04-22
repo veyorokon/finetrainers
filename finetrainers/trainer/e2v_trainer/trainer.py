@@ -40,6 +40,37 @@ class E2VTrainer(ControlTrainer):
         # Load CLIP vision encoder if needed
         if hasattr(self.model_specification, 'load_image_encoder'):
             self.image_encoder = self.model_specification.load_image_encoder()
+    
+    def _prepare_trainable_parameters(self) -> None:
+        """Set up trainable parameters for LoRA or full fine-tuning."""
+        # For LoRA training
+        if hasattr(self.args, 'training_type') and self.args.training_type == "E2V_LORA":
+            # Set all parameters to non-trainable first
+            ft_utils.set_requires_grad([self.transformer], False)
+            
+            # Apply LoRA with specified config
+            from peft import LoraConfig
+            
+            # Get LoRA configuration
+            lora_config = LoraConfig(
+                r=self.args.rank,
+                lora_alpha=self.args.lora_alpha,
+                target_modules=self.args.target_modules,
+                init_lora_weights="gaussian"
+            )
+            
+            # Add LoRA adapter to transformer
+            self.transformer.add_adapter(lora_config)
+            
+            logger.info(f"Added LoRA adapter with rank={self.args.rank}, alpha={self.args.lora_alpha}")
+            
+        # For full fine-tuning
+        elif hasattr(self.args, 'training_type') and self.args.training_type == "E2V_FULL_FINETUNE":
+            # Enable training for all parameters
+            ft_utils.set_requires_grad([self.transformer], True)
+            
+        # Call parent implementation after our E2V-specific setup
+        super()._prepare_trainable_parameters()
 
     def _prepare_dataset(self) -> None:
         """Prepare dataset with E2V-specific configuration."""
