@@ -862,12 +862,14 @@ class E2VTrainer:
         logger.info(f"  Gradient accumulation steps = {self.state.gradient_accumulation_steps}")
         logger.info(f"  Total optimization steps = {self.args.train_steps}")
         
-        # Set initial values
-        train_state.global_step = train_state.global_step or 0
-        train_state.max_steps = self.args.train_steps
+        # TrainState uses 'step' not 'global_step'
+        # Set initial values if needed
+        current_step = train_state.step
+        max_steps = self.args.train_steps
+        train_state.max_steps = max_steps  # Store for reference
         
         progress_bar = tqdm(
-            range(train_state.global_step, self.args.train_steps),
+            range(current_step, max_steps),
             disable=not self.state.parallel_backend.is_local_main_process,
             desc="Training steps",
         )
@@ -875,7 +877,7 @@ class E2VTrainer:
         # Use a simpler approach that directly loops until we reach the target number of steps
         data_iterator = iter(self.dataloader)
         
-        while train_state.global_step < self.args.train_steps:
+        while current_step < max_steps:
             try:
                 # Get next batch
                 batch = next(data_iterator)
@@ -904,32 +906,33 @@ class E2VTrainer:
                     self._update_parameters()
                     
                     progress_bar.update(1)
-                    train_state.global_step += 1
+                    current_step += 1
+                    train_state.step = current_step  # Update the step in train_state
                     
                     # Log metrics
                     if parallel_backend.is_main_process:
                         metrics = {
                             "loss": loss.detach().item(),
                             "lr": self.lr_scheduler.get_last_lr()[0],
-                            "step": train_state.global_step,
+                            "step": current_step,
                         }
-                        logger.info(f"Step {train_state.global_step}: loss = {metrics['loss']:.4f}, lr = {metrics['lr']:.6f}")
+                        logger.info(f"Step {current_step}: loss = {metrics['loss']:.4f}, lr = {metrics['lr']:.6f}")
                         
                         # Log to trackers
-                        parallel_backend.log_metrics(metrics, train_state.global_step)
+                        parallel_backend.log_metrics(metrics, current_step)
                     
                     # Run validation if configured
                     if self.validation_dataloader is not None and \
                        self.args.validation_steps > 0 and \
-                       train_state.global_step % self.args.validation_steps == 0:
+                       current_step % self.args.validation_steps == 0:
                         self._validate()
                     
                     # Create checkpoint if configured
-                    if self.checkpointer and self.checkpointer.should_save(train_state.global_step):
+                    if self.checkpointer and self.checkpointer.should_save(current_step):
                         self.checkpointer.save()
         
         # Make sure we create a final checkpoint
-        if train_state.global_step > 0 and self.checkpointer:
+        if current_step > 0 and self.checkpointer:
             self.checkpointer.save()
             
             # Upload to Hugging Face Hub if specified
@@ -1242,11 +1245,11 @@ class E2VTrainer:
                     
                     metrics = {
                         "val_loss": avg_val_loss,
-                        "step": train_state.global_step,
+                        "step": train_state.step,
                     }
                     
                     # Log to trackers
-                    parallel_backend.log_metrics(metrics, train_state.global_step)
+                    parallel_backend.log_metrics(metrics, train_state.step)
                 
                 # Generate sample if requested and we have validation data
                 if self.args.validation_generate_samples and self.validation_dataloader is not None:
