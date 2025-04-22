@@ -351,17 +351,25 @@ class E2VTrainer:
         # 2. Move models to appropriate devices
         self._move_components_to_device()
         
-        # 3. Apply activation checkpointing if configured
+        # 3. Apply memory optimizations to VAE (follow control_trainer pattern)
+        logger.info("Applying VAE memory optimizations")
+        utils._enable_vae_memory_optimizations(
+            self.vae, 
+            getattr(self.args, "enable_slicing", True), 
+            getattr(self.args, "enable_tiling", True)
+        )
+        
+        # 4. Apply activation checkpointing if configured
         if self.args.gradient_checkpointing:
             logger.info("Enabling gradient checkpointing")
             utils.apply_activation_checkpointing(self.transformer, checkpointing_type="full")
             
-        # 4. Apply compile if specified
+        # 5. Apply compile if specified
         if "transformer" in self.args.compile_modules:
             logger.info("Compiling transformer model")
             utils.apply_compile(self.transformer)
             
-        # 5. Apply tensor parallelism if enabled
+        # 6. Apply tensor parallelism if enabled
         if parallel_backend.tensor_parallel_enabled:
             logger.info("Applying tensor parallelism")
             self.model_specification.apply_tensor_parallel(
@@ -370,7 +378,7 @@ class E2VTrainer:
                 transformer=self.transformer,
             )
             
-        # 6. Apply distributed data parallelism or sharding if needed
+        # 7. Apply distributed data parallelism or sharding if needed
         self._apply_distributed_strategy()
             
     def _apply_distributed_strategy(self):
@@ -947,8 +955,8 @@ class E2VTrainer:
             self.checkpointer.load(resume_from_checkpoint)
             
     def _train(self):
-        """Run the training loop."""
-        logger.info("Starting training")
+        """Run the training loop with optimized model coordination."""
+        logger.info("Starting training with optimized model coordination")
         
         parallel_backend = self.state.parallel_backend
         train_state = self.state.train_state
@@ -984,108 +992,113 @@ class E2VTrainer:
         # Initialize data iterator
         data_iterator = iter(self.dataloader)
         
+        # Create buffer size based on batch size and accumulation
+        buffer_size = self.args.gradient_accumulation_steps
+        
         # Run training loop until we reach max steps or run out of data
         while current_step < max_steps:
-            try:
-                # Get next batch
-                batch = next(data_iterator)
-            except StopIteration:
-                # Restart iterator if we run out of data
-                logger.info("Reached end of dataset, restarting data iterator")
-                data_iterator = iter(self.dataloader)
-                batch = next(data_iterator)
-                
-            # Handle batch formatting like control_trainer
-            # DPDataLoader with collate_fn=lambda items: items returns a list
-            batch = batch[0] if isinstance(batch, list) else batch
+            # Create a loss collector for this batch of gradient accumulation steps
+            accumulated_loss = 0.0
             
-            # Dump batch structure for debugging
-            logger.debug(f"Raw batch contents: {list(batch.keys()) if isinstance(batch, dict) else 'not a dict'}")
+            # Reset gradients at the start of accumulation
+            self.optimizer.zero_grad()
             
-            # Move batch to correct device
-            batch = self._move_batch_to_device(batch)
-            
-            # Check if batch has required fields before forward pass
-            if isinstance(batch, dict):
-                if "text_embeddings" not in batch or "latents" not in batch:
-                    missing = []
-                    if "text_embeddings" not in batch:
-                        missing.append("text_embeddings")
-                    if "latents" not in batch:
-                        missing.append("latents")
-                    logger.error(f"Batch missing required fields: {missing}. Available fields: {list(batch.keys())}")
-            
-            # Forward pass
-            try:
-                loss = self._forward_pass(batch)
-            except Exception as e:
-                logger.error(f"Forward pass error: {e}", exc_info=True)
-                raise
-            
-            # For gradient accumulation, scale loss to match total batch size
-            if self.args.gradient_accumulation_steps > 1:
-                loss = loss / self.args.gradient_accumulation_steps
-                
-            # Backward pass
-            loss.backward()
-            
-            # Check for NaN/Inf
-            if self.state.logging_nan_or_inf:
-                self._check_for_nan_in_loss_and_grads(self.trainable_modules)
-            
-            # Parameter update
-            # Control trainer checks step % gradient_accumulation_steps == 0
-            if current_step % self.args.gradient_accumulation_steps == 0:
-                self._update_parameters()
-                    
-                # Update counters and trackers
-                progress_bar.update(1)
-                current_step += 1
-                train_state.step = current_step  # Update the step in train_state
-                train_state.observed_data_samples += self.args.batch_size * parallel_backend._dp_degree
-                
-                # Track token count
+            # Process batches for gradient accumulation
+            for accumulation_step in range(buffer_size):
+                # 1. Collect samples for this step
                 try:
-                    # Get latents from batch to calculate tokens
-                    latents = batch.get("latents")
-                    if latents is not None:
-                        # Get patch size from transformer config if available
-                        patch_size = self._get_patch_size()
-                        
-                        # Calculate tokens
-                        train_state.observed_num_tokens += math.prod(latents.shape[:-1]) // patch_size
-                except Exception as e:
-                    # Don't break training if token tracking fails
-                    logger.warning(f"Failed to track tokens: {e}")
-                
-                # Log metrics
-                if parallel_backend.is_main_process:
-                    # Prepare metrics
-                    metrics = {
-                        "loss": loss.detach().item(),
-                        "lr": self.lr_scheduler.get_last_lr()[0] if hasattr(self.lr_scheduler, "get_last_lr") else 0,
-                        "step": current_step,
-                        "observed_data_samples": train_state.observed_data_samples,
-                        "observed_num_tokens": train_state.observed_num_tokens
-                    }
+                    # Get next batch
+                    batch = next(data_iterator)
+                except StopIteration:
+                    # Restart iterator if we run out of data
+                    logger.info("Reached end of dataset, restarting data iterator")
+                    data_iterator = iter(self.dataloader)
+                    batch = next(data_iterator)
                     
-                    # Log step information
-                    logger.info(f"Step {current_step}: loss = {metrics['loss']:.4f}, lr = {metrics['lr']:.6f}")
+                # Handle batch formatting
+                batch = batch[0] if isinstance(batch, list) else batch
+                
+                # Create a list of samples to process
+                collected_samples = [batch]
+                
+                logger.debug(f"Processing batch for accumulation step {accumulation_step+1}/{buffer_size}")
+                
+                # 2. Sequential model processing phases
+                # Process text data
+                collected_samples = self._process_text_batch(collected_samples)
+                
+                # Process CLIP data
+                collected_samples = self._process_clip_batch(collected_samples)
+                
+                # Process VAE data
+                collected_samples = self._process_vae_batch(collected_samples)
+                
+                # 3. Transformer forward/backward
+                loss = self._process_transformer_batch(collected_samples)
+                
+                # Scale loss for gradient accumulation
+                if buffer_size > 1:
+                    loss = loss / buffer_size
                     
-                    # Log to trackers at regular intervals
-                    if current_step % self.args.logging_steps == 0:
-                        parallel_backend.log(metrics, step=current_step)
-                        train_state.log_steps.append(current_step)
+                # Backward pass
+                loss.backward()
                 
-                # Run validation if configured
-                if self.validation_dataloader is not None and \
-                   self.args.validation_steps > 0 and \
-                   current_step % self.args.validation_steps == 0:
-                    self._validate(step=current_step, final_validation=False)
+                # Accumulate loss for logging
+                accumulated_loss += loss.detach().item()
                 
-                # Create checkpoint if configured
-                if self.checkpointer and self.checkpointer.should_save(current_step):
-                    self.checkpointer.save()
+                # Check for NaN/Inf
+                if self.state.logging_nan_or_inf:
+                    self._check_for_nan_in_loss_and_grads(self.trainable_modules)
+            
+            # 4. Optimizer step after accumulation is complete
+            self._update_parameters()
+            
+            # Update counters and trackers
+            progress_bar.update(1)
+            current_step += 1
+            train_state.step = current_step  # Update the step in train_state
+            train_state.observed_data_samples += self.args.batch_size * buffer_size * parallel_backend._dp_degree
+            
+            # Track token count based on accumulated samples
+            try:
+                # We can use a placeholder value based on the buffer size
+                # This is an approximation since we don't have direct access to all latent shapes
+                latent_shape = (1, 4, 8, 32, 32)  # Default shape
+                patch_size = self._get_patch_size()
+                # Estimate tokens based on default shape
+                train_state.observed_num_tokens += buffer_size * math.prod(latent_shape[:-1]) // patch_size
+            except Exception as e:
+                # Don't break training if token tracking fails
+                logger.warning(f"Failed to track tokens: {e}")
+            
+            # Log metrics
+            if parallel_backend.is_main_process:
+                # Prepare metrics
+                metrics = {
+                    "loss": accumulated_loss,  # This is already scaled by buffer_size
+                    "lr": self.lr_scheduler.get_last_lr()[0] if hasattr(self.lr_scheduler, "get_last_lr") else 0,
+                    "step": current_step,
+                    "observed_data_samples": train_state.observed_data_samples,
+                    "observed_num_tokens": train_state.observed_num_tokens
+                }
+                
+                # Log step information
+                logger.info(f"Step {current_step}: loss = {metrics['loss']:.4f}, lr = {metrics['lr']:.6f}")
+                
+                # Log to trackers at regular intervals
+                if current_step % self.args.logging_steps == 0:
+                    parallel_backend.log(metrics, step=current_step)
+                    train_state.log_steps.append(current_step)
+            
+            # Run validation if configured
+            if self.validation_dataloader is not None and \
+               self.args.validation_steps > 0 and \
+               current_step % self.args.validation_steps == 0:
+                self._validate(step=current_step, final_validation=False)
+            
+            # Create checkpoint if configured
+            if self.checkpointer and self.checkpointer.should_save(current_step):
+                self.checkpointer.save()
         
         # Make sure we create a final checkpoint
         if current_step > 0 and self.checkpointer:
@@ -1336,55 +1349,59 @@ class E2VTrainer:
         logger.debug(f"Combined tensors for outputs: {list(combined_tensors.keys())}")
         return combined_tensors
 
-    def _forward_pass(self, batch):
-        """Run forward pass with E2V conditioning.
-        
-        This method:
-        1. Processes preprocessed tensors through models (VAE, CLIP)
-        2. Combines encoded features according to tensor_combinations 
-        3. Runs the model forward pass with prepared conditions
-        
-        This approach avoids CUDA multiprocessing issues by keeping all
-        model inference in the main process.
+    def _process_text_batch(self, collected_samples):
+        """Process all text data through text encoder.
         
         Args:
-            batch: Training batch with preprocessed elements
+            collected_samples: List of sample dicts with 'caption' field
             
         Returns:
-            Loss tensor
+            Updated samples with 'text_embeddings' field
         """
-        # Log batch structure
-        logger.debug(f"Batch keys: {list(batch.keys())}")
+        # Extract all captions
+        captions = []
+        sample_indices = []
         
-        # Process raw inputs from dataset
-        # Expect 'caption' and 'video' from dataset rather than processed embeddings
-        
-        # Process text with text encoder if available
-        caption = batch.get("caption")
-        text_embeddings = batch.get("text_embeddings")  # May be None
-        
-        if text_embeddings is None and caption is not None:
-            logger.debug(f"Processing caption: {caption[:50]}...")
-            try:
-                # Process caption through text encoder following framework pattern
-                device = self.state.parallel_backend.device
+        for i, sample in enumerate(collected_samples):
+            caption = sample.get('caption')
+            if caption:
+                captions.append(caption)
+                sample_indices.append(i)
                 
-                # Get caption as string
-                prompt = caption
-                if isinstance(caption, list) and len(caption) > 0:
-                    prompt = caption[0]
-                if not isinstance(prompt, str):
-                    prompt = str(prompt)
-                    
-                # Check if we have tokenizer(s) and text_encoder(s)
-                if hasattr(self, 'tokenizer') and self.tokenizer is not None and \
-                   hasattr(self, 'text_encoder') and self.text_encoder is not None:
-                   
-                    # Get tokenizer and model parameters
-                    model_dtype = next(self.text_encoder.parameters()).dtype
-                    max_length = getattr(self.tokenizer, "model_max_length", 77)
-                    
-                    # Tokenize text - standard framework pattern
+        if not captions:
+            logger.warning("No captions found in collected samples")
+            return collected_samples
+            
+        logger.debug(f"Processing {len(captions)} captions through text encoder")
+        
+        # Move text encoder to device
+        device = self.state.parallel_backend.device
+        if self.text_encoder is not None:
+            self.text_encoder.to(device)
+            model_dtype = next(self.text_encoder.parameters()).dtype
+        else:
+            logger.warning("No text encoder available")
+            # Create placeholder embeddings
+            for i in sample_indices:
+                collected_samples[i]["text_embeddings"] = torch.zeros((1, 77, 768), device=device)
+            return collected_samples
+            
+        # Process captions
+        if self.tokenizer is not None:
+            max_length = getattr(self.tokenizer, "model_max_length", 77)
+            
+            # Process each caption individually to handle variable text lengths
+            for i, idx in enumerate(sample_indices):
+                try:
+                    # Get caption as string
+                    caption = captions[i]
+                    prompt = caption
+                    if isinstance(caption, list) and len(caption) > 0:
+                        prompt = caption[0]
+                    if not isinstance(prompt, str):
+                        prompt = str(prompt)
+                        
+                    # Tokenize text
                     text_inputs = self.tokenizer(
                         prompt,
                         padding="max_length",
@@ -1400,183 +1417,405 @@ class E2VTrainer:
                         
                     # Ensure correct shape and dtype
                     text_embeddings = text_embeddings.to(dtype=model_dtype)
-                    logger.debug(f"Created text embeddings with shape: {text_embeddings.shape}")
-                else:
-                    # Fallback if no text_encoder is available
-                    logger.warning("No tokenizer or text_encoder available - using placeholder")
-                    # Simple placeholder - create dummy embeddings (1, 77, 768)
-                    text_embeddings = torch.zeros((1, 77, 768), device=device)
-            except Exception as e:
-                logger.error(f"Error encoding caption: {e}", exc_info=True)
-        elif text_embeddings is None:
-            logger.error("No caption or text_embeddings found in batch")
+                    
+                    # Store in sample
+                    collected_samples[idx]["text_embeddings"] = text_embeddings
+                    
+                except Exception as e:
+                    logger.error(f"Error processing caption {i}: {e}", exc_info=True)
+                    # Create placeholder
+                    collected_samples[idx]["text_embeddings"] = torch.zeros((1, 77, 768), device=device)
         else:
-            logger.debug(f"Using provided text embeddings with shape: {text_embeddings.shape}")
+            logger.warning("No tokenizer available")
+            # Create placeholder embeddings
+            for i in sample_indices:
+                collected_samples[i]["text_embeddings"] = torch.zeros((1, 77, 768), device=device)
+                
+        # Move text encoder back to CPU to free memory
+        if self.text_encoder is not None:
+            self.text_encoder.to('cpu')
             
-        # Process video with VAE if available
-        video = batch.get("video")
-        video_latents = batch.get("latents")  # May be None
+        logger.debug("Completed text batch processing")
+        return collected_samples
         
-        if video_latents is None and video is not None and self.vae is not None:
-            logger.debug(f"Encoding video with shape: {video.shape}, dtype: {video.dtype}")
+    def _process_clip_batch(self, collected_samples):
+        """Process all reference images through CLIP encoder.
+        
+        Args:
+            collected_samples: List of sample dicts with 'preprocessed_elements' field
+            
+        Returns:
+            Updated samples with CLIP embeddings added to preprocessed_elements
+        """
+        # Extract all CLIP-processable elements
+        clip_elements = []
+        
+        for i, sample in enumerate(collected_samples):
+            elements = sample.get('preprocessed_elements', {}).get('clip', {})
+            if elements:
+                for elem_name, elem_info in elements.items():
+                    if "tensor" in elem_info and "config" in elem_info:
+                        clip_elements.append((i, elem_name, elem_info["tensor"], elem_info["config"]))
+        
+        if not clip_elements:
+            logger.debug("No CLIP elements found in collected samples")
+            return collected_samples
+            
+        logger.debug(f"Processing {len(clip_elements)} elements through CLIP encoder")
+        
+        # Move CLIP encoder to device
+        device = self.state.parallel_backend.device
+        if self.image_encoder is not None:
+            self.image_encoder.to(device)
+            model_dtype = next(self.image_encoder.parameters()).dtype
+        else:
+            logger.warning("No CLIP image encoder available")
+            return collected_samples
+            
+        # Group similar sized images for batch processing
+        # Use tensor shape as key
+        shape_groups = {}
+        for sample_idx, elem_name, tensor, config in clip_elements:
+            shape_key = tuple(tensor.shape)
+            if shape_key not in shape_groups:
+                shape_groups[shape_key] = []
+            shape_groups[shape_key].append((sample_idx, elem_name, tensor, config))
+            
+        # Process each group
+        for shape, group in shape_groups.items():
             try:
-                # Process video through VAE - follow the framework pattern
+                # Extract tensors for batching
+                tensors = [item[2] for item in group]
+                
+                # Create batch
+                batch_size = len(tensors)
+                if batch_size == 1:
+                    # Single tensor, no need to batch
+                    batch_tensor = tensors[0].to(device, dtype=model_dtype)
+                else:
+                    # Stack tensors into batch
+                    batch_tensor = torch.stack(tensors, dim=0).to(device, dtype=model_dtype)
+                    
+                # Process through CLIP
                 with torch.no_grad():
-                    # Get model parameters
-                    device = self.state.parallel_backend.device
-                    model_dtype = next(self.vae.parameters()).dtype
+                    from .encoders import encode_clip
+                    batch_results = encode_clip(batch_tensor, self.image_encoder, group[0][3])
                     
-                    # Ensure video has correct format [B, C, F, H, W] for VAE encoding
-                    if len(video.shape) == 4:  # [B, C, H, W] - image format
-                        # Add frame dimension for VAE, following WanLatentEncodeProcessor pattern
-                        video = video.unsqueeze(2)  # [B, C, 1, H, W]
-                        logger.debug(f"Added frame dimension: {video.shape}")
-                    elif len(video.shape) == 5 and video.shape[1] != 3:
-                        # Check if dimensions are [B, F, C, H, W] and need permuting
-                        if video.shape[2] == 3:
-                            # Permute to [B, C, F, H, W] format expected by VAE
-                            video = video.permute(0, 2, 1, 3, 4).contiguous()
-                            logger.debug(f"Permuted dimensions: {video.shape}")
-                    
-                    # Ensure correct dtype
-                    if video.dtype != model_dtype:
-                        video = video.to(device=device, dtype=model_dtype)
-                    
-                    # Encode through VAE following the framework pattern
-                    vae_out = self.vae.encode(video)
-                    
-                    # Handle latent distribution output (most common in framework)
-                    if hasattr(vae_out, "latent_dist"):
-                        video_latents = vae_out.latent_dist.sample()
-                    elif hasattr(vae_out, "sample") and callable(vae_out.sample):
-                        video_latents = vae_out.sample()
+                # Store results back in samples
+                for i, (sample_idx, elem_name, _, _) in enumerate(group):
+                    if batch_size == 1:
+                        # Single result
+                        result = batch_results
                     else:
-                        # Assume direct tensor output
-                        video_latents = vae_out
+                        # Extract individual result from batch
+                        result = batch_results[i:i+1]
                         
-                    # Scale latents by VAE scaling factor
-                    scale_factor = 1.0 / getattr(self.vae.config, "scaling_factor", 0.18215)
-                    video_latents = video_latents * scale_factor
+                    # Store in sample
+                    if "encoded_features" not in collected_samples[sample_idx]:
+                        collected_samples[sample_idx]["encoded_features"] = {}
+                    if "clip" not in collected_samples[sample_idx]["encoded_features"]:
+                        collected_samples[sample_idx]["encoded_features"]["clip"] = {}
+                        
+                    collected_samples[sample_idx]["encoded_features"]["clip"][elem_name] = result
                     
-                    # Also compute mean and std for latent normalization
-                    # This follows the framework pattern for handling latent stats
-                    latents_mean = torch.mean(video_latents, dim=[0, 2, 3, 4], keepdim=True)
-                    latents_std = torch.std(video_latents, dim=[0, 2, 3, 4], keepdim=True)
-                    
-                logger.debug(f"Created video latents with shape: {video_latents.shape}")
             except Exception as e:
-                logger.error(f"Error encoding video: {e}", exc_info=True)
-        elif video_latents is None:
-            logger.error("No video or latents found in batch")
+                logger.error(f"Error processing CLIP batch with shape {shape}: {e}", exc_info=True)
+                continue
+                
+        # Move CLIP encoder back to CPU
+        if self.image_encoder is not None:
+            self.image_encoder.to('cpu')
+            
+        logger.debug("Completed CLIP batch processing")
+        return collected_samples
+        
+    def _process_vae_batch(self, collected_samples):
+        """Process all video and reference data through VAE.
+        
+        Args:
+            collected_samples: List of sample dicts with 'video' and elements
+            
+        Returns:
+            Updated samples with VAE latents
+        """
+        device = self.state.parallel_backend.device
+        
+        # First process main videos
+        video_items = []
+        for i, sample in enumerate(collected_samples):
+            if "video" in sample:
+                video_items.append((i, sample["video"]))
+                
+        if video_items:
+            logger.debug(f"Processing {len(video_items)} videos through VAE")
+            
+            # Move VAE to device with memory optimizations
+            if self.vae is not None:
+                self.vae.to(device)
+                # Apply memory optimizations
+                utils._enable_vae_memory_optimizations(
+                    self.vae,
+                    getattr(self.args, "enable_slicing", True),
+                    getattr(self.args, "enable_tiling", True)
+                )
+                model_dtype = next(self.vae.parameters()).dtype
+            else:
+                logger.warning("No VAE encoder available")
+                # Create placeholder latents
+                for i, _ in video_items:
+                    collected_samples[i]["latents"] = torch.zeros((1, 4, 8, 32, 32), device=device)
+                return collected_samples
+                
+            # Group videos by shape
+            from .utils import group_by_resolution
+            grouped_videos = group_by_resolution(video_items, batch_size=1)  # Start with batch_size=1
+            
+            # Process each group
+            for group in grouped_videos:
+                try:
+                    sample_indices = [item[0] for item in group]
+                    videos = [item[1] for item in group]
+                    
+                    # Create batch
+                    batch_size = len(videos)
+                    if batch_size == 1:
+                        # Single video
+                        batch_video = videos[0].to(device, dtype=model_dtype)
+                    else:
+                        # Stack videos
+                        batch_video = torch.stack(videos, dim=0).to(device, dtype=model_dtype)
+                        
+                    # Ensure video has correct format [B, C, F, H, W] for VAE encoding
+                    if len(batch_video.shape) == 4:  # [B, C, H, W] - image format
+                        # Add frame dimension for VAE
+                        batch_video = batch_video.unsqueeze(2)  # [B, C, 1, H, W]
+                    elif len(batch_video.shape) == 5 and batch_video.shape[1] != 3:
+                        # Check if dimensions are [B, F, C, H, W] and need permuting
+                        if batch_video.shape[2] == 3:
+                            # Permute to [B, C, F, H, W] format expected by VAE
+                            batch_video = batch_video.permute(0, 2, 1, 3, 4).contiguous()
+                     
+                    # Process through VAE
+                    with torch.no_grad():
+                        # Encode through VAE
+                        vae_out = self.vae.encode(batch_video)
+                        
+                        # Handle latent distribution output
+                        if hasattr(vae_out, "latent_dist"):
+                            video_latents = vae_out.latent_dist.sample()
+                        elif hasattr(vae_out, "sample") and callable(vae_out.sample):
+                            video_latents = vae_out.sample()
+                        else:
+                            # Assume direct tensor output
+                            video_latents = vae_out
+                            
+                        # Scale latents by VAE scaling factor
+                        scale_factor = 1.0 / getattr(self.vae.config, "scaling_factor", 0.18215)
+                        video_latents = video_latents * scale_factor
+                        
+                        # Compute mean and std for latent normalization
+                        latents_mean = torch.mean(video_latents, dim=[0, 2, 3, 4], keepdim=True)
+                        latents_std = torch.std(video_latents, dim=[0, 2, 3, 4], keepdim=True)
+                        
+                    # Store results in samples
+                    for i, idx in enumerate(sample_indices):
+                        if batch_size == 1:
+                            # Single result
+                            collected_samples[idx]["latents"] = video_latents
+                            collected_samples[idx]["latents_mean"] = latents_mean
+                            collected_samples[idx]["latents_std"] = latents_std
+                        else:
+                            # Extract individual result
+                            collected_samples[idx]["latents"] = video_latents[i:i+1]
+                            collected_samples[idx]["latents_mean"] = latents_mean
+                            collected_samples[idx]["latents_std"] = latents_std
+                            
+                except Exception as e:
+                    logger.error(f"Error processing video batch: {e}", exc_info=True)
+                    # Create placeholders for failed samples
+                    for idx in sample_indices:
+                        collected_samples[idx]["latents"] = torch.zeros((1, 4, 8, 32, 32), device=device)
+                        collected_samples[idx]["latents_mean"] = torch.zeros(1, 4, 1, 1, 1, device=device)
+                        collected_samples[idx]["latents_std"] = torch.ones(1, 4, 1, 1, 1, device=device)
+                        
+        # Now process VAE elements
+        vae_elements = []
+        for i, sample in enumerate(collected_samples):
+            elements = sample.get('preprocessed_elements', {}).get('vae', {})
+            if elements:
+                for elem_name, elem_info in elements.items():
+                    if "tensor" in elem_info and "config" in elem_info:
+                        vae_elements.append((i, elem_name, elem_info["tensor"], elem_info["config"]))
+        
+        if vae_elements:
+            logger.debug(f"Processing {len(vae_elements)} VAE elements")
+            
+            # Group elements by shape
+            from .utils import group_by_resolution
+            grouped_elements = group_by_resolution([(item[0], item[2]) for item in vae_elements], batch_size=1)
+            
+            # Process each group
+            for group in grouped_elements:
+                try:
+                    # Find matching elements
+                    sample_indices = [item[0] for item in group]
+                    original_tensors = [item[1] for item in group]
+                    elem_infos = []
+                    
+                    for idx in sample_indices:
+                        for item in vae_elements:
+                            if item[0] == idx:
+                                elem_infos.append((item[1], item[3]))  # (name, config)
+                                break
+                                
+                    # Create batch
+                    batch_size = len(original_tensors)
+                    if batch_size == 1:
+                        # Single element
+                        batch_tensor = original_tensors[0].to(device, dtype=model_dtype)
+                    else:
+                        # Stack elements
+                        batch_tensor = torch.stack(original_tensors, dim=0).to(device, dtype=model_dtype)
+                        
+                    # Process through VAE
+                    with torch.no_grad():
+                        from .encoders import encode_vae
+                        batch_results = encode_vae(batch_tensor, self.vae, elem_infos[0][1])
+                        
+                    # Store results in samples
+                    for i, idx in enumerate(sample_indices):
+                        elem_name = elem_infos[i][0]
+                        
+                        if "encoded_features" not in collected_samples[idx]:
+                            collected_samples[idx]["encoded_features"] = {}
+                        if "vae" not in collected_samples[idx]["encoded_features"]:
+                            collected_samples[idx]["encoded_features"]["vae"] = {}
+                            
+                        if batch_size == 1:
+                            # Single result
+                            result = batch_results
+                        else:
+                            # Extract individual result
+                            result = batch_results[i:i+1]
+                            
+                        collected_samples[idx]["encoded_features"]["vae"][elem_name] = result
+                        
+                except Exception as e:
+                    logger.error(f"Error processing VAE elements batch: {e}", exc_info=True)
+                    continue
+                    
+        # Move VAE back to CPU
+        if self.vae is not None:
+            self.vae.to('cpu')
+            
+        logger.debug("Completed VAE batch processing")
+        return collected_samples
+        
+    def _process_transformer_batch(self, collected_samples):
+        """Run transformer forward/backward passes on processed samples.
+        
+        Args:
+            collected_samples: List of fully processed sample dicts
+            
+        Returns:
+            Loss value
+        """
+        device = self.state.parallel_backend.device
+        logger.debug(f"Processing {len(collected_samples)} samples through transformer")
+        
+        # Process each sample through _forward_pass
+        losses = []
+        for sample in collected_samples:
+            try:
+                # Combine features from encoders
+                if "encoded_features" in sample:
+                    # Get tensor_combinations from sample
+                    tensor_combinations = sample.get("tensor_combinations")
+                    if tensor_combinations is None:
+                        logger.error("No tensor_combinations found in sample")
+                        continue
+                        
+                    # Combine features according to tensor_combinations
+                    combined_tensors = self._combine_features(sample["encoded_features"], tensor_combinations)
+                    
+                    # Add combined tensors to sample
+                    for key, tensor in combined_tensors.items():
+                        sample[key] = tensor
+                
+                # Forward pass
+                loss = self._forward_pass(sample)
+                losses.append(loss)
+                
+            except Exception as e:
+                logger.error(f"Error in transformer processing: {e}", exc_info=True)
+                continue
+                
+        # Average losses
+        if losses:
+            total_loss = torch.stack(losses).mean()
+            return total_loss
         else:
-            logger.debug(f"Using provided video latents with shape: {video_latents.shape}")
+            # Return zero loss if no successful forward passes
+            logger.error("No successful forward passes, returning zero loss")
+            return torch.tensor(0.0, device=device, requires_grad=True)
             
-        # Handle latent stats for normalization (following framework pattern)
-        latents_mean = batch.get("latents_mean", None)
-        latents_std = batch.get("latents_std", None)
+    def _forward_pass(self, batch):
+        """Run forward pass with E2V conditioning.
         
-        # If we computed stats from the video encoding above, use those if not provided
-        if latents_mean is None and "latents_mean" in locals():
-            latents_mean = locals()["latents_mean"]
-            logger.debug(f"Using computed latents_mean: {latents_mean.shape}")
+        This version is simplified because encoding is done in batch processing phase.
+        
+        Args:
+            batch: Processed batch with encodings ready
             
-        if latents_std is None and "latents_std" in locals():
-            latents_std = locals()["latents_std"]
-            logger.debug(f"Using computed latents_std: {latents_std.shape}")
-            
-        # Ensure we have latent stats for normalization (following framework pattern)
-        if latents_mean is None or latents_std is None:
-            logger.debug("Computing default latent stats")
-            # Default stats if not available (match framework approach)
-            latents_mean = torch.zeros(1, video_latents.shape[1], 1, 1, 1, device=video_latents.device)
-            latents_std = torch.ones(1, video_latents.shape[1], 1, 1, 1, device=video_latents.device)
+        Returns:
+            Loss tensor
+        """
+        # Get preprocessed inputs
+        text_embeddings = batch.get("text_embeddings")
+        video_latents = batch.get("latents")
         
-        # Get preprocessed elements and configs
-        preprocessed_elements = batch.get("preprocessed_elements", {})
-        if not preprocessed_elements:
-            logger.warning("No preprocessed_elements found in batch")
-        else:
-            logger.debug(f"Preprocessed element types: {list(preprocessed_elements.keys())}")
-            for proc_type, elements in preprocessed_elements.items():
-                logger.debug(f"  {proc_type} has {len(elements)} elements: {list(elements.keys())}")
+        # Get condition latents
+        control_latents = batch.get("condition_latents") or find_tensor_by_key_pattern(batch, "condition_latents")
         
-        # Get tensor_combinations from batch (provided by dataset)
-        tensor_combinations = batch.get("tensor_combinations")
-        if tensor_combinations is None:
-            logger.error("No tensor_combinations found in batch data")
-            raise ValueError(
-                "No tensor_combinations found in batch data. "
-                "E2V training requires explicit tensor_combinations configuration."
-            )
+        # Get CLIP embeddings
+        clip_embeddings = batch.get("encoder_hidden_states") or find_tensor_by_key_pattern(batch, "encoder_hidden_states")
         
-        # Validate tensor combinations before encoding
-        validate_tensor_combinations(tensor_combinations)
-        logger.debug(f"Using tensor_combinations: {tensor_combinations}")
+        # Get latent stats
+        latents_mean = batch.get("latents_mean")
+        latents_std = batch.get("latents_std")
         
-        # Process preprocessed elements through models
-        logger.debug("Beginning element encoding")
-        encoded_features = self._encode_elements(preprocessed_elements)
+        # Verify required tensors
+        device = self.state.parallel_backend.device
         
-        # Combine features according to tensor_combinations
-        logger.debug("Combining encoded features")
-        combined_tensors = self._combine_features(encoded_features, tensor_combinations)
-        
-        # Log combined tensor information
-        logger.debug(f"Combined tensor keys: {list(combined_tensors.keys())}")
-        
-        # Find control_latents (required for model)
-        control_latents = find_tensor_by_key_pattern(combined_tensors, "condition_latents")
-        if control_latents is None:
-            logger.error("No condition_latents found in combined tensors")
-            # Check what keys are available to help debug
-            available_keys = list(combined_tensors.keys())
-            logger.error(f"Available keys in combined_tensors: {available_keys}")
-            
-            # Check if we can provide detailed information on what was attempted
-            logger.error(f"Tensor combinations configuration: {tensor_combinations}")
-            logger.error(f"Encoded feature types: {list(encoded_features.keys())}")
-            
-            raise ValueError(
-                "No 'condition_latents' found in combined tensors. "
-                "Please check your tensor_combinations configuration."
-            )
-        else:
-            logger.debug(f"Control latents shape: {control_latents.shape}")
-        
-        # Find clip_embeddings (optional)
-        clip_embeddings = find_tensor_by_key_pattern(combined_tensors, "encoder_hidden_states") or \
-                        find_tensor_by_key_pattern(combined_tensors, "clip")
-        if clip_embeddings is not None:
-            logger.debug(f"CLIP embeddings shape: {clip_embeddings.shape}")
-        else:
-            logger.debug("No CLIP embeddings found")
-        
-        # Check if we have the required tensors - but don't fail, as we've tried to create them
         if text_embeddings is None:
-            logger.error("Failed to create text embeddings, training will likely fail")
-            # Create a placeholder to allow training to proceed for diagnostic purposes
-            device = self.state.parallel_backend.device
+            logger.error("Missing text_embeddings tensor")
             text_embeddings = torch.zeros((1, 77, 768), device=device)
             
         if video_latents is None:
-            logger.error("Failed to create video latents, training will likely fail")
-            # Create a placeholder to allow training to proceed for diagnostic purposes
-            device = self.state.parallel_backend.device
+            logger.error("Missing video_latents tensor")
             video_latents = torch.zeros((1, 4, 8, 32, 32), device=device)
             
+        if control_latents is None:
+            logger.error("Missing condition_latents tensor")
+            control_latents = torch.zeros_like(video_latents)
+            
+        # Ensure we have latent stats
+        if latents_mean is None or latents_std is None:
+            logger.debug("Computing default latent stats")
+            latents_mean = torch.zeros(1, video_latents.shape[1], 1, 1, 1, device=device)
+            latents_std = torch.ones(1, video_latents.shape[1], 1, 1, 1, device=device)
+            
         # Generate random sigmas for flow matching
-        generator = torch.Generator(device=self.state.parallel_backend.device).manual_seed(self.args.seed)
+        generator = torch.Generator(device=device).manual_seed(self.args.seed)
         batch_size = video_latents.shape[0]
         
         # Prepare batch for model
         latent_model_conditions = {
             "latents": video_latents,
             "control_latents": control_latents,
+            "latents_mean": latents_mean,
+            "latents_std": latents_std,
         }
-        
-        if latents_mean is not None and latents_std is not None:
-            latent_model_conditions["latents_mean"] = latents_mean
-            latent_model_conditions["latents_std"] = latents_std
         
         # Condition model
         condition_model_conditions = {
@@ -1590,29 +1829,21 @@ class E2VTrainer:
         # Sample sigmas for training
         sigmas = torch.randn(
             (batch_size,),
-            device=self.state.parallel_backend.device,
+            device=device,
             generator=generator,
         ).abs_()
         sigmas = sigmas.view(-1, 1, 1, 1, 1)
         
-        logger.debug("Running model forward pass")
         # Forward through model specification
-        try:
-            loss = self.model_specification.forward(
-                transformer=self.transformer,
-                condition_model_conditions=condition_model_conditions,
-                latent_model_conditions=latent_model_conditions,
-                sigmas=sigmas,
-                generator=generator,
-            )
-            logger.debug(f"Forward pass complete, loss: {loss.item()}")
-            return loss
-        except Exception as e:
-            logger.error(f"Error in model forward pass: {e}", exc_info=True)
-            logger.error(f"condition_model_conditions keys: {list(condition_model_conditions.keys())}")
-            logger.error(f"latent_model_conditions keys: {list(latent_model_conditions.keys())}")
-            # Re-raise to stop training
-            raise
+        loss = self.model_specification.forward(
+            transformer=self.transformer,
+            condition_model_conditions=condition_model_conditions,
+            latent_model_conditions=latent_model_conditions,
+            sigmas=sigmas,
+            generator=generator,
+        )
+        
+        return loss
         
     def _update_parameters(self):
         """Update model parameters with the optimizer."""

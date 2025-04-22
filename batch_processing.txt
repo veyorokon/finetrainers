@@ -1,0 +1,485 @@
+ERROR:finetrainers:Batch missing required fields: ['text_embeddings', 'latents']. Available fields: ['caption', 
+  'video', 'images', 'preprocessed_elements', 'element_configs', 'processor_configs', 'tensor_combinations']
+
+⏺ This specific error message reveals a fundamental misalignment between what the dataset provides and what the
+  trainer expects.
+
+  The dataset is providing:
+  - 'caption' - raw text captions
+  - 'video' - raw video data
+  - 'images' - reference images
+  - 'preprocessed_elements' - elements that have been formatted but not encoded
+  - 'element_configs', 'processor_configs', 'tensor_combinations' - configuration data
+
+  But the trainer expects to find:
+  - 'text_embeddings' - already encoded text
+  - 'latents' - already encoded video latents
+
+  This suggests a layer of processing is missing. The proper flow should be:
+
+  1. Dataset provides raw data ('caption', 'video', etc.)
+  2. Trainer encodes this raw data into embeddings and latents
+  3. Trainer passes these processed tensors to the model
+
+  We need to fix the _forward_pass method to properly handle the raw data provided by the dataset. Rather than
+  expecting preprocessed tensors, it should process the raw data into the format the model needs.
+
+  The error message shows that our dataset is providing the correct data, but our trainer isn't properly handling the
+  transformation of this data into model inputs.
+
+  Rather than expecting 'text_embeddings' and 'latents' to already exist in the batch, we should update the
+  _forward_pass method to:
+  1. Check for raw data ('caption', 'video')
+  2. Process this raw data into embeddings and latents
+  3. Use these processed tensors for model input
+
+  This aligns with how the control_trainer works - it receives raw data and handles the transformation to model inputs
+   within the forward pass.
+
+> ah but the way its designed is the data loaders do the preprocessing. but the higher level needs to coordinate the 
+  model loading and encoding. right?
+
+⏺ Yes, that's exactly right! You've hit the nail on the head regarding the architecture design.
+
+  The correct flow should be:
+
+  1. Dataset/DataLoader Layer:
+    - Handles basic preprocessing (loading files, resizing, formatting)
+    - Provides raw tensors (video, images, captions)
+    - Does NOT run model inference (VAE encoding, CLIP processing)
+    - This is what your dataset is correctly providing
+  2. Trainer Coordination Layer:
+    - Manages model loading and device placement
+    - Coordinates encoding operations using these models
+    - Transforms raw data into model-ready inputs (text_embeddings, latents)
+    - This is where the current issue is - the trainer isn't properly taking the raw inputs and encoding them
+  3. Model Inference Layer:
+    - Takes processed inputs and runs the actual training
+
+  Your dataset is correctly providing the raw tensors ('caption', 'video', 'images'), but the trainer isn't properly
+  handling the coordinated encoding step to transform these into model inputs. The forward pass should be where this
+  transformation happens.
+
+  This separation of concerns is important because:
+  1. It keeps CUDA operations in the main process (avoiding multiprocessing issues)
+  2. It allows efficient batching and memory management for expensive model operations
+  3. It enables proper model sharing across multiple data instances
+
+  The fix should focus on ensuring the _forward_pass method correctly encodes the raw tensors into the format the
+  model expects, rather than assuming they're already encoded.
+
+> ah okay yes, and it cna handle ensuring that the models are sequentially loaded and then all data for that model 
+  accross all instances are batched and run -> then we load the next model and run inference all all data that needs 
+  to be processed by that model (references in vae for example) so we load all the references batch them and run the 
+  vae for them then update the data instances. and repeat this for. right? help outline this clearly for me using -> 
+  like load preprocessed (text) data -> create batches (accross samples) -> move text encoder to device -> encode -> 
+  move text_encoder off the device -> update the instances with the encoded data -> repeat until all text processed. 
+  Next: clip. load all preprocessed (reference) ->... etc.
+
+⏺ You've got it exactly right. Let me outline the optimized model coordination pattern:
+
+  Optimized Model Coordination Pattern
+
+  1. Text Encoder Phase
+    - Load all preprocessed text data across all samples
+    - Create batches of text data (across samples with same sequence length)
+    - Move text encoder to device
+    - Encode all text batches
+    - Move text encoder off device (to CPU or unload)
+    - Update all instances with encoded text embeddings
+  2. CLIP Image Encoder Phase
+    - Load all preprocessed reference images across all samples
+    - Create batches of images (across samples with similar resolutions)
+    - Move CLIP encoder to device
+    - Encode all image batches
+    - Move CLIP encoder off device
+    - Update all instances with CLIP embeddings
+  3. VAE Encoder Phase
+    - Load all preprocessed video/reference data
+    - Create batches of videos/references (across samples with similar resolutions)
+    - Move VAE to device
+    - Encode all video/reference batches (with slicing/tiling for memory efficiency)
+    - Move VAE off device
+    - Update all instances with latent encodings
+  4. Transformer Phase
+    - Load all encoded data (latents, text embeddings, condition latents)
+    - Move transformer to device
+    - Run forward pass through transformer
+    - Compute loss and backward pass
+    - Update transformer parameters
+    - (Keep transformer on device if more forward passes coming)
+
+    
+E2V Trainer Optimization: Model Coordination and Batched Processing
+
+  Overview
+
+  This document outlines the minimal changes needed to implement an optimized model coordination pattern in the E2V
+  trainer. The pattern processes all data for one model type before moving to the next model, enabling more efficient
+  resource utilization and memory management.
+
+  Core Principles
+
+  1. Process data in model-specific phases (text → CLIP → VAE → transformer)
+  2. Batch similar-sized inputs together across samples
+  3. Only keep one model type on the device at a time
+  4. Reuse existing encoding functions but apply them to batches
+
+  Files to Update
+
+  1. trainer.py
+
+  New Helper Methods to Add
+
+  def _process_text_batch(self, collected_samples):
+      """Process all text data through text encoder.
+      
+      Args:
+          collected_samples: List of sample dicts with 'caption' field
+          
+      Returns:
+          Updated samples with 'text_embeddings' field
+      """
+      # Extract all captions
+      captions = [sample.get('caption') for sample in collected_samples if sample.get('caption')]
+      if not captions:
+          return collected_samples
+
+      # Move text encoder to device
+      device = self.state.parallel_backend.device
+      if self.text_encoder is not None:
+          self.text_encoder.to(device)
+      if self.tokenizer is not None:
+          # Group captions by length for efficient batching
+          # Process each caption through tokenizer and encoder
+          # Store results back to samples
+          # Similar to current text encoding in _forward_pass but batched
+          # [Implementation details here]
+
+      # Move text encoder back to CPU to free memory
+      if self.text_encoder is not None:
+          self.text_encoder.to('cpu')
+
+      return collected_samples
+
+  def _process_clip_batch(self, collected_samples):
+      """Process all reference images through CLIP encoder.
+      
+      Args:
+          collected_samples: List of sample dicts with 'preprocessed_elements' field
+          
+      Returns:
+          Updated samples with CLIP embeddings added to preprocessed_elements
+      """
+      # Extract all CLIP-processable elements
+      clip_elements = []
+      for sample in collected_samples:
+          elements = sample.get('preprocessed_elements', {}).get('clip', {})
+          if elements:
+              clip_elements.append((sample, elements))
+
+      if not clip_elements:
+          return collected_samples
+
+      # Move CLIP encoder to device
+      device = self.state.parallel_backend.device
+      if self.image_encoder is not None:
+          self.image_encoder.to(device)
+
+      # Group similar sized images
+      # Process each batch through encoder using encode_clip from encoders.py
+      # Store results back to samples
+      # [Implementation details here]
+
+      # Move CLIP encoder back to CPU
+      if self.image_encoder is not None:
+          self.image_encoder.to('cpu')
+
+      return collected_samples
+
+  def _process_vae_batch(self, collected_samples):
+      """Process all video and reference data through VAE.
+      
+      Args:
+          collected_samples: List of sample dicts with 'video' and elements
+          
+      Returns:
+          Updated samples with VAE latents
+      """
+      # Extract all VAE-processable elements
+      vae_videos = []
+      vae_elements = []
+
+      # Collect videos
+      for sample in collected_samples:
+          if 'video' in sample:
+              vae_videos.append((sample, sample['video']))
+
+      # Collect elements
+      for sample in collected_samples:
+          elements = sample.get('preprocessed_elements', {}).get('vae', {})
+          if elements:
+              vae_elements.append((sample, elements))
+
+      if not vae_videos and not vae_elements:
+          return collected_samples
+
+      # Move VAE to device with memory optimizations
+      device = self.state.parallel_backend.device
+      if self.vae is not None:
+          self.vae.to(device)
+          # Apply memory optimizations
+          utils._enable_vae_memory_optimizations(
+              self.vae,
+              getattr(self.args, "enable_slicing", True),
+              getattr(self.args, "enable_tiling", True)
+          )
+
+      # Group similar sized videos and elements
+      # Process each batch through VAE using encode_vae from encoders.py
+      # Store results back to samples
+      # [Implementation details here]
+
+      # Move VAE back to CPU
+      if self.vae is not None:
+          self.vae.to('cpu')
+
+      return collected_samples
+
+  def _process_transformer_batch(self, collected_samples):
+      """Run transformer forward/backward passes on processed samples.
+      
+      Args:
+          collected_samples: List of fully processed sample dicts
+          
+      Returns:
+          Loss value
+      """
+      # Move transformer to device if needed
+      device = self.state.parallel_backend.device
+
+      # Process each sample or batch through transformer
+      # Compute loss
+      # Backward pass (accumulate gradients)
+      # [Implementation details here]
+
+      return loss
+
+  Updated _train Method
+
+  def _train(self):
+      """Run the training loop with optimized model coordination."""
+      # [Existing setup code]
+
+      # Initialize counters, progress bar, etc.
+      current_step = train_state.step
+      max_steps = self.args.train_steps
+
+      # Create buffer size based on batch size and accumulation
+      buffer_size = self.args.train_batch_size * self.args.gradient_accumulation_steps
+
+      # Training loop
+      while current_step < max_steps:
+          # 1. Collect samples into buffer
+          collected_samples = []
+          for _ in range(buffer_size):
+              try:
+                  batch = next(data_iterator)
+                  # Handle batch formatting
+                  batch = batch[0] if isinstance(batch, list) else batch
+                  collected_samples.append(batch)
+              except StopIteration:
+                  # Restart iterator if needed
+                  data_iterator = iter(self.dataloader)
+                  batch = next(data_iterator)
+                  batch = batch[0] if isinstance(batch, list) else batch
+                  collected_samples.append(batch)
+
+          # 2. Sequential model processing phases
+          # Process text data
+          collected_samples = self._process_text_batch(collected_samples)
+
+          # Process CLIP data
+          collected_samples = self._process_clip_batch(collected_samples)
+
+          # Process VAE data
+          collected_samples = self._process_vae_batch(collected_samples)
+
+          # 3. Transformer forward/backward
+          loss = self._process_transformer_batch(collected_samples)
+
+          # 4. Optimizer step after gradient accumulation
+          if current_step % self.args.gradient_accumulation_steps == 0:
+              self._update_parameters()
+
+              # Update counters and logging
+              progress_bar.update(1)
+              current_step += 1
+              train_state.step = current_step
+              # [Rest of counter updates]
+
+              # Log metrics
+              if parallel_backend.is_main_process:
+                  metrics = {
+                      "loss": loss.detach().item(),
+                      "lr": self.lr_scheduler.get_last_lr()[0],
+                      "step": current_step,
+                      # [Other metrics]
+                  }
+
+                  # Log and validate at appropriate intervals
+                  # [Logging code]
+
+      # Final checkpoint
+      if current_step > 0 and self.checkpointer:
+          self.checkpointer.save()
+
+  Simplified _forward_pass Method
+
+  def _forward_pass(self, batch):
+      """Run forward pass using pre-processed data.
+      
+      This method is simplified because encoding is done in batch
+      processing phase, not during individual forward passes.
+      
+      Args:
+          batch: Processed batch with encodings ready
+          
+      Returns:
+          Loss tensor
+      """
+      # Get preprocessed inputs
+      text_embeddings = batch.get("text_embeddings")
+      video_latents = batch.get("latents")
+
+      # Get tensor combinations from batch
+      tensor_combinations = batch.get("tensor_combinations")
+
+      # Verify required tensors
+      if text_embeddings is None or video_latents is None:
+          raise ValueError("Missing required tensors")
+
+      # Rest of forward pass as before, but without the encoding steps
+      # [Implementation details]
+
+      return loss
+
+  2. utils.py (New File)
+
+  Create a utils.py file in the e2v_trainer directory with batching utilities:
+
+  """Utilities for E2V trainer batching and coordination."""
+  import torch
+  from typing import Dict, List, Tuple, Any
+
+  def group_by_resolution(items: List[Tuple[Any, torch.Tensor]], 
+                          batch_size: int = 1):
+      """Group items by tensor resolution for efficient batching.
+      
+      Args:
+          items: List of (sample, tensor) tuples
+          batch_size: Maximum batch size
+          
+      Returns:
+          List of batched items with similar resolutions
+      """
+      # Group items by shape
+      shape_groups = {}
+      for sample, tensor in items:
+          # Use tensor shape as dictionary key
+          shape_key = tuple(tensor.shape)
+          if shape_key not in shape_groups:
+              shape_groups[shape_key] = []
+          shape_groups[shape_key].append((sample, tensor))
+
+      # Create batches from each shape group
+      batched_groups = []
+      for shape, group in shape_groups.items():
+          # Split into batches of batch_size
+          for i in range(0, len(group), batch_size):
+              batch = group[i:i+batch_size]
+              batched_groups.append(batch)
+
+      return batched_groups
+
+  def create_batch_from_tensors(tensor_items: List[torch.Tensor]):
+      """Stack list of tensors into batch.
+      
+      Args:
+          tensor_items: List of tensors with same shape
+          
+      Returns:
+          Single batched tensor
+      """
+      return torch.stack(tensor_items, dim=0)
+
+  3. encoders.py
+
+  Minor modifications to better handle batch inputs:
+
+  @register_encoder("vae")
+  def encode_vae(tensor, model, config=None):
+      """Encode tensor with VAE model.
+      
+      Modified to better handle batched inputs.
+      """
+      # [Existing implementation with minor adjustments for batching]
+      # Ensure tensor has right shape, etc.
+
+  Implementation Strategy
+
+  1. Phase 1: Core Batching
+    - Create new batch processing helper methods
+    - Update _train method to use the new pattern
+    - Keep _forward_pass temporarily unmodified
+  2. Phase 2: Encoding Functions
+    - Modify existing encoders.py functions to better handle batched data
+    - Implement utils.py with batching utilities
+  3. Phase 3: Model Management
+    - Implement model-to-device and model-to-cpu transitions
+    - Add memory optimizations for VAE
+  4. Phase 4: Forward Pass Simplification
+    - Simplify _forward_pass to use pre-encoded data
+
+  Existing Functions to Leverage
+
+  1. encode_vae and encode_clip from encoders.py
+  2. _enable_vae_memory_optimizations from utils module
+  3. Existing error handling in encoders.py
+  4. Model movement functions in _prepare_models
+
+  Expected Outcomes
+
+  1. Memory Efficiency: Significant reduction in GPU memory usage
+  2. Processing Speed: Faster processing through optimal batching
+  3. Robustness: Better error handling and fallbacks
+  4. Scalability: Model coordination that scales better with dataset size
+
+  This approach requires minimal changes to the existing code structure while providing substantial performance
+  improvements.
+
+
+  1. Framework Consistency:
+    - Uses the same utils._enable_vae_memory_optimizations() that control_trainer uses
+    - Follows the same model device transitions pattern seen in other trainers
+    - Maintains compatibility with the framework's checkpointing mechanism
+    - Preserves the trainer → model specification hierarchy
+  2. Memory Management:
+    - Reuses framework's utils.free_memory() and device synchronization
+    - Leverages existing memory optimization flags like enable_slicing and enable_tiling
+    - Uses the same torch.cuda memory management patterns
+  3. Model Coordination:
+    - Uses the same device transitioning pattern (GPU ↔ CPU) as other trainers
+    - Maintains consistent state dict handling for checkpointing
+    - Preserves framework's model wrapper patterns and inference methods
+  4. Resource Sharing:
+    - Aligns with the framework's understanding of gradient accumulation
+    - Maintains compatibility with the distributed training setup
+    - Preserves tensor parallelism where applicable
+
+  The design intentionally reuses existing framework utilities rather than implementing custom alternatives. This
+  ensures that the optimized E2V trainer will behave consistently with other trainers in the framework and benefit
+  from any future framework-level optimizations.
+
+  This is essentially enhancing the existing trainer with patterns already proven in the control_trainer, rather than
+  creating a new approach disconnected from the framework's design philosophy.

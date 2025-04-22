@@ -1,9 +1,53 @@
 """Utility functions for E2V trainer."""
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Tuple
 
+import torch
 from finetrainers.logging import get_logger
 
 logger = get_logger()
+
+
+def group_by_resolution(items: List[Tuple[Any, torch.Tensor]], 
+                       batch_size: int = 1):
+    """Group items by tensor resolution for efficient batching.
+    
+    Args:
+        items: List of (sample, tensor) tuples
+        batch_size: Maximum batch size
+        
+    Returns:
+        List of batched items with similar resolutions
+    """
+    # Group items by shape
+    shape_groups = {}
+    for sample, tensor in items:
+        # Use tensor shape as dictionary key
+        shape_key = tuple(tensor.shape)
+        if shape_key not in shape_groups:
+            shape_groups[shape_key] = []
+        shape_groups[shape_key].append((sample, tensor))
+
+    # Create batches from each shape group
+    batched_groups = []
+    for shape, group in shape_groups.items():
+        # Split into batches of batch_size
+        for i in range(0, len(group), batch_size):
+            batch = group[i:i+batch_size]
+            batched_groups.append(batch)
+
+    return batched_groups
+
+
+def create_batch_from_tensors(tensor_items: List[torch.Tensor]):
+    """Stack list of tensors into batch.
+    
+    Args:
+        tensor_items: List of tensors with same shape
+        
+    Returns:
+        Single batched tensor
+    """
+    return torch.stack(tensor_items, dim=0)
 
 
 def validate_e2v_config(config: Dict[str, Any]) -> None:
