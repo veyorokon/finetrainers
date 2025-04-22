@@ -1363,19 +1363,49 @@ class E2VTrainer:
         caption = batch.get("caption")
         text_embeddings = batch.get("text_embeddings")  # May be None
         
-        if text_embeddings is None and caption is not None and self.text_encoder is not None:
-            logger.debug(f"Encoding caption: {caption[:50]}...")
+        if text_embeddings is None and caption is not None:
+            logger.debug(f"Processing caption: {caption[:50]}...")
             try:
-                # Process caption through text encoder
-                # This is a simplification - actual implementation would tokenize properly
+                # Process caption through text encoder following framework pattern
                 device = self.state.parallel_backend.device
-                # Encode text - implementation depends on text encoder type
-                if hasattr(self.text_encoder, "encode_text"):
-                    text_embeddings = self.text_encoder.encode_text(caption)
+                
+                # Get caption as string
+                prompt = caption
+                if isinstance(caption, list) and len(caption) > 0:
+                    prompt = caption[0]
+                if not isinstance(prompt, str):
+                    prompt = str(prompt)
+                    
+                # Check if we have tokenizer(s) and text_encoder(s)
+                if hasattr(self, 'tokenizer') and self.tokenizer is not None and \
+                   hasattr(self, 'text_encoder') and self.text_encoder is not None:
+                   
+                    # Get tokenizer and model parameters
+                    model_dtype = next(self.text_encoder.parameters()).dtype
+                    max_length = getattr(self.tokenizer, "model_max_length", 77)
+                    
+                    # Tokenize text - standard framework pattern
+                    text_inputs = self.tokenizer(
+                        prompt,
+                        padding="max_length",
+                        max_length=max_length,
+                        truncation=True,
+                        return_tensors="pt",
+                    )
+                    text_input_ids = text_inputs.input_ids.to(device)
+                    
+                    # Generate embeddings
+                    with torch.no_grad():
+                        text_embeddings = self.text_encoder(text_input_ids)[0]
+                        
+                    # Ensure correct shape and dtype
+                    text_embeddings = text_embeddings.to(dtype=model_dtype)
+                    logger.debug(f"Created text embeddings with shape: {text_embeddings.shape}")
                 else:
-                    # Simple placeholder - create dummy embeddings (77 tokens x 768 dim)
+                    # Fallback if no text_encoder is available
+                    logger.warning("No tokenizer or text_encoder available - using placeholder")
+                    # Simple placeholder - create dummy embeddings (1, 77, 768)
                     text_embeddings = torch.zeros((1, 77, 768), device=device)
-                logger.debug(f"Created text embeddings with shape: {text_embeddings.shape}")
             except Exception as e:
                 logger.error(f"Error encoding caption: {e}", exc_info=True)
         elif text_embeddings is None:
@@ -1388,14 +1418,51 @@ class E2VTrainer:
         video_latents = batch.get("latents")  # May be None
         
         if video_latents is None and video is not None and self.vae is not None:
-            logger.debug(f"Encoding video with shape: {video.shape}")
+            logger.debug(f"Encoding video with shape: {video.shape}, dtype: {video.dtype}")
             try:
-                # Process video through VAE
+                # Process video through VAE - follow the framework pattern
                 with torch.no_grad():
-                    video_latents = self.vae.encode(video).latent_dist.sample()
+                    # Get model parameters
+                    device = self.state.parallel_backend.device
+                    model_dtype = next(self.vae.parameters()).dtype
+                    
+                    # Ensure video has correct format [B, C, F, H, W] for VAE encoding
+                    if len(video.shape) == 4:  # [B, C, H, W] - image format
+                        # Add frame dimension for VAE, following WanLatentEncodeProcessor pattern
+                        video = video.unsqueeze(2)  # [B, C, 1, H, W]
+                        logger.debug(f"Added frame dimension: {video.shape}")
+                    elif len(video.shape) == 5 and video.shape[1] != 3:
+                        # Check if dimensions are [B, F, C, H, W] and need permuting
+                        if video.shape[2] == 3:
+                            # Permute to [B, C, F, H, W] format expected by VAE
+                            video = video.permute(0, 2, 1, 3, 4).contiguous()
+                            logger.debug(f"Permuted dimensions: {video.shape}")
+                    
+                    # Ensure correct dtype
+                    if video.dtype != model_dtype:
+                        video = video.to(device=device, dtype=model_dtype)
+                    
+                    # Encode through VAE following the framework pattern
+                    vae_out = self.vae.encode(video)
+                    
+                    # Handle latent distribution output (most common in framework)
+                    if hasattr(vae_out, "latent_dist"):
+                        video_latents = vae_out.latent_dist.sample()
+                    elif hasattr(vae_out, "sample") and callable(vae_out.sample):
+                        video_latents = vae_out.sample()
+                    else:
+                        # Assume direct tensor output
+                        video_latents = vae_out
+                        
                     # Scale latents by VAE scaling factor
                     scale_factor = 1.0 / getattr(self.vae.config, "scaling_factor", 0.18215)
                     video_latents = video_latents * scale_factor
+                    
+                    # Also compute mean and std for latent normalization
+                    # This follows the framework pattern for handling latent stats
+                    latents_mean = torch.mean(video_latents, dim=[0, 2, 3, 4], keepdim=True)
+                    latents_std = torch.std(video_latents, dim=[0, 2, 3, 4], keepdim=True)
+                    
                 logger.debug(f"Created video latents with shape: {video_latents.shape}")
             except Exception as e:
                 logger.error(f"Error encoding video: {e}", exc_info=True)
@@ -1404,9 +1471,25 @@ class E2VTrainer:
         else:
             logger.debug(f"Using provided video latents with shape: {video_latents.shape}")
             
-        # Get additional latent parameters if available
+        # Handle latent stats for normalization (following framework pattern)
         latents_mean = batch.get("latents_mean", None)
         latents_std = batch.get("latents_std", None)
+        
+        # If we computed stats from the video encoding above, use those if not provided
+        if latents_mean is None and "latents_mean" in locals():
+            latents_mean = locals()["latents_mean"]
+            logger.debug(f"Using computed latents_mean: {latents_mean.shape}")
+            
+        if latents_std is None and "latents_std" in locals():
+            latents_std = locals()["latents_std"]
+            logger.debug(f"Using computed latents_std: {latents_std.shape}")
+            
+        # Ensure we have latent stats for normalization (following framework pattern)
+        if latents_mean is None or latents_std is None:
+            logger.debug("Computing default latent stats")
+            # Default stats if not available (match framework approach)
+            latents_mean = torch.zeros(1, video_latents.shape[1], 1, 1, 1, device=video_latents.device)
+            latents_std = torch.ones(1, video_latents.shape[1], 1, 1, 1, device=video_latents.device)
         
         # Get preprocessed elements and configs
         preprocessed_elements = batch.get("preprocessed_elements", {})
