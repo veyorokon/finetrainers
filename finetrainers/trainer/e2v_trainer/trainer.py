@@ -81,6 +81,60 @@ class E2VTrainer(ControlTrainer):
             
         # Skip parent implementation since we've handled it
         logger.info("E2V trainer parameter setup complete")
+        
+    def _prepare_checkpointing(self) -> None:
+        """Set up checkpointing for E2V training types."""
+        parallel_backend = self.state.parallel_backend
+        
+        def save_model_hook(state_dict: Dict[str, Any]) -> None:
+            state_dict = ft_utils.get_unwrapped_model_state_dict(state_dict)
+            if parallel_backend.is_main_process:
+                if hasattr(self.args, 'training_type') and self.args.training_type == TrainingType.E2V_LORA:
+                    from peft import get_peft_model_state_dict
+                    state_dict = get_peft_model_state_dict(self.transformer, state_dict)
+                    
+                    # Prepare metadata for LoRA
+                    metadata = {
+                        "r": self.args.rank,
+                        "lora_alpha": self.args.lora_alpha,
+                        "init_lora_weights": True,
+                        "target_modules": self.args.target_modules,
+                    }
+                    metadata = {"lora_config": json.dumps(metadata, indent=4)}
+                    
+                    self.model_specification._save_lora_weights(
+                        self.args.output_dir, state_dict, None, self.scheduler, metadata
+                    )
+                elif hasattr(self.args, 'training_type') and self.args.training_type == TrainingType.E2V_FULL_FINETUNE:
+                    self.model_specification._save_model(
+                        self.args.output_dir, self.transformer, state_dict, self.scheduler
+                    )
+                else:
+                    # For other training types, use parent save hook
+                    return
+            parallel_backend.wait_for_everyone()
+        
+        # Use the checkpointer from parallel backend
+        enable_state_checkpointing = getattr(self.args, "checkpointing_steps", 0) > 0
+        self.checkpointer = parallel_backend.get_checkpointer(
+            dataloader=self.dataloader,
+            model_parts=[self.transformer],
+            optimizers=self.optimizer,
+            schedulers=self.lr_scheduler,
+            states={"train_state": self.state.train_state},
+            checkpointing_steps=getattr(self.args, "checkpointing_steps", 500),
+            checkpointing_limit=getattr(self.args, "checkpointing_limit", None),
+            output_dir=self.args.output_dir,
+            enable=enable_state_checkpointing,
+            _callback_fn=save_model_hook,
+        )
+        
+        # Handle resuming from checkpoint
+        resume_from_checkpoint = getattr(self.args, "resume_from_checkpoint", None)
+        if resume_from_checkpoint == "latest":
+            resume_from_checkpoint = -1
+        if resume_from_checkpoint is not None:
+            self.checkpointer.load(resume_from_checkpoint)
 
     def _prepare_dataset(self) -> None:
         """Prepare dataset with E2V-specific configuration."""
@@ -140,7 +194,8 @@ class E2VTrainer(ControlTrainer):
                 batch = batch[0] if isinstance(batch, list) else batch
                 collected_samples.append(batch)
             except StopIteration:
-                # Handle dataset exhaustion
+                # Handle dataset exhaustion and re-initialize iterator properly
+                self.dataloader.dataset._sampler_iter_yielded = 0
                 data_iterator = iter(self.dataloader)
                 batch = next(data_iterator)
                 batch = batch[0] if isinstance(batch, list) else batch
