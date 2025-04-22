@@ -305,7 +305,14 @@ class E2VTrainer:
         
         # 1. Clean up trackers
         try:
-            self.state.parallel_backend.cleanup_trackers()
+            backend = self.state.parallel_backend
+            if hasattr(backend, "cleanup_trackers"):
+                backend.cleanup_trackers()
+            # AccelerateParallelBackend uses a different pattern
+            elif hasattr(backend, "trackers") and backend.trackers:
+                for tracker in backend.trackers:
+                    if hasattr(tracker, "finish"):
+                        tracker.finish()
         except Exception as e:
             logger.warning(f"Error cleaning up trackers: {e}")
         
@@ -320,7 +327,14 @@ class E2VTrainer:
         # 3. Destroy process group for distributed training
         if self.state.parallel_backend is not None:
             try:
-                self.state.parallel_backend.cleanup()
+                backend = self.state.parallel_backend
+                # Different backends have different cleanup methods
+                if hasattr(backend, "cleanup"):
+                    backend.cleanup()
+                elif hasattr(backend, "_cleanup"):
+                    backend._cleanup()
+                elif hasattr(backend, "_accelerator") and hasattr(backend._accelerator, "clear"):
+                    backend._accelerator.clear()
             except Exception as e:
                 logger.warning(f"Error cleaning up parallel backend: {e}")
             
@@ -631,12 +645,42 @@ class E2VTrainer:
         # Get E2V configuration from the first dataset
         e2v_config = self._extract_e2v_config(self.args.dataset_config)
         
+        # Log the dataset configuration
+        logger.info(f"E2V config: {e2v_config}")
+        
         # Wrap with E2V dataset
+        logger.info("Creating IterableE2VDataset wrapper")
         dataset = IterableE2VDataset(
             dataset, 
             e2v_config,
             device=self.state.parallel_backend.device
         )
+        
+        # Verify dataset produces expected outputs
+        logger.info("Testing dataset output format")
+        try:
+            # Get a single batch to validate fields
+            test_batch = next(iter(dataset))
+            logger.info(f"Dataset produces batches with keys: {list(test_batch.keys())}")
+            
+            # Check for required fields
+            missing = []
+            if "text_embeddings" not in test_batch:
+                missing.append("text_embeddings")
+            if "latents" not in test_batch:
+                missing.append("latents")
+            if "preprocessed_elements" not in test_batch:
+                missing.append("preprocessed_elements")
+            if "tensor_combinations" not in test_batch:
+                missing.append("tensor_combinations")
+                
+            if missing:
+                logger.error(f"Dataset is missing required fields: {missing}")
+            else:
+                logger.info("Dataset produces all required fields")
+                
+        except Exception as e:
+            logger.error(f"Error testing dataset output: {e}", exc_info=True)
         
         # Use DPDataLoader to better handle state
         self._prepare_training_dataloader(dataset)
@@ -955,11 +999,28 @@ class E2VTrainer:
             # DPDataLoader with collate_fn=lambda items: items returns a list
             batch = batch[0] if isinstance(batch, list) else batch
             
+            # Dump batch structure for debugging
+            logger.debug(f"Raw batch contents: {list(batch.keys()) if isinstance(batch, dict) else 'not a dict'}")
+            
             # Move batch to correct device
             batch = self._move_batch_to_device(batch)
             
+            # Check if batch has required fields before forward pass
+            if isinstance(batch, dict):
+                if "text_embeddings" not in batch or "latents" not in batch:
+                    missing = []
+                    if "text_embeddings" not in batch:
+                        missing.append("text_embeddings")
+                    if "latents" not in batch:
+                        missing.append("latents")
+                    logger.error(f"Batch missing required fields: {missing}. Available fields: {list(batch.keys())}")
+            
             # Forward pass
-            loss = self._forward_pass(batch)
+            try:
+                loss = self._forward_pass(batch)
+            except Exception as e:
+                logger.error(f"Forward pass error: {e}", exc_info=True)
+                raise
             
             # For gradient accumulation, scale loss to match total batch size
             if self.args.gradient_accumulation_steps > 1:
@@ -1371,6 +1432,10 @@ class E2VTrainer:
         else:
             logger.debug("No CLIP embeddings found")
         
+        # Check if we have the required tensors
+        if text_embeddings is None or video_latents is None:
+            raise ValueError("Missing required tensors: text_embeddings and video_latents are required for training")
+            
         # Generate random sigmas for flow matching
         generator = torch.Generator(device=self.state.parallel_backend.device).manual_seed(self.args.seed)
         batch_size = video_latents.shape[0]
