@@ -298,83 +298,35 @@ def apply_frame_conditioning_on_latents(
 class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.checkpoint.stateful.Stateful):
     """Dataset wrapper for E2V (Elements-to-Video) training.
     
-    This wrapper processes video datasets along with reference images to create
-    the combined conditioning needed for E2V training. It follows the same pattern
-    as other framework wrappers like IterableControlDataset.
+    This wrapper handles loading and preprocessing elements for E2V training:
+    1. Identifies and loads reference images for each video
+    2. Preprocesses images (resize, crop, etc.) but does NOT run model inference
+    3. Returns preprocessed data for trainer to process through models
     
-    The wrapper's main functions:
-    1. Identify and load reference images for each video
-    2. Process references through VAE and CLIP pathways
-    3. Create the specialized conditioning tensors
-    4. Feed properly formatted data to the E2V training pipeline
-    
-    It coordinates all the processing needed for both spatial conditioning (VAE)
-    and semantic conditioning (CLIP) used in the A2 approach.
+    Model inference (VAE encoding, CLIP processing) is handled by the trainer
+    to avoid CUDA multiprocessing issues.
     """
     
-    def __init__(self, dataset, config, device=None, clip_processor=None, vae=None):
+    def __init__(self, dataset, config, device=None):
         super().__init__()
         
         self.dataset = dataset
         self.config = config
         self.device = device
-        self.clip_processor = clip_processor
-        self.vae = vae  # VAE for encoding reference images
         
+        # Initialize preprocessors based on configuration
+        self.preprocessors = {}
         
-        # Initialize processors based on configuration
-        self.processors = {}
-        
-        # Log processor initialization
-        logger.info(f"Initializing E2V processors. Have CLIP processor: {clip_processor is not None}")
-        
-        # Initialize all processors defined in the configuration
+        # Initialize all preprocessors defined in the configuration
         for proc_name, proc_config in config.get("processors", {}).items():
-            if proc_name == "vae":
-                self.processors["vae"] = VAEPathwayProcessor(
-                    output_names=["vae_output"],
-                    config=proc_config,
-                    device=device
-                )
-                logger.info(f"Initialized VAE processor with config: {proc_config}")
-            elif proc_name == "clip":
-                if clip_processor is None:
-                    logger.warning(f"CLIP processor requested but no clip_processor provided - CLIP pathway will not work")
-                    # Skip initializing CLIP processor if no model available
-                    if "tensor_combinations" in config:
-                        # Check if CLIP is required in tensor_combinations
-                        is_clip_required = any("clip" in procs for procs in config["tensor_combinations"].values())
-                        if is_clip_required:
-                            logger.warning(f"CLIP is required in tensor_combinations but no clip_processor provided")
-                            logger.warning(f"Updating tensor_combinations to remove CLIP dependency as a temporary fix")
-                            # Modify the tensor_combinations to remove clip dependency
-                            for key, procs in list(config["tensor_combinations"].items()):
-                                config["tensor_combinations"][key] = [p for p in procs if p != "clip"]
-                else:
-                    # Additional debug logging for config
-                    logger.info(f"CLIP config contains preprocessor: {'preprocessor' in proc_config}")
-                    logger.info(f"CLIP config contains default_preprocess: {'default_preprocess' in proc_config}")
-                    logger.info(f"CLIP processor init config FULL DUMP: {proc_config}")
-                    
-                    self.processors["clip"] = CLIPPathwayProcessor(
-                        output_names=["clip_output"],
-                        config=proc_config,
-                        device=device,
-                        clip_processor=clip_processor
-                    )
-                    logger.info(f"Initialized CLIP processor with config: {proc_config}")
+            if proc_name in ["vae", "clip"]:
+                # Create preprocessor configuration (no model inference)
+                self.preprocessors[proc_name] = {
+                    "config": proc_config,
+                    "output_name": f"{proc_name}_preprocessed"
+                }
             else:
                 logger.warning(f"Unknown processor type: {proc_name}")
-        
-        logger.info(f"Initialized processors: {list(self.processors.keys())}")
-        
-        # Check if required processors for tensor_combinations are available
-        if "tensor_combinations" in config:
-            all_procs = set(sum(config["tensor_combinations"].values(), []))
-            missing_procs = [p for p in all_procs if p not in self.processors]
-            if missing_procs:
-                logger.warning(f"Missing required processors for tensor_combinations: {missing_procs}")
-                logger.warning(f"This may cause errors during processing")
         
         # Create element lookup - assume elements are dictionaries
         self.elements = {}
@@ -384,16 +336,17 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         logger.info(f"Initialized IterableE2VDataset with {len(self.elements)} elements")
     
     def __iter__(self):
-        logger.info("Starting IterableE2VDataset")
+        """Iterate through dataset and yield preprocessed elements.
+        
+        This method:
+        1. Loads raw element images
+        2. Preprocesses them (resize, crop, etc.)
+        3. Returns preprocessed tensors WITHOUT model inference
+        
+        Model inference happens in the trainer to avoid CUDA multiprocessing issues.
+        """
         for data in iter(self.dataset):
             try:
-                # Basic logging to understand dataset structure
-                keys = list(data.keys())
-                logger.info(f"Dataset item keys: {keys}")
-                
-                if "video" in data:
-                    logger.info(f"Video shape: {data['video'].shape}")
-                
                 # Find element files based on dataset item
                 element_files = self._find_element_files(data)
                 
@@ -408,11 +361,7 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                             })
                     
                     if required_elements:
-                        # More detailed warning message with expected file patterns
-                        element_details = [f"{e['name']} (patterns: {', '.join(e['suffixes'])})" for e in required_elements]
-                        logger.warning(f"Skipping dataset item - required elements not found: {element_details}")
-                        if "images" in data:
-                            logger.warning(f"Available reference images: {data['images']}")
+                        logger.warning(f"Skipping item - required elements missing")
                         continue
                 
                 # Load element images
@@ -423,20 +372,19 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                     logger.warning("No elements could be loaded, skipping item")
                     continue
                 
-                # Process elements through VAE and CLIP pathways
-                logger.info("Calling _process_elements")
-                processed_data = self._process_elements(data, element_data)
-                logger.info(f"_process_elements returned with keys: {list(processed_data.keys())}")
-                for proc_name, proc_results in processed_data.items():
-                    logger.info(f"  Results for {proc_name} has {len(proc_results)} entries")
+                # Preprocess elements (resize, crop, etc.) but don't run models
+                preprocessed_data = self._preprocess_elements(data, element_data)
                 
-                # Combine all pathways into final output
-                logger.info("Calling _combine_pathways")
-                combined_data = self._combine_pathways(data, processed_data)
+                # Create output dictionary with preprocessed data
+                result_data = dict(data)
+                result_data["preprocessed_elements"] = preprocessed_data
+                result_data["element_configs"] = {
+                    name: element["config"] for name, element in element_data.items()
+                }
                 
-                yield combined_data
+                yield result_data
             except Exception as e:
-                logger.error(f"Error processing dataset item: {e}")
+                logger.error(f"Error preprocessing dataset item: {e}")
                 # Skip this item and continue
                 continue
     
@@ -544,78 +492,86 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         
         return element_data
     
-    def _process_elements(self, data, element_data):
-        """Process elements through each pathway using batch processing.
+    def _preprocess_elements(self, data, element_data):
+        """Preprocess elements for each pathway (resize, crop, etc.).
         
-        Groups elements by processor type and processes them in batches for efficiency.
+        This method ONLY handles preprocessing, not model inference:
+        1. Resizes and crops images based on config
+        2. Returns tensors ready for model inference in the trainer
+        
+        No VAE encoding or CLIP processing is done here - that happens in the trainer.
         """
-        results = {proc_name: {} for proc_name in self.processors}
+        preprocessed = {}
         
-        # Group elements by processor for batch processing
-        processor_inputs = {proc_name: [] for proc_name in self.processors}
-        processor_configs = {proc_name: [] for proc_name in self.processors}
-        processor_elements = {proc_name: [] for proc_name in self.processors}
-        
-        
-        # Map real elements to processors
-        for element_name, element_info in element_data.items():
-            element_image = element_info["image"]
-            element_config = element_info["config"]
+        for proc_name, proc_info in self.preprocessors.items():
+            preprocessed[proc_name] = {}
+            proc_config = proc_info["config"]
             
-            # Check which processors are configured for this element
-            for proc_name, processor in self.processors.items():
+            # Process each element
+            for element_name, element_info in element_data.items():
+                element_image = element_info["image"]
+                element_config = element_info["config"]
+                
                 # Skip if the processor is explicitly disabled for this element
                 if proc_name == "clip" and (not element_config.get("clip", True) or 
                                           ("processors" in element_config and 
                                            "clip" in element_config["processors"] and 
                                            not element_config["processors"]["clip"])):
-                    logger.info(f"Skipping CLIP for element {element_name} - explicitly disabled")
                     continue
                 
+                # Get processor-specific config with element-specific overrides
+                config = dict(proc_config)
+                if "processors" in element_config and proc_name in element_config["processors"]:
+                    config.update(element_config["processors"][proc_name])
                 
-                processor_inputs[proc_name].append(element_image)
-                processor_configs[proc_name].append(element_config)
-                processor_elements[proc_name].append(element_name)
-        
-        # Process each processor type in batches
-        for proc_name, processor in self.processors.items():
-            if not processor_inputs[proc_name]:
-                continue
-            
-            # Get batch size from processor config
-            batch_size = self.config.get("processors", {}).get(proc_name, {}).get("batch_size", len(processor_inputs[proc_name]))
-            
-            # Process in batches if needed
-            for batch_start in range(0, len(processor_inputs[proc_name]), batch_size):
-                batch_end = min(batch_start + batch_size, len(processor_inputs[proc_name]))
+                # Get preprocess method based on config
+                preprocessor = config.get("preprocessor", "center_crop")
+                resolution = config.get("resolution", [224, 224] if proc_name == "clip" else [480, 854])
                 
-                batch_inputs = processor_inputs[proc_name][batch_start:batch_end]
-                batch_configs = processor_configs[proc_name][batch_start:batch_end]
-                batch_elements = processor_elements[proc_name][batch_start:batch_end]
-                
-                # Process each element in the batch
-                for i, (element_input, element_config, element_name) in enumerate(zip(batch_inputs, batch_configs, batch_elements)):
-                    # Process the element based on processor type
-                    if proc_name == "vae":
-                        result = processor(image=element_input, element_config=element_config)
-                    elif proc_name == "clip":
-                        try:
-                            # Call the processor with the image and element config
-                            result = processor(image=element_input, element_config=element_config)
-                        except Exception as e:
-                            logger.error(f"Error during CLIP processing: {e}")
-                            raise
+                # Apply preprocessing based on processor type
+                if proc_name == "vae":
+                    # VAE preprocessing (typically letterbox)
+                    if preprocessor == "letterbox":
+                        processed = FF.letterbox_image(element_image, resolution)
+                    elif preprocessor == "center_crop":
+                        processed = FF.center_crop_image(element_image, resolution)
+                    elif preprocessor == "resize":
+                        processed = FF.resize_image(element_image, resolution)
                     else:
-                        continue
+                        processed = FF.letterbox_image(element_image, resolution)
+                        
+                    # Add metadata
+                    position = config.get("position", 0)
+                    repeat = config.get("repeat", 1)
                     
-                    # Store result if pathway is enabled and returned a valid result
-                    output_name = processor.output_names[0]
-                    if result[output_name] is not None:
-                        logger.info(f"Storing result for {proc_name} element {element_name}")
-                        results[proc_name][element_name] = result[output_name]
-                        logger.info(f"After storing, results[{proc_name}] has keys: {list(results[proc_name].keys())}")
+                    preprocessed[proc_name][element_name] = {
+                        "tensor": processed,
+                        "position": position,
+                        "repeat": repeat,
+                        "config": config
+                    }
+                    
+                elif proc_name == "clip":
+                    # CLIP preprocessing (typically center_crop to 224x224)
+                    if preprocessor == "letterbox":
+                        processed = FF.letterbox_image(element_image, resolution)
+                    elif preprocessor == "center_crop":
+                        processed = FF.center_crop_image(element_image, resolution)
+                    elif preprocessor == "resize":
+                        processed = FF.resize_image(element_image, resolution)
+                    else:
+                        processed = FF.center_crop_image(element_image, resolution)
+                        
+                    # Add metadata
+                    position = config.get("position", 0)
+                    
+                    preprocessed[proc_name][element_name] = {
+                        "tensor": processed,
+                        "position": position,
+                        "config": config
+                    }
         
-        return results
+        return preprocessed
     
     def _combine_pathways(self, data, processed_data):
         """Combine results according to tensor_combinations configuration."""
@@ -752,27 +708,51 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
 
 
 class ValidationE2VDataset(IterableE2VDataset):
-    """Validation dataset for E2V training."""
+    """Validation dataset for E2V training.
+    
+    Same as IterableE2VDataset but also includes original element files
+    for visualization during validation.
+    """
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
     
     def __iter__(self):
-        logger.info("Starting ValidationE2VDataset")
+        """Iterate through validation dataset.
+        
+        Same as IterableE2VDataset.__iter__ but also includes
+        original element files for visualization.
+        """
         for data in iter(self.dataset):
             try:
                 # Find element files
                 element_files = self._find_element_files(data)
                 
-                # Process elements
+                # Skip items where required elements are missing
+                if not element_files:
+                    continue
+                
+                # Load element images
                 element_data = self._load_elements(element_files)
-                processed_data = self._process_elements(data, element_data)
-                combined_data = self._combine_pathways(data, processed_data)
+                
+                # Skip if loading failed
+                if not element_data:
+                    continue
+                
+                # Preprocess elements but don't run models
+                preprocessed_data = self._preprocess_elements(data, element_data)
+                
+                # Create output with preprocessed data
+                result_data = dict(data)
+                result_data["preprocessed_elements"] = preprocessed_data
+                result_data["element_configs"] = {
+                    name: element["config"] for name, element in element_data.items()
+                }
                 
                 # For validation, also include the original element files
-                combined_data["element_files"] = element_files
+                result_data["element_files"] = element_files
                 
-                yield combined_data
+                yield result_data
             except Exception as e:
-                logger.error(f"Error processing validation dataset item: {e}")
+                logger.error(f"Error preprocessing validation dataset item: {e}")
                 continue

@@ -13,6 +13,7 @@ import torch.backends
 import wandb
 from diffusers import DiffusionPipeline
 from diffusers.hooks import apply_layerwise_casting
+from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 from diffusers.training_utils import cast_training_params
 from diffusers.utils import export_to_video
 from huggingface_hub import create_repo, upload_folder
@@ -686,12 +687,12 @@ class E2VTrainer:
         else:
             logger.warning("No image_encoder found for CLIP processing - this may cause issues if CLIP pathway is required")
             
+        # Note: No longer passing model instances to dataset
+        # Models will be used in the trainer for inference
         dataset = IterableE2VDataset(
             dataset, 
             e2v_config,
-            device=self.state.parallel_backend.device,
-            clip_processor=image_encoder,
-            vae=self.vae
+            device=self.state.parallel_backend.device
         )
         
         # Create dataloader using framework pattern
@@ -797,12 +798,11 @@ class E2VTrainer:
             validation_e2v_config = self._extract_e2v_config(self.args.validation_dataset_file)
             
             # Wrap with E2V validation dataset
+            # Note: No longer passing model instances to dataset
             validation_dataset = ValidationE2VDataset(
                 validation_dataset,
                 validation_e2v_config,
-                device=self.state.parallel_backend.device,
-                clip_processor=getattr(self, "image_encoder", None),
-                vae=self.vae
+                device=self.state.parallel_backend.device
             )
             
             # Create validation dataloader
@@ -959,33 +959,51 @@ class E2VTrainer:
                 self._upload_to_hub()
     
     def _forward_pass(self, batch):
-        """Run forward pass with E2V conditioning."""
+        """Run forward pass with E2V conditioning.
+        
+        This method:
+        1. Processes preprocessed tensors through models (VAE, CLIP)
+        2. Combines encoded features according to tensor_combinations
+        3. Runs the model forward pass with prepared conditions
+        
+        This approach avoids CUDA multiprocessing issues by keeping all
+        model inference in the main process.
+        """
         # Process inputs
         text_embeddings = batch.get("text_embeddings")
         video_latents = batch.get("latents")
         latents_mean = batch.get("latents_mean", None)
         latents_std = batch.get("latents_std", None)
         
-        # Get control latents based on tensor_combinations
-        # Try different possible keys based on tensor_combinations config
-        control_latents = None
+        # Get preprocessed elements and configs
+        preprocessed_elements = batch.get("preprocessed_elements", {})
+        element_configs = batch.get("element_configs", {})
         
-        # Look for combined_condition_latents first (preferred)
-        if "e2v_combined_condition_latents" in batch:
-            control_latents = batch["e2v_combined_condition_latents"]
-        # Fall back to reference_latents if that's all we have
-        elif "e2v_reference_latents" in batch:
-            control_latents = batch["e2v_reference_latents"]
-        else:
-            # Default to VAE latents if tensor_combinations not configured
-            control_latents = batch.get("e2v_vae_latents")
-            
-        # Get CLIP embeddings if available
-        clip_embeddings = None
-        if "e2v_reference_embeddings" in batch:
-            clip_embeddings = batch["e2v_reference_embeddings"]
-        elif "e2v_clip_embeddings" in batch:
-            clip_embeddings = batch["e2v_clip_embeddings"]
+        # Process preprocessed elements through models
+        encoded_features = self._encode_elements(preprocessed_elements)
+        
+        # Get tensor combinations from config
+        # First try to load from dataset_config_dict if available
+        tensor_combinations = {}
+        try:
+            # Parse JSON config file to get tensor_combinations
+            with open(self.args.dataset_config, "r") as f:
+                config_data = json.load(f)
+                tensor_combinations = config_data.get("datasets", [{}])[0].get("tensor_combinations", {})
+        except Exception as e:
+            logger.warning(f"Error loading tensor_combinations from config: {e}")
+            # Use default tensor combinations
+            tensor_combinations = {
+                "reference_latents": ["vae"],
+                "combined_condition_latents": ["vae"]
+            }
+        combined_tensors = self._combine_features(encoded_features, tensor_combinations)
+        
+        # Get control latents and CLIP embeddings from combined tensors
+        control_latents = combined_tensors.get("combined_condition_latents", 
+                                            combined_tensors.get("reference_latents"))
+        clip_embeddings = combined_tensors.get("reference_embeddings", 
+                                            combined_tensors.get("clip_embeddings"))
         
         # Generate random sigmas for flow matching
         generator = torch.Generator(device=self.state.parallel_backend.device).manual_seed(self.args.seed)
@@ -1063,6 +1081,196 @@ class E2VTrainer:
                 return obj
         
         return _move(batch)
+    
+    def _encode_elements(self, preprocessed_elements):
+        """Process preprocessed elements through models.
+        
+        This method:
+        1. Encodes preprocessed VAE tensors through VAE model
+        2. Processes preprocessed CLIP tensors through CLIP model
+        3. Returns all encoded features for combining
+        
+        Args:
+            preprocessed_elements: Dictionary of preprocessed tensors by processor type
+            
+        Returns:
+            Dictionary of encoded features by processor type
+        """
+        encoded_features = {}
+        device = self.state.parallel_backend.device
+        
+        # Process VAE elements if present
+        if "vae" in preprocessed_elements:
+            vae_elements = preprocessed_elements["vae"]
+            encoded_features["vae"] = {}
+            
+            for element_name, element_info in vae_elements.items():
+                # Get element tensor and metadata
+                tensor = element_info["tensor"].to(device)
+                position = element_info["position"]
+                repeat = element_info["repeat"]
+                
+                # Apply repetition for temporal processing
+                if repeat > 1:
+                    # Add frame dimension if needed
+                    if len(tensor.shape) == 4:  # B, C, H, W
+                        tensor = tensor.unsqueeze(2)  # B, C, 1, H, W
+                        
+                    # Apply repeats along frame dimension
+                    repeated = []
+                    for i in range(tensor.shape[2]):  # For each frame
+                        frame = tensor[:, :, i:i+1, :, :]
+                        repeated.append(torch.cat([frame] * repeat, dim=2))
+                    tensor = torch.cat(repeated, dim=2)
+                
+                # Encode through VAE
+                with torch.no_grad():
+                    # Move to the same device as the VAE
+                    tensor = tensor.to(self.vae.device)
+                    
+                    # Encode tensor through VAE
+                    vae_output = self.vae.encode(tensor)
+                    
+                    # Handle DiagonalGaussianDistribution output
+                    if isinstance(vae_output, DiagonalGaussianDistribution):
+                        latents = vae_output.sample()
+                    else:
+                        latents = vae_output
+                    
+                    # Apply VAE scaling
+                    scale_factor = 1.0 / getattr(self.vae.config, "scaling_factor", 0.18215)
+                    latents = latents * scale_factor
+                
+                # Store encoded features with metadata
+                encoded_features["vae"][element_name] = {
+                    "latents": latents,
+                    "position": position,
+                    "frames": latents.shape[2] if len(latents.shape) > 3 else 1
+                }
+        
+        # Process CLIP elements if present
+        if "clip" in preprocessed_elements and hasattr(self, "image_encoder"):
+            clip_elements = preprocessed_elements["clip"]
+            encoded_features["clip"] = {}
+            
+            for element_name, element_info in clip_elements.items():
+                # Get element tensor and metadata
+                tensor = element_info["tensor"].to(device)
+                position = element_info["position"]
+                
+                # Preprocess for CLIP (ensure 224x224 and proper normalization)
+                from torchvision import transforms
+                transform = transforms.Compose([
+                    transforms.Resize((224, 224), antialias=True),
+                    transforms.Normalize(
+                        mean=(0.48145466, 0.4578275, 0.40821073),
+                        std=(0.26862954, 0.26130258, 0.27577711)
+                    )
+                ])
+                tensor = transform(tensor)
+                
+                # Encode through CLIP vision model
+                with torch.no_grad():
+                    # Move to the same device as CLIP
+                    tensor = tensor.to(self.image_encoder.device)
+                    
+                    # Get the vision model
+                    vision_model = self.image_encoder.vision_model
+                    
+                    # Process through vision model
+                    outputs = vision_model(tensor, output_hidden_states=True)
+                    
+                    # Extract features from penultimate layer
+                    features = outputs.hidden_states[-2]
+                
+                # Store encoded features with metadata
+                encoded_features["clip"][element_name] = {
+                    "latents": features,
+                    "position": position,
+                    "frames": features.shape[1] if len(features.shape) > 2 else 1
+                }
+        
+        return encoded_features
+    
+    def _combine_features(self, encoded_features, tensor_combinations):
+        """Combine encoded features according to tensor_combinations.
+        
+        This method:
+        1. Gets encoded features from different processors
+        2. Combines them according to tensor_combinations config
+        3. Returns final tensors for model input
+        
+        Args:
+            encoded_features: Dictionary of encoded features by processor type
+            tensor_combinations: Configuration for combining tensors
+            
+        Returns:
+            Dictionary of combined tensors for model input
+        """
+        combined_tensors = {}
+        device = self.state.parallel_backend.device
+        
+        # Constants for tensor dimensions
+        frame_dim = 2  # For VAE latents
+        channel_dim = 1  # For concatenation
+        
+        # Process each combination defined in config
+        for output_name, processor_list in tensor_combinations.items():
+            # Get all results for each processor type
+            processor_tensors = {}
+            
+            for proc_name in processor_list:
+                if proc_name not in encoded_features:
+                    logger.warning(f"Processor {proc_name} not found in encoded features")
+                    continue
+                
+                # Get tensors for this processor
+                proc_results = list(encoded_features[proc_name].values())
+                if not proc_results:
+                    logger.warning(f"No results for processor {proc_name}")
+                    continue
+                
+                # Sort by position
+                proc_results.sort(key=lambda x: x.get("position", 0))
+                
+                # Set concatenation parameters
+                concat_dim = frame_dim if proc_name == "vae" else 1  # Sequence dim for CLIP
+                
+                # Extract tensors from results
+                tensors = [r.get("latents") for r in proc_results if "latents" in r]
+                
+                # Concatenate tensors
+                try:
+                    combined = torch.cat(tensors, dim=concat_dim)
+                    processor_tensors[proc_name] = combined
+                except Exception as e:
+                    logger.error(f"Error concatenating tensors for {proc_name}: {e}")
+            
+            # Handle frame conditioning for VAE latents
+            if "vae" in processor_tensors:
+                vae_tensor = processor_tensors["vae"]
+                
+                # Create mask tensor for frame conditioning
+                mask = torch.zeros_like(vae_tensor)
+                
+                # Set mask values for actual frames (not padding)
+                num_frames = vae_tensor.shape[frame_dim]
+                mask[:, :, :num_frames] = 1.0
+                
+                # Concatenate mask with latents along channel dimension
+                processor_tensors["vae"] = torch.cat([mask, vae_tensor], dim=channel_dim)
+            
+            # Combine processor tensors for final output
+            if len(processor_tensors) == 1:
+                # Just use the single tensor if only one processor
+                proc_name = list(processor_tensors.keys())[0]
+                combined_tensors[output_name] = processor_tensors[proc_name]
+            elif len(processor_tensors) > 1:
+                # Concatenate multiple tensors along the channel dimension
+                tensors_to_combine = list(processor_tensors.values())
+                combined_tensors[output_name] = torch.cat(tensors_to_combine, dim=channel_dim)
+        
+        return combined_tensors
     
     def _check_for_nan_in_loss_and_grads(self, modules):
         """Check for NaN/Inf in loss and gradients."""
