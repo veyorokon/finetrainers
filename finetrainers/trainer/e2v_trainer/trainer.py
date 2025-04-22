@@ -1124,12 +1124,16 @@ class E2VTrainer:
         """
         encoded_features = {}
         
+        logger.debug(f"Processing {len(preprocessed_elements)} processor types: {list(preprocessed_elements.keys())}")
+        
         # Process elements for each registered processor type
         for proc_name, elements in preprocessed_elements.items():
             # Skip if no encoder registered for this processor type
             if proc_name not in ENCODER_REGISTRY:
                 logger.warning(f"No encoder registered for processor type: {proc_name}")
                 continue
+            
+            logger.debug(f"Processing {proc_name} with {len(elements)} elements: {list(elements.keys())}")
             
             # Get appropriate model for this processor type
             model = None
@@ -1150,15 +1154,31 @@ class E2VTrainer:
             
             # Process each element
             for element_name, element_info in elements.items():
+                logger.debug(f"Encoding {element_name} with {proc_name}")
+                
+                if "tensor" not in element_info:
+                    logger.error(f"No tensor found for {element_name} in {proc_name} processor")
+                    continue
+                    
+                if "config" not in element_info:
+                    logger.warning(f"No config found for {element_name} in {proc_name} processor, using empty config")
+                    element_info["config"] = {}
+                    
+                # Log tensor details
+                tensor = element_info["tensor"]
+                logger.debug(f"Element tensor shape: {tensor.shape}, dtype: {tensor.dtype}")
+                
                 # Encode element
                 try:
                     result = encoder_func(element_info["tensor"], model, element_info["config"])
                     encoded_features[proc_name][element_name] = result
+                    logger.debug(f"Successfully encoded {element_name} with {proc_name}")
                 except Exception as e:
-                    logger.error(f"Error encoding {element_name} with {proc_name}: {e}")
+                    logger.error(f"Error encoding {element_name} with {proc_name}: {e}", exc_info=True)
                     # Continue with other elements
                     continue
         
+        logger.debug(f"Encoded features for processors: {list(encoded_features.keys())}")
         return encoded_features
 
     def _combine_features(self, encoded_features, tensor_combinations):
@@ -1179,38 +1199,52 @@ class E2VTrainer:
         """
         combined_tensors = {}
         
+        logger.debug(f"Combining features for {len(tensor_combinations)} outputs: {list(tensor_combinations.keys())}")
+        logger.debug(f"Available encoded features: {list(encoded_features.keys())}")
+        
         # For each output tensor defined in tensor_combinations
         for output_name, processor_list in tensor_combinations.items():
             processor_results = {}
+            logger.debug(f"Combining {len(processor_list)} processors for output '{output_name}': {processor_list}")
             
             # For each processor contributing to this output
             for proc_name in processor_list:
                 # Skip if processor not in encoded features
                 if proc_name not in encoded_features:
-                    logger.warning(f"Processor {proc_name} specified in tensor_combinations but not in encoded features")
+                    logger.warning(f"Processor '{proc_name}' specified in tensor_combinations but not in encoded features")
                     continue
                     
                 # Skip if no combiner registered for this processor
                 if proc_name not in COMBINER_REGISTRY:
-                    logger.warning(f"No combiner registered for processor type: {proc_name}")
+                    logger.warning(f"No combiner registered for processor type: '{proc_name}'")
                     continue
                 
                 # Get features for this processor
                 processor_features = encoded_features[proc_name]
                 if not processor_features:
-                    logger.warning(f"No features for processor {proc_name}")
+                    logger.warning(f"No features for processor '{proc_name}'")
                     continue
+                
+                logger.debug(f"Processor '{proc_name}' has features for elements: {list(processor_features.keys())}")
                 
                 # Get combiner function
                 combiner_func = COMBINER_REGISTRY[proc_name]
                 
                 # Combine features using the registered combiner
                 try:
+                    logger.debug(f"Combining features for '{proc_name}'")
                     result = combiner_func(processor_features)
+                    
                     if result is not None:
                         processor_results[proc_name] = result
+                        if isinstance(result, torch.Tensor):
+                            logger.debug(f"Combined '{proc_name}' result shape: {result.shape}")
+                        else:
+                            logger.debug(f"Combined '{proc_name}' result type: {type(result)}")
+                    else:
+                        logger.warning(f"Combiner for '{proc_name}' returned None")
                 except Exception as e:
-                    logger.error(f"Error combining features for {proc_name}: {e}")
+                    logger.error(f"Error combining features for '{proc_name}': {e}", exc_info=True)
                     # Continue with other processors
                     continue
             
@@ -1219,20 +1253,26 @@ class E2VTrainer:
                 # Only one processor, use its result directly
                 proc_name = list(processor_results.keys())[0]
                 combined_tensors[output_name] = processor_results[proc_name]
+                logger.debug(f"Using direct result from '{proc_name}' for output '{output_name}'")
             elif len(processor_results) > 1:
                 # Multiple processors, concatenate along channel dimension
                 try:
                     tensors = list(processor_results.values())
+                    logger.debug(f"Concatenating {len(tensors)} tensors for '{output_name}'")
+                    logger.debug(f"Tensor shapes: {[t.shape for t in tensors if isinstance(t, torch.Tensor)]}")
+                    
                     combined_tensors[output_name] = torch.cat(tensors, dim=1)  # Channel dimension
+                    logger.debug(f"Combined tensor shape for '{output_name}': {combined_tensors[output_name].shape}")
                 except Exception as e:
-                    logger.error(f"Error concatenating results for {output_name}: {e}")
-                    logger.error(f"Tensor shapes: {[t.shape for t in list(processor_results.values())]}")
+                    logger.error(f"Error concatenating results for '{output_name}': {e}", exc_info=True)
+                    logger.error(f"Tensor shapes: {[t.shape for t in list(processor_results.values()) if isinstance(t, torch.Tensor)]}")
                     # Skip this output
                     continue
             else:
                 # No results, log warning
-                logger.warning(f"No valid results for output {output_name}")
+                logger.warning(f"No valid results for output '{output_name}'")
         
+        logger.debug(f"Combined tensors for outputs: {list(combined_tensors.keys())}")
         return combined_tensors
 
     def _forward_pass(self, batch):
@@ -1252,18 +1292,38 @@ class E2VTrainer:
         Returns:
             Loss tensor
         """
+        # Log batch structure
+        logger.debug(f"Batch keys: {list(batch.keys())}")
+        
         # Process inputs
         text_embeddings = batch.get("text_embeddings")
         video_latents = batch.get("latents")
         latents_mean = batch.get("latents_mean", None)
         latents_std = batch.get("latents_std", None)
         
+        if text_embeddings is None:
+            logger.error("No text_embeddings found in batch")
+        else:
+            logger.debug(f"Text embeddings shape: {text_embeddings.shape}")
+            
+        if video_latents is None:
+            logger.error("No video latents found in batch")
+        else:
+            logger.debug(f"Video latents shape: {video_latents.shape}")
+        
         # Get preprocessed elements and configs
         preprocessed_elements = batch.get("preprocessed_elements", {})
+        if not preprocessed_elements:
+            logger.warning("No preprocessed_elements found in batch")
+        else:
+            logger.debug(f"Preprocessed element types: {list(preprocessed_elements.keys())}")
+            for proc_type, elements in preprocessed_elements.items():
+                logger.debug(f"  {proc_type} has {len(elements)} elements: {list(elements.keys())}")
         
         # Get tensor_combinations from batch (provided by dataset)
         tensor_combinations = batch.get("tensor_combinations")
         if tensor_combinations is None:
+            logger.error("No tensor_combinations found in batch data")
             raise ValueError(
                 "No tensor_combinations found in batch data. "
                 "E2V training requires explicit tensor_combinations configuration."
@@ -1274,22 +1334,42 @@ class E2VTrainer:
         logger.debug(f"Using tensor_combinations: {tensor_combinations}")
         
         # Process preprocessed elements through models
+        logger.debug("Beginning element encoding")
         encoded_features = self._encode_elements(preprocessed_elements)
         
         # Combine features according to tensor_combinations
+        logger.debug("Combining encoded features")
         combined_tensors = self._combine_features(encoded_features, tensor_combinations)
+        
+        # Log combined tensor information
+        logger.debug(f"Combined tensor keys: {list(combined_tensors.keys())}")
         
         # Find control_latents (required for model)
         control_latents = find_tensor_by_key_pattern(combined_tensors, "condition_latents")
         if control_latents is None:
+            logger.error("No condition_latents found in combined tensors")
+            # Check what keys are available to help debug
+            available_keys = list(combined_tensors.keys())
+            logger.error(f"Available keys in combined_tensors: {available_keys}")
+            
+            # Check if we can provide detailed information on what was attempted
+            logger.error(f"Tensor combinations configuration: {tensor_combinations}")
+            logger.error(f"Encoded feature types: {list(encoded_features.keys())}")
+            
             raise ValueError(
                 "No 'condition_latents' found in combined tensors. "
                 "Please check your tensor_combinations configuration."
             )
+        else:
+            logger.debug(f"Control latents shape: {control_latents.shape}")
         
         # Find clip_embeddings (optional)
         clip_embeddings = find_tensor_by_key_pattern(combined_tensors, "encoder_hidden_states") or \
                         find_tensor_by_key_pattern(combined_tensors, "clip")
+        if clip_embeddings is not None:
+            logger.debug(f"CLIP embeddings shape: {clip_embeddings.shape}")
+        else:
+            logger.debug("No CLIP embeddings found")
         
         # Generate random sigmas for flow matching
         generator = torch.Generator(device=self.state.parallel_backend.device).manual_seed(self.args.seed)
@@ -1322,16 +1402,24 @@ class E2VTrainer:
         ).abs_()
         sigmas = sigmas.view(-1, 1, 1, 1, 1)
         
+        logger.debug("Running model forward pass")
         # Forward through model specification
-        loss = self.model_specification.forward(
-            transformer=self.transformer,
-            condition_model_conditions=condition_model_conditions,
-            latent_model_conditions=latent_model_conditions,
-            sigmas=sigmas,
-            generator=generator,
-        )
-        
-        return loss
+        try:
+            loss = self.model_specification.forward(
+                transformer=self.transformer,
+                condition_model_conditions=condition_model_conditions,
+                latent_model_conditions=latent_model_conditions,
+                sigmas=sigmas,
+                generator=generator,
+            )
+            logger.debug(f"Forward pass complete, loss: {loss.item()}")
+            return loss
+        except Exception as e:
+            logger.error(f"Error in model forward pass: {e}", exc_info=True)
+            logger.error(f"condition_model_conditions keys: {list(condition_model_conditions.keys())}")
+            logger.error(f"latent_model_conditions keys: {list(latent_model_conditions.keys())}")
+            # Re-raise to stop training
+            raise
         
     def _update_parameters(self):
         """Update model parameters with the optimizer."""
