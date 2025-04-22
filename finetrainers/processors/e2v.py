@@ -300,69 +300,39 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
         Returns:
             Dictionary with processed CLIP features
         """
-        logger.info(f"CLIPPathwayProcessor.forward called with clip_processor type: {type(clip_processor).__name__ if clip_processor else None}")
-        logger.info(f"Element config: {element_config}")
-        logger.info(f"Image shape: {image.shape if image is not None else None}")
-        logger.info(f"Self clip_processor type: {type(self.clip_processor).__name__ if self.clip_processor else None}")
-        
         # 1. Get configuration with element-specific overrides
         config = dict(self.config)
         
-        # Log the incoming config and all paths for debugging
-        logger.info(f"Initial config: {self.config}")
-        
-        # Check processors structure in element_config
-        if element_config:
-            logger.info(f"Element config has processors key: {element_config.get('processors', None) is not None}")
-            if "processors" in element_config:
-                logger.info(f"Processors has clip key: {element_config['processors'].get('clip', None) is not None}")
-                logger.info(f"Processors clip type: {type(element_config['processors'].get('clip', None))}")
-        
         # Check both possible structures
         if element_config and "processors" in element_config and "clip" in element_config["processors"]:
-            logger.info("Found clip in element_config.processors")
             if isinstance(element_config["processors"]["clip"], dict):
-                logger.info(f"Updating config with clip dict: {element_config['processors']['clip']}")
                 config.update(element_config["processors"]["clip"])
             elif not element_config["processors"]["clip"]:
-                logger.info("CLIP pathway explicitly disabled for this element")
                 # CLIP pathway disabled for this element
                 return {self.output_names[0]: None}
         elif element_config and "clip" in element_config:
-            logger.info("Found clip directly in element_config")
             if isinstance(element_config["clip"], dict):
-                logger.info(f"Updating config with clip dict: {element_config['clip']}")
                 config.update(element_config["clip"])
             elif not element_config["clip"]:
-                logger.info("CLIP pathway explicitly disabled for this element")
                 # CLIP pathway disabled for this element
                 return {self.output_names[0]: None}
-        
-        logger.info(f"Final config after updates: {config}")
                 
         # Use the provided clip_processor or fall back to the stored one
         if clip_processor is None:
-            logger.info("Using self.clip_processor since no clip_processor was provided")
             clip_processor = self.clip_processor
-        else:
-            logger.info("Using provided clip_processor")
             
         if clip_processor is None:
             logger.error("No CLIP processor available - cannot process CLIP pathway")
             return {self.output_names[0]: None}
             
         # 2. Preprocess image
-        logger.info(f"Preprocessing image of shape: {image.shape if image is not None else None}")
         processed = self._preprocess_input(image, config)
-        logger.info(f"Processed image shape: {processed.shape}")
         
         # 3. Run CLIP encoder if available
         if clip_processor is not None:
             try:
-                logger.info(f"Calling _encode_with_clip with processed shape: {processed.shape}")
-                logger.info(f"CLIP processor type: {type(clip_processor).__name__}")
+                # Use standardized _encode_with_clip function 
                 features = self._encode_with_clip(processed, clip_processor)
-                logger.info(f"_encode_with_clip returned features shape: {features.shape}")
                 
                 # 4. Return result with metadata using standardized field names
                 result = {
@@ -370,27 +340,18 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
                     "position": config.get("position", 0),
                     "frames": features.shape[1] if len(features.shape) > 2 else 1  # Add frames field like VAE processor
                 }
-                logger.info(f"Created result with keys: {list(result.keys())}")
-                logger.info(f"Result latents shape: {result['latents'].shape}")
-                logger.info(f"Result position: {result['position']}")
-                logger.info(f"Result frames: {result['frames']}")
                 
                 return {self.output_names[0]: result}
             except Exception as e:
                 logger.error(f"Error in CLIP encoding: {e}")
-                import traceback
-                logger.error(f"CLIP encoding traceback: {traceback.format_exc()}")
                 raise
         else:
             # If no CLIP model, just return preprocessed image as latents for consistency
-            logger.info("No CLIP model, returning preprocessed image")
             result = {
                 "latents": processed,  # Use "latents" consistently even for preprocessed image
                 "position": config.get("position", 0),
                 "frames": processed.shape[1] if len(processed.shape) > 2 else 1  # Add frames field like VAE processor
             }
-            logger.info(f"Created result with keys: {list(result.keys())}")
-            logger.info(f"Result latents shape: {result['latents'].shape}")
             
             return {self.output_names[0]: result}
     
@@ -431,62 +392,40 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
             logger.warning(f"Unknown preprocessor: {preprocessor}, using center_crop")
             return FF.center_crop_image(image, resolution)
     
-    def _encode_with_clip(self, image, clip_processor):
+    def _encode_with_clip(self, image, clip_model):
         """Encode image with CLIP vision model."""
-        # Move to the same device as the model
-        device = clip_processor.device
+        # Move to the same device as the model - consistent with VAE pattern
+        device = clip_model.device
         image = image.to(device)
         
-        # Log initial image shape
-        logger.info(f"CLIP encode: input image shape: {image.shape}")
-        
+        # Process with standard methodology
         with torch.no_grad():
-            try:
-                # CLIP models require 224x224 input images
-                # We need to resize regardless of what was configured
-                from torchvision import transforms
-                
-                # Get the expected image size from config if available
-                image_size = 224  # Default CLIP size
-                if hasattr(clip_processor, "config") and hasattr(clip_processor.config, "image_size"):
-                    image_size = clip_processor.config.image_size
-                
-                # Simple resize transform to match CLIP's expectation
-                # Use standard CLIP normalization values
-                transform = transforms.Compose([
-                    transforms.Resize((image_size, image_size), antialias=True),
-                    transforms.Normalize(
-                        mean=(0.48145466, 0.4578275, 0.40821073),
-                        std=(0.26862954, 0.26130258, 0.27577711)
-                    )
-                ])
-                
-                # Apply the transform
-                image = transform(image)
-                logger.info(f"CLIP encode: resized to {image_size}x{image_size}")
-                
-                # Process the image through the CLIP model
-                outputs = clip_processor(image, output_hidden_states=True)
-                
-                # Extract the hidden states, preferring the penultimate layer
-                # as that's what A2 uses (from analyze_image function)
-                if hasattr(outputs, "hidden_states") and outputs.hidden_states is not None:
-                    features = outputs.hidden_states[-2]
-                    logger.info(f"Using hidden_states[-2]: {features.shape}")
-                elif hasattr(outputs, "last_hidden_state"):
-                    features = outputs.last_hidden_state
-                    logger.info(f"Using last_hidden_state: {features.shape}")
-                else:
-                    logger.info(f"Using direct output: {type(outputs)}")
-                    features = outputs
-                
-                return features
-                
-            except Exception as e:
-                logger.error(f"Error in CLIP encoding: {e}")
-                import traceback
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                raise
+            # Resize to CLIP's expected size
+            from torchvision import transforms
+            
+            # Standard CLIP image size and normalization
+            image_size = 224
+            transform = transforms.Compose([
+                transforms.Resize((image_size, image_size), antialias=True),
+                transforms.Normalize(
+                    mean=(0.48145466, 0.4578275, 0.40821073),
+                    std=(0.26862954, 0.26130258, 0.27577711)
+                )
+            ])
+            
+            # Apply transform
+            image = transform(image)
+            
+            # Access the vision model directly 
+            vision_model = clip_model.vision_model
+            
+            # Process through vision model
+            outputs = vision_model(image, output_hidden_states=True)
+            
+            # Extract features from penultimate layer (as A2 does)
+            features = outputs.hidden_states[-2]
+            
+            return features
     
     def _process_batch(self, clip_processor, inputs, configs):
         """Process a batch of inputs more efficiently."""
@@ -527,6 +466,7 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
             
             # 3. Encode through CLIP in one go
             if clip_processor is not None:
+                # Use the same standardized approach
                 features = self._encode_with_clip(stacked_inputs, clip_processor)
                 
                 # 4. Split results
@@ -577,6 +517,7 @@ class CLIPPathwayProcessor(BasePathwayProcessor):
                 continue
                 
             if clip_processor is not None:
+                # Use the same standardized approach
                 features = self._encode_with_clip(processed, clip_processor)
                 result = {
                     "latents": features,  # Use "latents" consistently

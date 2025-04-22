@@ -149,64 +149,19 @@ class CLIPPathwayProcessor(ProcessorMixin):
                 # Direct call to CLIPVisionModel with output_hidden_states=True
                 with torch.no_grad():
                     try:
-                        # Detailed diagnostics
-                        logger.info(f"CLIP processor type details: {type(self.clip_processor).__module__}.{type(self.clip_processor).__name__}")
-                        logger.info(f"CLIP processor available methods: {[m for m in dir(self.clip_processor) if not m.startswith('_')]}")
-                        logger.info(f"Processed image shape: {processed.shape}")
+                        # Import the processor for consistent encoding
+                        from finetrainers.processors.e2v import CLIPPathwayProcessor
                         
-                        # CLIP models require 224x224 input
-                        # Resize the image to the right size before processing
-                        from torchvision import transforms
-                        
-                        # Get the expected image size from config if available
-                        image_size = 224  # Default CLIP size
-                        if hasattr(self.clip_processor, "config") and hasattr(self.clip_processor.config, "image_size"):
-                            image_size = self.clip_processor.config.image_size
-                            logger.info(f"Using CLIP image_size from config: {image_size}")
-                        
-                        # Apply resize and normalization
-                        transform = transforms.Compose([
-                            transforms.Resize((image_size, image_size), antialias=True),
-                            transforms.Normalize(
-                                mean=(0.48145466, 0.4578275, 0.40821073),
-                                std=(0.26862954, 0.26130258, 0.27577711)
-                            )
-                        ])
-                        
-                        # Apply the transform
-                        processed = transform(processed)
-                        logger.info(f"Resized to CLIP expected size: {image_size}x{image_size}")
-                        
-                        # Create a simple helper function to encode, similar to VAE pattern
-                        def encode_with_clip(image, model):
-                            # Move to same device as model - similar to VAE's approach
-                            device = model.device
-                            image = image.to(device)
-                            # Process through CLIP
-                            return model(image, output_hidden_states=True)
-                            
-                        # Use the helper function 
-                        outputs = encode_with_clip(processed, self.clip_processor)
+                        # Use the standardized _encode_with_clip function directly
+                        processor = CLIPPathwayProcessor()
+                        outputs = processor._encode_with_clip(processed, self.clip_processor)
                     except Exception as e:
-                        logger.error(f"Error calling CLIP processor with output_hidden_states=True: {e}")
-                        logger.error(f"Error type: {type(e).__name__}")
-                        logger.error(f"Traceback: {e.__traceback__.tb_frame.f_code.co_filename}:{e.__traceback__.tb_lineno}")
-                        # Re-raise the exception - don't hide errors
+                        logger.error(f"Error in CLIP encoding: {e}")
+                        # Re-raise the exception
                         raise
                     
-                    # Extract features from the model's output
-                    if hasattr(outputs, "last_hidden_state"):
-                        # For transformers CLIPVisionModel
-                        features = outputs.last_hidden_state
-                    elif hasattr(outputs, "image_embeds"):
-                        # For open_clip models
-                        features = outputs.image_embeds
-                    elif hasattr(outputs, "pooler_output"):
-                        # Another possible transformers format
-                        features = outputs.pooler_output.unsqueeze(1)  # Add sequence dim
-                    else:
-                        # Fallback - assume features are the direct output
-                        features = outputs
+                    # Features are directly returned by _encode_with_clip
+                    features = outputs
                         
                 # Return result with standardized field names
                 result = {
@@ -609,15 +564,6 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             
             # Check which processors are configured for this element
             for proc_name, processor in self.processors.items():
-                # Debug: log element config for clip
-                if proc_name == "clip":
-                    logger.info(f"Element {element_name} - checking if CLIP is enabled")
-                    logger.info(f"Element config: {element_config}")
-                    logger.info(f"Element config has 'clip': {element_config.get('clip', None)}")
-                    logger.info(f"Element config has 'processors': {element_config.get('processors', None)}")
-                    if "processors" in element_config:
-                        logger.info(f"Element processors has 'clip': {element_config['processors'].get('clip', None)}")
-                
                 # Skip if the processor is explicitly disabled for this element
                 if proc_name == "clip" and (not element_config.get("clip", True) or 
                                           ("processors" in element_config and 
@@ -653,80 +599,11 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                     if proc_name == "vae":
                         result = processor(image=element_input, element_config=element_config)
                     elif proc_name == "clip":
-                        logger.info(f"Processing CLIP for element {element_name}")
-                        logger.info(f"CLIP processor type: {type(processor)}")
-                        logger.info(f"CLIP processor clip_processor attribute: {hasattr(processor, 'clip_processor')}")
-                        if hasattr(processor, 'clip_processor'):
-                            logger.info(f"CLIP processor's clip_processor is: {type(processor.clip_processor)}")
-                            logger.info(f"CLIP processor's clip_processor is None: {processor.clip_processor is None}")
                         try:
-                            # Debug the parameters
-                            logger.info(f"Calling processor with image shape: {element_input.shape}")
-                            logger.info(f"Element config for CLIP: {element_config}")
-                            
-                            # Get processor details
-                            import inspect
-                            sig = inspect.signature(processor.__call__)
-                            logger.info(f"Processor signature: {sig}")
-                            
-                            # Add detailed logging for clip_processor
-                            logger.info(f"CLIP processor module: {type(processor.clip_processor).__module__}")
-                            logger.info(f"CLIP processor class: {type(processor.clip_processor).__name__}")
-                            # Log model architecture
-                            if hasattr(processor.clip_processor, "config"):
-                                logger.info(f"CLIP processor config: {processor.clip_processor.config}")
-                            
-                            # Check if we're passing the right kind of model
-                            if hasattr(processor.clip_processor, "vision_model"):
-                                logger.info("CLIP processor has vision_model attribute - might be a full CLIP model, not just vision")
-                                logger.info(f"Vision model: {type(processor.clip_processor.vision_model)}")
-                            else:
-                                logger.info("CLIP processor appears to be a pure vision model")
-                            
-                            # Call the processor with even more detailed error tracking
-                            logger.info("About to call processor with image and element_config")
-                            try:
-                                result = processor(image=element_input, element_config=element_config)
-                                logger.info("Processor call succeeded")
-                            except ValueError as ve:
-                                if "too many values to unpack" in str(ve):
-                                    logger.error(f"VALUE ERROR - too many values to unpack: {ve}")
-                                    # This is exactly our targeted error - inspect traceback deeply
-                                    import traceback, sys
-                                    tb = sys.exc_info()[2]
-                                    while tb.tb_next:
-                                        tb = tb.tb_next
-                                    frame = tb.tb_frame
-                                    logger.error(f"Error location: {frame.f_code.co_filename}:{tb.tb_lineno}")
-                                    logger.error(f"Function: {frame.f_code.co_name}")
-                                    logger.error(f"Locals: {frame.f_locals}")
-                                    raise
-                                else:
-                                    logger.error(f"VALUE ERROR: {ve}")
-                                    raise
-                            except Exception as ex:
-                                logger.error(f"OTHER ERROR: {ex}")
-                                raise
-                            
-                            # Log success
-                            logger.info(f"CLIP processing succeeded for {element_name}, result keys: {list(result.keys())}")
-                            if processor.output_names[0] in result:
-                                logger.info(f"CLIP result contains output_name: {processor.output_names[0]}")
-                                clip_result = result[processor.output_names[0]]
-                                if clip_result is not None:
-                                    logger.info(f"CLIP result is not None, keys: {list(clip_result.keys())}")
-                                    if 'latents' in clip_result:
-                                        logger.info(f"CLIP latents shape: {clip_result['latents'].shape}")
+                            # Call the processor with the image and element config
+                            result = processor(image=element_input, element_config=element_config)
                         except Exception as e:
                             logger.error(f"Error during CLIP processing: {e}")
-                            import traceback
-                            logger.error(f"Traceback: {traceback.format_exc()}")
-                            # Log more details about the processor
-                            logger.error(f"Processor type: {type(processor)}")
-                            logger.error(f"Processor attributes: {[a for a in dir(processor) if not a.startswith('_')]}")
-                            if hasattr(processor, 'clip_processor'):
-                                logger.error(f"clip_processor type: {type(processor.clip_processor)}")
-                                logger.error(f"clip_processor attributes: {[a for a in dir(processor.clip_processor) if not a.startswith('_')]}")
                             raise
                     else:
                         continue
@@ -744,12 +621,7 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         """Combine results according to tensor_combinations configuration."""
         result_data = dict(data)
         
-        # Debug: Log what's in processed_data
-        logger.info(f"_combine_pathways received processed_data with keys: {list(processed_data.keys())}")
-        for proc_name, proc_results in processed_data.items():
-            logger.info(f"  Processed data for {proc_name} has {len(proc_results)} entries")
-            for elem_name, elem_result in proc_results.items():
-                logger.info(f"    Element {elem_name} result has keys: {list(elem_result.keys())}")
+        # Process data from all processors
         
         # Constants for tensor dimensions
         frame_dim = 2
@@ -790,19 +662,11 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 logger.error(f"No {field_name} found in results for processor {proc_name}")
                 raise ValueError(f"No {field_name} found in results for processor {proc_name}")
                 
-            # Log available fields in processor results for debugging
-            for i, r in enumerate(proc_results):
-                logger.info(f"  Result {i} from {proc_name} has fields: {list(r.keys())}")
-            
-            # Log tensor shapes before concatenation
-            logger.info(f"Tensors for {proc_name} before concatenation:")
-            for i, t in enumerate(tensors):
-                logger.info(f"  Tensor {i}: shape={t.shape}")
+            # Extract fields from processor results
             
             # Concatenate tensors
             try:
                 combined = torch.cat(tensors, dim=concat_dim)
-                logger.info(f"Successfully concatenated {len(tensors)} tensors for {proc_name}: result shape={combined.shape}")
             except RuntimeError as e:
                 logger.error(f"Failed to concatenate tensors for {proc_name}: {e}")
                 logger.error(f"Tensor shapes: {[t.shape for t in tensors]}")
@@ -818,10 +682,6 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                     frame_cond_index = processor_config.get("frame_index", 0)
                     concatenate_mask = processor_config.get("concatenate_mask", True)
                     
-                    logger.info(f"Applying frame conditioning: type={frame_cond_type}, index={frame_cond_index}, concat_mask={concatenate_mask}")
-                    logger.info(f"Combined shape before frame conditioning: {combined.shape}")
-                    logger.info(f"Video shape: {data['video'].shape}, expected_frames={expected_frames}")
-                    
                     try:
                         combined = apply_frame_conditioning_on_latents(
                             combined,
@@ -832,7 +692,6 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                             frame_cond_index,
                             concatenate_mask
                         )
-                        logger.info(f"Combined shape after frame conditioning: {combined.shape}")
                     except Exception as e:
                         logger.error(f"Error during frame conditioning: {e}")
                         # Continue without frame conditioning
@@ -840,13 +699,8 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             
             return combined
         
-        # Log tensor combinations for debugging
-        logger.info(f"Using tensor_combinations: {tensor_combinations}")
-        
         # Get list of all required processors from tensor_combinations
         required_procs = set(sum(tensor_combinations.values(), []))
-        logger.info(f"Required processors from tensor_combinations: {required_procs}")
-        logger.info(f"Available processors: {list(self.processors.keys())}")
         
         # Process all processor types
         for proc_name in required_procs:
@@ -857,8 +711,6 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             # Process this processor type
             try:
                 collected_tensors[proc_name] = collect_processor_tensors(proc_name)
-                # Log the shape of each collected tensor
-                logger.info(f"Collected tensor for {proc_name}: shape={collected_tensors[proc_name].shape}")
             except Exception as e:
                 logger.error(f"Error collecting tensors for processor {proc_name}: {e}")
                 raise
@@ -866,7 +718,7 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         # Now create the output combinations
         for output_name, processor_list in tensor_combinations.items():
             components = []
-            logger.info(f"Creating output combination '{output_name}' from processors: {processor_list}")
+            # Process each processor in the list
             
             # Collect tensors from each processor in the list
             for proc_name in processor_list:
@@ -875,7 +727,6 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                     raise ValueError(f"Required processor {proc_name} not found in collected tensors")
                 
                 tensor = collected_tensors[proc_name]
-                logger.info(f"Adding component for {output_name} from {proc_name}: shape={tensor.shape}")
                 components.append(tensor)
             
             # Output combinations must have at least one component
@@ -887,13 +738,10 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             if len(components) == 1:
                 # Single component, no need to concatenate
                 result_data[f"e2v_{output_name}"] = components[0]
-                logger.info(f"Created {output_name} from single component: shape={components[0].shape}")
             else:
                 # Multiple components, concatenate along channel dimension
-                logger.info(f"Attempting to concatenate for {output_name}: {[c.shape for c in components]}")
                 try:
                     result_data[f"e2v_{output_name}"] = torch.cat(components, dim=channel_dim)
-                    logger.info(f"Created {output_name} by concatenating tensors: final shape={result_data[f'e2v_{output_name}'].shape}")
                 except RuntimeError as e:
                     logger.error(f"Failed to concatenate tensors for {output_name}: {e}")
                     logger.error(f"Tensor shapes: {[c.shape for c in components]}")
