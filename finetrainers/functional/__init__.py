@@ -3,8 +3,10 @@ from .image import (
     bicubic_resize_image,
     center_crop_image,
     find_nearest_resolution_image,
+    letterbox_image,
     resize_crop_image,
     resize_to_nearest_bucket_image,
+    trim_transparency,
 )
 from .normalization import normalize
 from .text import convert_byte_str_to_str, dropout_caption, dropout_embeddings_to_zero, remove_prefix
