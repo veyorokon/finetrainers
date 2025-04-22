@@ -121,14 +121,11 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
     
     def load_state_dict(self, state_dict):
         """Load state from checkpoint."""
-        if hasattr(self.dataset, "load_state_dict"):
-            self.dataset.load_state_dict(state_dict)
+        self.dataset.load_state_dict(state_dict)
     
     def state_dict(self):
         """Save state for checkpoint."""
-        if hasattr(self.dataset, "state_dict"):
-            return self.dataset.state_dict()
-        return {}
+        return self.dataset.state_dict()
     
     def _find_element_files(self, data):
         """Process reference images from VideoReferenceImagesDataset.
@@ -312,3 +309,5 @@ class ValidationE2VDataset(IterableE2VDataset):
                 data["element_files"] = self._find_element_files(data)
             
             yield data
+    
+    # Inherit state_dict method from parent class

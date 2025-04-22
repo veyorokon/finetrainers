@@ -874,8 +874,16 @@ class E2VTrainer:
             desc="Training steps",
         )
         
-        # Use a simpler approach that directly loops until we reach the target number of steps
-        data_iterator = iter(self.dataloader)
+        # Initialize in a try-except block to catch potential dataloader issues
+        try:
+            data_iterator = iter(self.dataloader)
+        except Exception as e:
+            logger.error(f"Error initializing dataloader: {e}")
+            # Try to add any missing keys to dataloader state
+            if hasattr(self.dataloader, "dl_state_dict") and "_sampler_iter_yielded" not in self.dataloader.dl_state_dict:
+                self.dataloader.dl_state_dict["_sampler_iter_yielded"] = 0
+            # Reinitialize
+            data_iterator = iter(self.dataloader)
         
         while current_step < max_steps:
             try:
