@@ -168,7 +168,7 @@ class E2VTrainer:
             if hasattr(self, "validation_dataloader") and self.validation_dataloader is not None and \
                hasattr(self.args, "run_validation_on_train_end") and self.args.run_validation_on_train_end:
                 logger.info("Running final validation")
-                self._validate()
+                self._validate(step=train_state.step, final_validation=True)
                 
         except KeyboardInterrupt:
             logger.warning("Training interrupted by user")
@@ -925,7 +925,7 @@ class E2VTrainer:
                     if self.validation_dataloader is not None and \
                        self.args.validation_steps > 0 and \
                        current_step % self.args.validation_steps == 0:
-                        self._validate()
+                        self._validate(step=current_step, final_validation=False)
                     
                     # Create checkpoint if configured
                     if self.checkpointer and self.checkpointer.should_save(current_step):
@@ -1209,14 +1209,23 @@ class E2VTrainer:
                     if torch.isinf(param.grad).any().item():
                         logger.warning(f"Inf detected in gradient for {name}")
 
-    def _validate(self):
-        """Run validation."""
+    def _validate(self, step: int = None, final_validation: bool = False):
+        """Run validation.
+        
+        Args:
+            step: Current training step (if None, uses train_state.step)
+            final_validation: Whether this is the final validation run
+        """
         if self.validation_dataloader is None:
             return
         
         logger.info("Running validation")
         parallel_backend = self.state.parallel_backend
         train_state = self.state.train_state
+        
+        # Use provided step or get from train_state
+        if step is None:
+            step = train_state.step
         
         with torch.no_grad():
             total_val_loss = 0.0
@@ -1245,11 +1254,11 @@ class E2VTrainer:
                     
                     metrics = {
                         "val_loss": avg_val_loss,
-                        "step": train_state.step,
+                        "step": step,
                     }
                     
                     # Log to trackers
-                    parallel_backend.log_metrics(metrics, train_state.step)
+                    parallel_backend.log_metrics(metrics, step)
                 
                 # Generate sample if requested and we have validation data
                 if self.args.validation_generate_samples and self.validation_dataloader is not None:
