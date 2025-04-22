@@ -35,6 +35,7 @@ from tqdm import tqdm
 
 from finetrainers import data, logging, optimizer, parallel, patches, utils
 from finetrainers.config import TrainingType
+from finetrainers.logging import get_logger
 from finetrainers.patches import load_lora_weights
 from finetrainers.state import State, TrainState
 
