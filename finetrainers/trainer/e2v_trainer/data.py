@@ -109,21 +109,19 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         # Add video source file if available
         from finetrainers import get_logger
         logger = get_logger()
-        logger.info(f"Checking for video path. Has video_path: {'video_path' in data}")
-        logger.info(f"Data obj dir: {dir(data)}")
-        logger.info(f"Data obj dict-like values: {[k for k in data]}")
         
-        if "video_path" in data:
-            video_path = data["video_path"]
-            logger.info(f"Found video_path: {video_path}")
+        # Check what's in the "video" field
+        if "video" in data:
+            logger.info(f"Found video field with type: {type(data['video'])}")
+            logger.info(f"Video field: {data['video']}")
+            
             # Find video element in configuration
             for element in self.elements:
                 if element.get("name") == "video":
                     element_files["video"] = {
-                        "path": video_path,
+                        "path": data["video"],  # Use the video data directly
                         "config": element
                     }
-                    logger.info(f"Added video element with path: {video_path}")
                     break
         
         # Add caption/text if available

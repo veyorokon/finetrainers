@@ -251,6 +251,8 @@ Always remember that the E2V trainer is an extension of ControlTrainer, so most 
 
 This implementation follows the principle of minimal modification while maintaining full compatibility with the framework. By extending ControlTrainer, we inherit all its robust functionality while adding only the necessary E2V-specific features. focus on fixing the actual issue rather than masking it with defaults that weren't specified by the user. 
 
+remove code for 'backwards compatability' - we're implmementing this for the first time
+
 When providing a commit message note the format: a header and body.
 e.g.:  fix: add debugging to E2VLowRankConfig for target_modules parsing
 
