@@ -3,87 +3,47 @@
     {
       "data_root": "/workspace/dataset",
       "dataset_type": "video_references",
-      "target_resolution": [ 480, 854 ],
-      "auto_frame_buckets": true,
 
       "elements": [
         {
           "name": "object",
           "suffixes": [ "_object.png" ],
           "required": true,
-          "processors": {
-            "vae": { "repeat": 4, "position": 0 },
-            "clip": { "position": 1 }
-          }
+          "conditioning": "reference",
+          "vae": { "repeat": 4, "position": 0 },
+          "clip": { "position": 0 }
         },
         {
           "name": "background",
           "suffixes": [ "_background.png" ],
           "required": false,
-          "processors": {
-            "vae": { "repeat": 1, "position": 2 },
-            "clip": { "position": 1 }
-          }
+          "conditioning": "reference",
+          "vae": { "repeat": 1, "position": 1 }
         },
         {
           "name": "captions",
           "suffixes": [ ".txt" ],
           "required": true,
-          "processors": {
-            "text": { }
-          }
+          "conditioning": "text"
         }
       ],
 
-      "processors": {
-        "vae": {
-          "resolution": [ 480, 854 ],
-          "preprocessor": "letterbox",
-          "model": "vae",
-          "batch_size": 1,
-          "concatenate_mask": true,
-          "frame_conditioning": "full"
-        },
-        "clip": {
-          "resolution": [ 512, 512 ],
-          "preprocessor": "letterbox",
-          "model": "image_encoder",
-          "padding_color": 1.0,
-          "trim_alpha": true,
-          "alpha_threshold": 0.1,
-          "padding_buffer": 8,
-          "batch_size": 1
+      "conditioning": {
+        "reference": {
+          "type": "frame",
+          "frame_conditioning_type": "full",
+          "frame_conditioning_concatenate_mask": true,
+          "resolution": [ 480, 854 ]
         },
         "text": {
-          "model": "text_encoder",
-          "max_length": 77,
-          "padding": "max_length",
-          "truncation": true,
-          "batch_size": 1,
+          "type": "text",
           "remove_common_llm_caption_prefixes": true
+        },
+        "clip": {
+          "type": "clip",
+          "resolution": [ 224, 224 ],
+          "preprocessor": "center_crop"
         }
-      },
-
-      "tensor_combinations": {
-        "reference_latents": [ "vae" ],
-        "combined_condition_latents": [ "vae" ]
-      },
-
-      "visualization": {
-        "enabled": true,
-        "output_dir": "visualizations/{run_id}",
-        "frequency": 100,
-        "processors": [
-          {
-            "type": "latent_save",
-            "data": [ "input_latents", "predicted_latents" ]
-          },
-          {
-            "type": "vae_decode",
-            "data": [ "input_latents", "predicted_latents" ],
-            "frames": [ 0, -1 ]
-          }
-        ]
       }
     }
   ]

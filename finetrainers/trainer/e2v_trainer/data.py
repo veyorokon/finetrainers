@@ -2,12 +2,10 @@
 
 This module handles loading and preprocessing elements for E2V training,
 but does NOT perform any model inference to avoid CUDA multiprocessing issues.
-
-Model inference is handled in the trainer to keep all CUDA operations in
-the main process.
 """
 import os
-from typing import Any, Dict, List, Optional, Tuple, Union
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union, Any
 
 import torch
 import torch.distributed.checkpoint.stateful
@@ -15,27 +13,17 @@ from PIL import Image
 from diffusers.video_processor import VideoProcessor
 
 import finetrainers.functional as FF
-from finetrainers.data import VideoArtifact
 from finetrainers.logging import get_logger
-from finetrainers.processors import ProcessorMixin
-from finetrainers.typing import ArtifactType
-
-from .config import ElementConfig, FrameConditioningType
-from .utils import is_processor_enabled, get_processor_config, validate_e2v_config
 
 logger = get_logger()
 
-
 class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.checkpoint.stateful.Stateful):
-    """Dataset wrapper for E2V (Elements-to-Video) training.
+    """Dataset wrapper for E2V training.
     
-    This wrapper handles loading and preprocessing elements for E2V training:
-    1. Identifies and loads reference images for each video
-    2. Preprocesses images (resize, crop, etc.) but does NOT run model inference
-    3. Returns preprocessed data for trainer to process through models
-    
-    Model inference (VAE encoding, CLIP processing) is handled by the trainer
-    to avoid CUDA multiprocessing issues.
+    This dataset wrapper:
+    1. Identifies elements based on configured suffixes
+    2. Preprocesses elements according to conditioning types
+    3. Returns preprocessed data ready for model inference
     """
     
     def __init__(self, dataset, config, device=None):
@@ -45,78 +33,40 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         self.config = config
         self.device = device
         
-        # Validate configuration
-        try:
-            validate_e2v_config(config)
-        except ValueError as e:
-            raise ValueError(f"Invalid E2V configuration: {e}")
-        
-        # Get configuration sections
+        # Extract configuration sections
         self.elements = config.get("elements", [])
-        self.processors_config = config.get("processors", {})
-        self.tensor_combinations = config.get("tensor_combinations", {})
+        self.conditioning = config.get("conditioning", {})
         
-        logger.info(f"Initialized IterableE2VDataset with {len(self.elements)} elements")
-        logger.info(f"Using processors: {list(self.processors_config.keys())}")
-        logger.info(f"Using tensor combinations: {self.tensor_combinations}")
+        # Initialize video processor for preprocessing
+        self.video_processor = VideoProcessor()
+        
+        logger.info(f"Initialized E2V dataset with {len(self.elements)} elements")
+        for element in self.elements:
+            logger.info(f"  Element: {element['name']}, suffixes: {element['suffixes']}")
     
     def __iter__(self):
-        """Iterate through dataset and yield preprocessed elements.
-        
-        This method:
-        1. Loads raw element images
-        2. Preprocesses them (resize, crop, etc.)
-        3. Returns preprocessed tensors WITHOUT model inference
-        
-        Model inference happens in the trainer to avoid CUDA multiprocessing issues.
-        """
+        """Process dataset items according to configuration."""
         for data in iter(self.dataset):
             try:
-                # Find element files based on dataset item
+                # 1. Identify elements from file paths
                 element_files = self._find_element_files(data)
                 
-                # Skip items where required elements are missing
-                missing_required = False
-                for element in self.elements:
-                    if element.get("required", False) and element["name"] not in element_files:
-                        logger.warning(f"Required element '{element['name']}' missing, skipping item")
-                        missing_required = True
-                        break
-                
-                if missing_required:
+                # 2. Skip if required elements are missing
+                if not self._check_required_elements(element_files):
                     continue
                 
-                # Load element images
-                element_data = self._load_elements(element_files)
+                # 3. Load and preprocess elements
+                processed_data = self._preprocess_elements(data, element_files)
                 
-                # If loading failed, skip this item
-                if not element_data:
-                    logger.warning("No elements could be loaded, skipping item")
-                    continue
-                
-                # Preprocess elements (resize, crop, etc.) but don't run models
-                preprocessed_data = self._preprocess_elements(data, element_data)
-                
-                # Create output dictionary with preprocessed data
-                result_data = dict(data)
-                result_data["preprocessed_elements"] = preprocessed_data
-                result_data["element_configs"] = {}
-                
-                # Include element configs for the trainer
-                for name, element in element_data.items():
-                    if "config" in element:
-                        result_data["element_configs"][name] = element["config"]
-                
-                # Include processor configurations
-                result_data["processor_configs"] = self.processors_config
-                
-                # Include tensor combinations
-                result_data["tensor_combinations"] = self.tensor_combinations
-                
-                yield result_data
+                # 4. Return data with preprocessed elements
+                if processed_data:
+                    result = {**data}
+                    result["e2v_processed"] = processed_data
+                    yield result
+                else:
+                    logger.warning("No elements were successfully processed, skipping item")
             except Exception as e:
-                logger.error(f"Error preprocessing dataset item: {e}")
-                # Skip this item and continue
+                logger.error(f"Error processing dataset item: {e}")
                 continue
     
     def load_state_dict(self, state_dict):
@@ -128,165 +78,250 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         return self.dataset.state_dict()
     
     def _find_element_files(self, data):
-        """Process reference images from VideoReferenceImagesDataset.
-        
-        This method:
-        1. Extracts reference image paths from the dataset item
-        2. Matches them to the configured element types based on file suffixes
-        3. Creates a mapping from element types to their corresponding image paths
-        
-        Args:
-            data: Dataset item containing video tensor and reference image paths
-            
-        Returns:
-            Dictionary mapping element types to their file info (path and config)
-        """
+        """Match dataset files to configured elements based on suffixes."""
         element_files = {}
         
-        # Debug what dataset provides
-        logger.debug(f"Dataset item keys: {list(data.keys())}")
-        
-        # Check if we have reference images from our VideoReferenceImagesDataset
-        if "images" in data:
-            logger.debug(f"Found {len(data['images'])} reference images in dataset item")
-            
-            # Process each reference image
+        # Process reference images if available
+        if "images" in data and isinstance(data["images"], list):
             for image_path in data["images"]:
-                # Get the basename to match with suffixes
                 filename = os.path.basename(image_path)
                 
-                # Try to match with one of our configured element types
-                for element_config in self.elements:
-                    # Check if this image matches one of the element's suffixes
-                    for config_suffix in element_config.get("suffixes", []):
-                        if filename.endswith(config_suffix):
-                            element_files[element_config["name"]] = {
+                # Match with configured elements
+                for element in self.elements:
+                    for suffix in element.get("suffixes", []):
+                        if filename.endswith(suffix):
+                            element_files[element["name"]] = {
                                 "path": image_path,
-                                "config": element_config
+                                "config": element
                             }
-                            logger.debug(f"Found {element_config['name']} reference image: {image_path}")
                             break
-        else:
-            logger.warning("No reference images ('images' key) found in dataset item")
+        
+        # Add video source file if available
+        if "video_path" in data:
+            video_path = data["video_path"]
+            # Find video element in configuration
+            for element in self.elements:
+                if element.get("name") == "video":
+                    element_files["video"] = {
+                        "path": video_path,
+                        "config": element
+                    }
+                    break
+        
+        # Add caption/text if available
+        if "caption" in data:
+            caption = data["caption"]
+            # Find caption element in configuration
+            for element in self.elements:
+                if element.get("name") == "captions":
+                    element_files["captions"] = {
+                        "text": caption,
+                        "config": element
+                    }
+                    break
         
         return element_files
     
-    def _load_elements(self, element_files):
-        """Load element images from files.
-        
-        Args:
-            element_files: Dictionary mapping element names to file info
-            
-        Returns:
-            Dictionary mapping element names to loaded image data
-        """
-        element_data = {}
-        
-        # Load each element
-        for element_name, file_info in element_files.items():
-            try:
-                # Load image
-                image_path = file_info["path"]
-                
-                # Load and process image
-                element_img = Image.open(image_path).convert("RGB")
-                
-                # Convert to tensor using VideoProcessor
-                video_processor = VideoProcessor()
-                element_tensor = video_processor.preprocess(element_img)
-                
-                # Store in element data
-                element_data[element_name] = {
-                    "image": element_tensor,
-                    "config": file_info["config"]
-                }
-            except Exception as e:
-                logger.error(f"Error loading element {element_name}: {e}")
-                # Skip this element if it fails to load
-                continue
-        
-        return element_data
+    def _check_required_elements(self, element_files):
+        """Verify all required elements are present."""
+        for element in self.elements:
+            if element.get("required", False) and element["name"] not in element_files:
+                logger.warning(f"Required element '{element['name']}' is missing")
+                return False
+        return True
     
-    def _preprocess_elements(self, data, element_data):
-        """Preprocess elements for each pathway (resize, crop, etc.).
+    def _preprocess_elements(self, data, element_files):
+        """Preprocess elements based on conditioning types."""
+        processed = {}
         
-        This method ONLY handles preprocessing, not model inference:
-        1. Resizes and crops images based on config
-        2. Returns tensors ready for model inference in the trainer
-        
-        No VAE encoding or CLIP processing is done here - that happens in the trainer.
-        
-        Args:
-            data: Original dataset item
-            element_data: Dictionary mapping element names to loaded image data
+        for element_name, file_info in element_files.items():
+            element_config = file_info["config"]
+            conditioning_type = element_config.get("conditioning")
             
-        Returns:
-            Dictionary mapping processor names to preprocessed elements
-        """
-        preprocessed = {}
-        
-        # Process for each configured processor type
-        for proc_name, proc_config in self.processors_config.items():
-            # Initialize processor section in result
-            preprocessed[proc_name] = {}
+            # Skip if no conditioning type specified
+            if not conditioning_type or conditioning_type not in self.conditioning:
+                continue
             
-            # Process each element
-            for element_name, element_info in element_data.items():
-                element_img = element_info["image"]
-                element_config = element_info["config"]
-                
-                # Skip if processor is disabled for this element
-                if not is_processor_enabled(element_config, proc_name):
-                    logger.debug(f"Processor {proc_name} disabled for element {element_name}, skipping")
-                    continue
-                
-                # Get processor-specific config with element-specific overrides
-                merged_config = get_processor_config(element_config, proc_name, proc_config)
-                
-                # Apply preprocessing based on processor type
-                    # Default to letterbox preprocessing for VAE
-                preprocessor = merged_config.get("preprocessor", "letterbox")
-                resolution = merged_config.get("resolution", None)
-                
-                if preprocessor == "letterbox":
-                    processed = FF.letterbox_image(element_img, resolution)
-                elif preprocessor == "center_crop":
-                    processed = FF.center_crop_image(element_img, resolution)
-                elif preprocessor == "resize":
-                    processed = FF.resize_image(element_img, resolution)
-                elif preprocessor == "letterbox":
-                    # Default to letterbox
-                    processed = FF.letterbox_image(element_img, resolution)
-                        
-                # Store preprocessed tensor with metadata
-                preprocessed[proc_name][element_name] = {
-                    "tensor": processed,
-                    "position": merged_config.get("position", 0),
-                    "repeat": merged_config.get("repeat", 1),
-                    "config": merged_config
-                }
+            conditioning_config = self.conditioning[conditioning_type]
+            conditioning_processor = conditioning_config.get("type")
+            
+            # Process element based on conditioning type
+            if conditioning_processor == "frame":
+                self._process_frame_element(processed, element_name, file_info, conditioning_config)
+            elif conditioning_processor == "clip":
+                self._process_clip_element(processed, element_name, file_info, conditioning_config)
+            elif conditioning_processor == "text":
+                self._process_text_element(processed, element_name, file_info, conditioning_config)
+            else:
+                logger.warning(f"Unknown conditioning processor: {conditioning_processor}")
         
-        return preprocessed
+        return processed
+    
+    def _process_frame_element(self, processed, element_name, file_info, conditioning_config):
+        """Process element for frame conditioning (VAE pathway)."""
+        try:
+            # Initialize frame processor section if needed
+            if "frame" not in processed:
+                processed["frame"] = {"elements": {}}
+            
+            element_config = file_info["config"]
+            path = file_info.get("path")
+            
+            # Load image
+            image = Image.open(path).convert("RGB")
+            
+            # Apply preprocessing based on configuration
+            resolution = conditioning_config.get("resolution", [480, 854])
+            preprocessor = conditioning_config.get("preprocessor", "letterbox")
+            
+            # Get element-specific VAE configuration
+            vae_config = element_config.get("vae", {})
+            position = vae_config.get("position", 0)
+            repeat = vae_config.get("repeat", 1)
+            
+            # Process image through appropriate preprocessor
+            if preprocessor == "letterbox":
+                tensor = FF.letterbox_image(
+                    self.video_processor.preprocess(image), 
+                    resolution
+                )
+            elif preprocessor == "center_crop":
+                tensor = FF.center_crop_image(
+                    self.video_processor.preprocess(image),
+                    resolution
+                )
+            elif preprocessor == "resize":
+                tensor = FF.resize_image(
+                    self.video_processor.preprocess(image),
+                    resolution
+                )
+            else:
+                # Default to letterbox
+                tensor = FF.letterbox_image(
+                    self.video_processor.preprocess(image),
+                    resolution
+                )
+            
+            # Add frame dimension if needed (B, C, H, W) -> (B, C, 1, H, W)
+            if len(tensor.shape) == 4:
+                tensor = tensor.unsqueeze(2)
+            
+            # Store processed tensor and metadata
+            processed["frame"]["elements"][element_name] = {
+                "tensor": tensor,
+                "position": position,
+                "repeat": repeat
+            }
+            
+            # Store global frame conditioning parameters
+            processed["frame"]["conditioning"] = {
+                "frame_conditioning_type": conditioning_config.get("frame_conditioning_type", "full"),
+                "frame_conditioning_concatenate_mask": conditioning_config.get("frame_conditioning_concatenate_mask", True),
+                "frame_conditioning_index": conditioning_config.get("frame_conditioning_index", 0)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing frame element {element_name}: {e}")
+    
+    def _process_clip_element(self, processed, element_name, file_info, conditioning_config):
+        """Process element for CLIP conditioning (semantic pathway)."""
+        try:
+            # Initialize clip processor section if needed
+            if "clip" not in processed:
+                processed["clip"] = {"elements": {}}
+            
+            element_config = file_info["config"]
+            path = file_info.get("path")
+            
+            # Load image
+            image = Image.open(path).convert("RGB")
+            
+            # Apply preprocessing based on configuration
+            resolution = conditioning_config.get("resolution", [224, 224])
+            preprocessor = conditioning_config.get("preprocessor", "center_crop")
+            
+            # Get element-specific CLIP configuration
+            clip_config = element_config.get("clip", {})
+            position = clip_config.get("position", 0)
+            
+            # Process image through appropriate preprocessor
+            if preprocessor == "center_crop":
+                tensor = FF.center_crop_image(
+                    self.video_processor.preprocess(image),
+                    resolution
+                )
+            elif preprocessor == "letterbox":
+                tensor = FF.letterbox_image(
+                    self.video_processor.preprocess(image),
+                    resolution
+                )
+            elif preprocessor == "resize":
+                tensor = FF.resize_image(
+                    self.video_processor.preprocess(image),
+                    resolution
+                )
+            else:
+                # Default to center crop
+                tensor = FF.center_crop_image(
+                    self.video_processor.preprocess(image),
+                    resolution
+                )
+            
+            # Store processed tensor and metadata
+            processed["clip"]["elements"][element_name] = {
+                "tensor": tensor,
+                "position": position
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing CLIP element {element_name}: {e}")
+    
+    def _process_text_element(self, processed, element_name, file_info, conditioning_config):
+        """Process element for text conditioning."""
+        try:
+            # Initialize text processor section if needed
+            if "text" not in processed:
+                processed["text"] = {"elements": {}}
+            
+            element_config = file_info["config"]
+            
+            # Get text from file or data
+            text = file_info.get("text")
+            if not text and "path" in file_info:
+                # Read from file if path is provided
+                with open(file_info["path"], "r") as f:
+                    text = f.read().strip()
+            
+            # Apply preprocessing if needed
+            if conditioning_config.get("remove_common_llm_caption_prefixes", False):
+                # Simple prefix removal - more complex in real implementation
+                common_prefixes = ["A picture of ", "An image of "]
+                for prefix in common_prefixes:
+                    if text.startswith(prefix):
+                        text = text[len(prefix):]
+                        break
+            
+            # Store processed text and metadata
+            processed["text"]["elements"][element_name] = {
+                "text": text
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing text element {element_name}: {e}")
 
 
 class ValidationE2VDataset(IterableE2VDataset):
     """Validation dataset for E2V training.
     
-    Same as IterableE2VDataset but also includes original element files
-    for visualization during validation.
+    Extends IterableE2VDataset with validation-specific functionality.
     """
     
     def __iter__(self):
-        """Iterate through validation dataset.
-        
-        Same as IterableE2VDataset.__iter__ but also includes
-        original element files for visualization.
-        """
+        """Process dataset items for validation."""
         for data in super().__iter__():
-            # Include original element files for visualization
-            if "element_files" not in data and hasattr(self, "_find_element_files"):
-                data["element_files"] = self._find_element_files(data)
-            
+            # For validation we want to include original elements
+            # for visualization purposes
+            if "e2v_processed" in data:
+                data["element_files"] = {k: v.get("path", v.get("text", "")) 
+                                         for k, v in data.get("e2v_elements", {}).items()}
             yield data
-    
-    # Inherit state_dict method from parent class

@@ -3,14 +3,14 @@
     {
       "data_root": "assets/tests/dataset",
       "dataset_type": "video_references",
-      "target_resolution": [ 480, 854 ],
+      "target_resolution": [480, 854],
       "auto_frame_buckets": true,
       "reshape_mode": "bicubic",
 
       "elements": [
         {
           "name": "object",
-          "suffixes": [ "_object.png" ],
+          "suffixes": ["_object.png"],
           "required": true,
           "conditioning": "reference",
           "vae": { "repeat": 4, "position": 0 },
@@ -18,14 +18,14 @@
         },
         {
           "name": "background",
-          "suffixes": [ "_background.png" ],
+          "suffixes": ["_background.png"],
           "required": false,
           "conditioning": "reference",
           "vae": { "repeat": 1, "position": 1 }
         },
         {
           "name": "character",
-          "suffixes": [ "_mask.png" ],
+          "suffixes": ["_mask.png"],
           "required": false,
           "conditioning": "reference",
           "vae": { "repeat": 2, "position": 2 },
@@ -33,13 +33,13 @@
         },
         {
           "name": "captions",
-          "suffixes": [ ".txt" ],
+          "suffixes": [".txt"],
           "required": true,
           "conditioning": "text"
         },
         {
           "name": "video",
-          "suffixes": [ ".mp4" ],
+          "suffixes": [".mp4"],
           "required": true,
           "conditioning": "target"
         }
@@ -50,7 +50,7 @@
           "type": "frame",
           "frame_conditioning_type": "full",
           "frame_conditioning_concatenate_mask": true,
-          "resolution": [ 480, 854 ]
+          "resolution": [480, 854]
         },
         "text": {
           "type": "text",
@@ -58,12 +58,12 @@
         },
         "clip": {
           "type": "clip",
-          "resolution": [ 224, 224 ],
+          "resolution": [224, 224],
           "preprocessor": "center_crop"
         },
         "target": {
           "type": "video",
-          "resolution": [ 480, 854 ]
+          "resolution": [480, 854]
         }
       }
     }

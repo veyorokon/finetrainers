@@ -1,183 +1,252 @@
 # E2V Trainer Implementation Guide
 
-  ## Project Goals
+## Project Goals
 
-  We're implementing Elements-to-Video (E2V) training within the finetrainers framework. This approach extends the
-  existing ControlTrainer with the additional capability to condition on multiple reference images using both VAE
-  (spatial) and CLIP (semantic) pathways.
+We're implementing Elements-to-Video (E2V) training within the finetrainers framework. This approach extends the existing ControlTrainer with the additional capability to condition on multiple reference images using both VAE (spatial) and CLIP (semantic) pathways.
 
-  The core principle is to **leverage inheritance and the existing control trainer infrastructure** while adding only
-  the minimal necessary code for E2V-specific functionality.
+The core principle is to **leverage inheritance and the existing control trainer infrastructure** while adding only the minimal necessary code for E2V-specific functionality.
 
-  ## Architecture Approach
+## Architecture Approach
 
-  ### Inheritance-Based Design
+### Inheritance-Based Design
 
-  The E2V trainer is implemented as a direct extension of the ControlTrainer:
+The E2V trainer is implemented as a direct extension of the ControlTrainer:
 
-  ```python
-  class E2VTrainer(ControlTrainer):
-      """Elements-to-Video trainer that extends ControlTrainer with E2V-specific functionality."""
+```python
+class E2VTrainer(ControlTrainer):
+    """Elements-to-Video trainer that extends ControlTrainer with E2V-specific functionality."""
+```
 
-  This allows us to:
-  1. Reuse all of ControlTrainer's existing functionality (model loading, data processing, training loop)
-  2. Override only the specific methods needed for E2V functionality
-  3. Maintain full compatibility with the framework's patterns
+This allows us to:
+1. Reuse all of ControlTrainer's existing functionality (model loading, data processing, training loop)
+2. Override only the specific methods needed for E2V functionality
+3. Maintain full compatibility with the framework's patterns
 
-  Key Components to Implement
+### Key Components
 
-  1. E2VTrainer: Extends ControlTrainer with CLIP processing capability
-  2. IterableE2VDataset: Wraps dataset with configuration-driven element identification
-  3. Model Specification Extensions: Adds CLIP model loading functionality
+1. **E2VTrainer**: Extends ControlTrainer with CLIP processing capability
+   - Adds image encoder loading and processing
+   - Implements optimized model coordination pattern
+   - Handles E2V-specific configuration
 
-  Configuration-Driven Approach
+2. **IterableE2VDataset**: Configuration-driven dataset wrapper
+   - Identifies elements via configured suffixes
+   - Preprocesses based on conditioning type
+   - No model inference in preprocessing
 
-  E2V training is configured through a JSON file that specifies:
-  1. Dataset elements (object, background, captions)
-  2. Conditioning approaches (frame conditioning, CLIP, text)
-  3. Element-specific processing parameters
+3. **Configuration System**: Flexible, extensible configuration
+   - Elements define dataset components to process
+   - Conditioning types determine processing approach
+   - Element-specific processor overrides
 
-  Implementation Plan
+## Implementation Details
 
-  Files to Create/Modify
+### Model Coordination Pattern
 
-  1. finetrainers/trainer/e2v_trainer/trainer.py
-    - Extends ControlTrainer
-    - Overrides only necessary methods
-    - Adds CLIP coordination
-  2. finetrainers/trainer/e2v_trainer/data.py
-    - Implements IterableE2VDataset
-    - Handles configuration-driven element identification
-    - Preprocesses elements based on conditioning type
-  3. finetrainers/trainer/e2v_trainer/config.py
-    - Defines E2VConfig extending ControlConfig
-    - Adds E2V-specific configuration parameters
-  4. finetrainers/models/wan/e2v_specification.py
-    - Extends WanControlModelSpecification
-    - Adds CLIP model loading methods
+The E2V trainer uses an optimized model coordination pattern:
 
-  Minimal Method Overrides
+1. **Sequential Model Loading**: One model at a time on GPU
+   - Text encoder → CLIP → VAE → transformer
+   - Process all data for one model before moving to next
+   - Explicit memory management between models
 
-  Only override methods that need E2V-specific functionality:
+2. **Batch Processing**: Process similar data together
+   - Group similar images/videos for efficient batching
+   - Process all samples needing the same model at once
 
-  1. _prepare_models: Add CLIP model loading
-  2. _prepare_dataset: Use E2V dataset wrapper
-  3. _prepare_data: Add CLIP processing phase
-  4. _forward_pass: Integrate CLIP embeddings
+3. **Memory Optimization**: Careful resource management
+   - Move models to CPU when not in use
+   - Explicit memory freeing between stages
+   - Reuse control trainer memory management utilities
 
-  Implementation Principles
+### Configuration-Driven Element Processing
 
-  1. Always Reference Control Trainer
+The trainer uses a flexible configuration system:
 
-  When implementing any E2V-specific functionality, always refer to how ControlTrainer handles similar tasks:
-
-  # Example: Memory management
-  def _delete_components(self, component_names=None):
-      # Check how control trainer does it
-      return super()._delete_components(component_names)
-
-  2. Minimal Code Additions
-
-  Add only the code necessary for E2V-specific functionality:
-  - CLIP model loading and processing
-  - Configuration-driven element handling
-  - Multiple reference processing
-
-  3. Maintain Framework Compatibility
-
-  Follow established framework patterns:
-  - Use same model device movement approach
-  - Match memory management patterns
-  - Keep consistent with parallel processing support
-
-  Debugging Approach
-
-  When encountering issues:
-
-  1. Check Control Trainer First: See how the control trainer handles the problematic area
-  2. Adapt Solution: Adapt the control trainer's solution to E2V context
-  3. Maintain Patterns: Keep consistent with framework patterns and conventions
-
-  For example, if facing a model coordination issue:
-  Control Trainer Solution: Uses _move_components_to_device() and _delete_components()
-  E2V Adaptation: Use the same pattern but add CLIP model to the component list
-
-  Configuration Format
-
-  {
-    "datasets": [
-      {
-        "data_root": "/workspace/dataset",
-        "dataset_type": "video_references",
-
-        "elements": [
-          {
-            "name": "object",
-            "suffixes": ["_object.png"],
-            "required": true,
-            "conditioning": "reference",
-            "vae": { "repeat": 4, "position": 0 },
-            "clip": { "position": 0 }
-          },
-          {
-            "name": "background",
-            "suffixes": ["_background.png"],
-            "required": false,
-            "conditioning": "reference",
-            "vae": { "repeat": 1, "position": 1 }
-          },
-          {
-            "name": "captions",
-            "suffixes": [".txt"],
-            "required": true,
-            "conditioning": "text"
-          }
-        ],
-
-        "conditioning": {
-          "reference": {
-            "type": "frame",
-            "frame_conditioning_type": "full",
-            "frame_conditioning_concatenate_mask": true,
-            "resolution": [480, 854]
-          },
-          "text": {
-            "type": "text",
-            "remove_common_llm_caption_prefixes": true
-          },
-          "clip": {
-            "type": "clip",
-            "resolution": [224, 224],
-            "preprocessor": "center_crop"
-          }
-        }
-      }
-    ]
+```json
+{
+  "elements": [
+    {
+      "name": "object",
+      "suffixes": ["_object.png"],
+      "required": true,
+      "conditioning": "reference",
+      "vae": { "repeat": 4, "position": 0 },
+      "clip": { "position": 0 }
+    }
+  ],
+  "conditioning": {
+    "reference": {
+      "type": "frame",
+      "frame_conditioning_type": "full",
+      "frame_conditioning_concatenate_mask": true
+    }
   }
+}
+```
 
-  Extensibility
+This configuration:
+1. Identifies elements by filenames
+2. Determines which processing to apply
+3. Sets element-specific parameters
+4. Defines global conditioning settings
 
-  This design can be easily extended to support new conditioning types by:
+## Files and Implementation
 
-  1. Adding new conditioning types in the configuration
-  2. Implementing the corresponding preprocessing in the dataset wrapper
-  3. Adding model loading and processing in the trainer
+### 1. finetrainers/trainer/e2v_trainer/trainer.py
 
-  No core architectural changes would be needed to add new conditioning types.
+This file extends ControlTrainer with E2V-specific functionality:
+- Overrides `_prepare_models()` to load CLIP model
+- Implements `_prepare_data()` with optimized model coordination
+- Adds helper methods for processing text, CLIP, and VAE data
+- Handles E2V-specific model management and memory optimization
 
-  Framework Compatibility
+Key method: `_prepare_data()`
+```python
+def _prepare_data(self, preprocessor, data_iterator):
+    # 1. Collect samples into buffer
+    collected_samples = []
+    
+    # 2. Process all text data at once
+    self._move_components_to_device([self.text_encoder])
+    collected_samples = self._process_text_batch(collected_samples)
+    self._move_components_to_device([self.text_encoder], "cpu")
+    
+    # 3. Process all CLIP data at once
+    self._move_components_to_device([self.clip_model])
+    collected_samples = self._process_clip_batch(collected_samples)
+    self._move_components_to_device([self.clip_model], "cpu")
+    
+    # 4. Process all VAE data at once
+    self._move_components_to_device([self.vae])
+    collected_samples = self._process_vae_batch(collected_samples)
+    self._move_components_to_device([self.vae], "cpu")
+    
+    # 5. Return to transformer for forward pass
+    self._move_components_to_device([self.transformer])
+    
+    # Create iterators for training loop
+    return iter(collected_samples), iter(collected_samples)
+```
 
-  The implementation maintains compatibility with:
-  - Accelerate framework
-  - Checkpointing mechanism
-  - Distributed training
-  - Memory management utilities
+### 2. finetrainers/trainer/e2v_trainer/data.py
 
-  Summary
+This file implements the dataset wrapper with configuration-driven element processing:
+- Uses element suffixes to identify files
+- Applies preprocessing based on conditioning type
+- Handles text, image, and video preprocessing
+- Returns preprocessed tensors ready for model inference
 
-  The E2V trainer implementation focuses on leveraging inheritance from ControlTrainer to minimize code while adding
-  specific functionality for E2V training. By following this guide, you'll maintain framework compatibility while
-  creating a flexible, configuration-driven trainer for Elements-to-Video tasks.
+Key method: `_preprocess_elements()`
+```python
+def _preprocess_elements(self, data, element_files):
+    processed = {}
+    
+    for element_name, file_info in element_files.items():
+        element_config = file_info["config"]
+        conditioning_type = element_config.get("conditioning")
+        
+        # Process element based on conditioning type
+        if conditioning_type == "frame":
+            self._process_frame_element(processed, element_name, file_info)
+        elif conditioning_type == "clip":
+            self._process_clip_element(processed, element_name, file_info)
+        elif conditioning_type == "text":
+            self._process_text_element(processed, element_name, file_info)
+    
+    return processed
+```
 
-  This CLAUDE.md file provides a comprehensive guide to implementing the E2V trainer with minimal code by leveraging
-  the control trainer as much as possible, while maintaining clear principles for debugging and extension.
+### 3. finetrainers/trainer/e2v_trainer/config.py
+
+This file defines the configuration classes for E2V training:
+- Extends configuration from ControlTrainer
+- Adds E2V-specific parameters
+- Provides configuration handling for both LoRA and full fine-tuning
+
+```python
+class E2VConfig(ConfigMixin):
+    """Configuration for E2V training, extending control configuration."""
+    
+    frame_conditioning_type: str = FrameConditioningType.FULL
+    frame_conditioning_index: int = 0
+    frame_conditioning_concatenate_mask: bool = True
+    
+    # E2V specific configuration
+    elements_config: Dict = {}  # Will be populated from JSON
+    conditioning_config: Dict = {}  # Will be populated from JSON
+```
+
+## Debugging Guide
+
+When encountering issues, always refer to how ControlTrainer handles similar functionality:
+
+### Memory Issues
+
+If encountering OOM errors:
+1. Check `_prepare_data()` in ControlTrainer
+2. Make sure models are properly moved to CPU after use:
+   ```python
+   self._move_components_to_device([self.image_encoder], "cpu")
+   utils.free_memory()
+   ```
+3. Verify sequential model loading pattern is preserved
+
+### Data Processing Issues
+
+If encountering data processing problems:
+1. Check preprocessing in IterableControlDataset
+2. Compare with IterableE2VDataset implementation
+3. Verify element identification and preprocessing
+4. Check how control conditions are prepared
+
+### CLIP Integration Issues
+
+If CLIP pathway isn't working:
+1. Check model loading in `_prepare_models`
+2. Verify CLIP model is correctly registered in model specification
+3. Check `_process_clip_batch` implementation
+4. Make sure CLIP features are properly combined
+
+## Extension Guide
+
+To add new conditioning types:
+
+1. Add new element type in configuration:
+   ```json
+   {
+     "name": "depth_map",
+     "suffixes": ["_depth.png"],
+     "conditioning": "depth"
+   }
+   ```
+
+2. Add new conditioning type:
+   ```json
+   "conditioning": {
+     "depth": {
+       "type": "channel",
+       "resolution": [480, 854],
+       "preprocessor": "resize"
+     }
+   }
+   ```
+
+3. Add processing in `_process_<type>_element` method in the dataset
+
+4. Handle new conditioning type in the trainer's `_process_<type>_batch` method
+
+## Troubleshooting
+
+When debugging, you should:
+
+1. Check if the ControlTrainer has solved a similar problem
+2. Look for framework utilities that handle the issue
+3. Consider memory management implications
+4. Check configuration structure and validation
+
+Always remember that the E2V trainer is an extension of ControlTrainer, so most solutions can be adapted from the parent class implementation.
+
+## Final Note
+
+This implementation follows the principle of minimal modification while maintaining full compatibility with the framework. By extending ControlTrainer, we inherit all its robust functionality while adding only the necessary E2V-specific features.
