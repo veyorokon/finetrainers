@@ -75,12 +75,12 @@ class E2VLowRankConfig(E2VConfig):
         logger.info(f"Debug - Validating E2V LoRA args:")
         logger.info(f"Rank: {self.rank}")
         logger.info(f"LoRA Alpha: {self.lora_alpha}")
-        logger.info(f"Target Modules: {self.target_modules}")
-        logger.info(f"Args dict: {vars(args)}")
+        logger.info(f"Self Target Modules: {self.target_modules}")
+        logger.info(f"Args Target Modules: {args.target_modules}")
         
         assert self.rank > 0, "Rank must be a positive integer."
         assert self.lora_alpha > 0, "lora_alpha must be a positive integer."
-        assert self.target_modules is not None, "target_modules must be specified for LoRA training"
+        assert args.target_modules is not None, "target_modules must be specified for LoRA training"
     
     def map_args(self, argparse_args, mapped_args):
         super().map_args(argparse_args, mapped_args)
