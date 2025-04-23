@@ -5,8 +5,6 @@
       "dataset_type": "video_references",
       "target_resolution": [ 480, 854 ],
       "auto_frame_buckets": true,
-      "reshape_mode": "bicubic",
-      "remove_common_llm_caption_prefixes": true,
 
       "elements": [
         {
@@ -26,6 +24,14 @@
             "vae": { "repeat": 1, "position": 2 },
             "clip": { "position": 1 }
           }
+        },
+        {
+          "name": "captions",
+          "suffixes": [ ".txt" ],
+          "required": true,
+          "processors": {
+            "text": { }
+          }
         }
       ],
 
@@ -33,6 +39,7 @@
         "vae": {
           "resolution": [ 480, 854 ],
           "preprocessor": "letterbox",
+          "model": "vae",
           "batch_size": 1,
           "concatenate_mask": true,
           "frame_conditioning": "full"
@@ -40,18 +47,26 @@
         "clip": {
           "resolution": [ 512, 512 ],
           "preprocessor": "letterbox",
+          "model": "image_encoder",
           "padding_color": 1.0,
           "trim_alpha": true,
           "alpha_threshold": 0.1,
           "padding_buffer": 8,
           "batch_size": 1
+        },
+        "text": {
+          "model": "text_encoder",
+          "max_length": 77,
+          "padding": "max_length",
+          "truncation": true,
+          "batch_size": 1,
+          "remove_common_llm_caption_prefixes": true
         }
       },
 
       "tensor_combinations": {
         "reference_latents": [ "vae" ],
-        "combined_condition_latents": [ "vae" ],
-        "reference_embeddings": [ "clip" ]
+        "combined_condition_latents": [ "vae" ]
       },
 
       "visualization": {

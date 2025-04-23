@@ -1,494 +1,183 @@
-# Project Goals and Context
+# E2V Trainer Implementation Guide
 
-## Overview
-We're implementing Elements-to-Video (E2V) training within the finetrainers framework. This will enable training Wan models using the A2 approach, which specializes in generating videos from multiple reference images (elements).
+  ## Project Goals
 
-**Important Clarification:** A2 is NOT a new model architecture. It is a specialized training approach and inference pipeline that leverages Wan's existing image-to-video capabilities. The base Wan model already has all the architectural components needed for image conditioning - A2 simply uses these in a specific way for E2V tasks.
+  We're implementing Elements-to-Video (E2V) training within the finetrainers framework. This approach extends the
+  existing ControlTrainer with the additional capability to condition on multiple reference images using both VAE
+  (spatial) and CLIP (semantic) pathways.
 
-The A2 folder contains working inference code that demonstrates how E2V generation works. Our task is to create compatible training code within the finetrainers framework as a new training type.
+  The core principle is to **leverage inheritance and the existing control trainer infrastructure** while adding only
+  the minimal necessary code for E2V-specific functionality.
 
-E2V training is distinctive because it:
-1. Uses multiple reference images (person, object, background) as inputs
-2. Processes these images through both CLIP (semantic) and VAE (spatial) pathways
-3. Combines these features to condition the video generation process
+  ## Architecture Approach
 
-The core Wan model architecture remains unchanged - we're simply adding a new training methodology and data processing pipeline.
+  ### Inheritance-Based Design
 
-## Implementation Analysis
+  The E2V trainer is implemented as a direct extension of the ControlTrainer:
 
-After extensively reviewing both the A2 and Wan codebases, we've confirmed:
+  ```python
+  class E2VTrainer(ControlTrainer):
+      """Elements-to-Video trainer that extends ControlTrainer with E2V-specific functionality."""
 
-### Architectural Identity
-- A2 is NOT a new model architecture; it's a specialized use of Wan
-- Wan already fully supports image-to-video (I2V) generation with the same components
-- The base Wan model includes `WanI2VCrossAttention` and image embedding support
-- A2 provides a specialized implementation focused on multiple reference handling
+  This allows us to:
+  1. Reuse all of ControlTrainer's existing functionality (model loading, data processing, training loop)
+  2. Override only the specific methods needed for E2V functionality
+  3. Maintain full compatibility with the framework's patterns
 
-### Data Processing Insights
-- A2 concatenates multiple reference images with padding in VAE space
-- Uses CLIP vision encoder for semantic conditioning (already supported in Wan)
-- Applies masking for specific frames similar to control training
-- The innovation is in HOW references are processed, not in adding new capability types
+  Key Components to Implement
 
-### Integration Approach
-- We should follow the control_trainer pattern, which already handles channel concatenation
-- The implementation should be a new training TYPE rather than a new model
-- Code should leverage Wan's existing image conditioning architecture
-- Focus on data handling for multiple reference images
+  1. E2VTrainer: Extends ControlTrainer with CLIP processing capability
+  2. IterableE2VDataset: Wraps dataset with configuration-driven element identification
+  3. Model Specification Extensions: Adds CLIP model loading functionality
 
-## Key Components
+  Configuration-Driven Approach
 
-### Existing Components
-1. **A2 Inference Implementation**: 
-   - Located in the A2/ folder
-   - Contains models/transformer_a2.py and models/pipeline_a2.py
-   - Includes working inference scripts (infer.py, infer_MGPU.py)
+  E2V training is configured through a JSON file that specifies:
+  1. Dataset elements (object, background, captions)
+  2. Conditioning approaches (frame conditioning, CLIP, text)
+  3. Element-specific processing parameters
 
-2. **Finetrainers Framework**:
-   - Already supports different training types for Wan model:
-     - SFT training (standard fine-tuning)
-     - Control training (augments latent noise tensors along control dimensions)
-   - Provides a complete training infrastructure we can leverage
+  Implementation Plan
 
-### Project Goals
-- Create E2V training code as a new training type in the finetrainers framework
-- Leverage the existing Wan model without creating a separate model type
-- Extend the training framework to handle Elements-to-Video (E2V) data
-- Ensure minimal changes while maintaining full compatibility with Wan
+  Files to Create/Modify
 
-### Technical Requirements
-1. E2V Training Approach Specifics:
-   - **Multiple Reference Image Handling**: Process and condition on multiple images
-     - Person/character reference image
-     - Object reference image
-     - Background reference image
-   - **Dual Feature Processing Path**:
-     - Semantic features (via CLIP) for global representation
-     - Spatial features (via VAE) for local details and temporal conditioning
-   - **Key Integration Points**:
-     - Uses specialized implementation of Wan's existing image-to-video functionality
-     - Combines multiple references via concatenation in the channel dimension (like control training)
-     - Adds masking for frame conditioning similar to control training
-     - Leverages existing WanControlModelSpecification without modifications
+  1. finetrainers/trainer/e2v_trainer/trainer.py
+    - Extends ControlTrainer
+    - Overrides only necessary methods
+    - Adds CLIP coordination
+  2. finetrainers/trainer/e2v_trainer/data.py
+    - Implements IterableE2VDataset
+    - Handles configuration-driven element identification
+    - Preprocesses elements based on conditioning type
+  3. finetrainers/trainer/e2v_trainer/config.py
+    - Defines E2VConfig extending ControlConfig
+    - Adds E2V-specific configuration parameters
+  4. finetrainers/models/wan/e2v_specification.py
+    - Extends WanControlModelSpecification
+    - Adds CLIP model loading methods
 
-2. Finetrainers Integration Points:
-   - Use the existing Wan model specification (WanModelSpecification)
-   - Build on control_trainer pattern which already handles channel concatenation
-   - Add E2V specific dataset handling for multiple reference images
-   - Extend configuration for E2V-specific parameters (like number and type of references)
-   - Create specialized preprocessors for handling CLIP and VAE encoding paths
+  Minimal Method Overrides
 
-3. Compatibility Considerations:
-   - E2V (via A2) and Wan share the identical transformer architecture
-   - All differences are in data preprocessing and conditioning, not the architecture
-   - Need to ensure consistency between training and inference pipelines
-   - Special handling needed for combined condition latents
+  Only override methods that need E2V-specific functionality:
 
-## Dataset Structure
-The E2V (Elements-to-Video) training data uses a base identifier with different suffixes:
+  1. _prepare_models: Add CLIP model loading
+  2. _prepare_dataset: Use E2V dataset wrapper
+  3. _prepare_data: Add CLIP processing phase
+  4. _forward_pass: Integrate CLIP embeddings
 
-```
-001.mp4                # Target video
-001.txt                # Text prompt
-001_mask.png           # Person/character reference
-001_object.png         # Object reference
-001_background.png     # Background/scene reference
-```
+  Implementation Principles
 
-Each identifier (e.g., "001") links together:
-- A target video
-- A text prompt
-- Multiple reference images with various suffixes
+  1. Always Reference Control Trainer
 
-The suffixes can vary across datasets (e.g., `_person.png` or `_mask.png` for character references), requiring our implementation to support flexible suffix mapping.
+  When implementing any E2V-specific functionality, always refer to how ControlTrainer handles similar tasks:
 
-## Configuration Format
+  # Example: Memory management
+  def _delete_components(self, component_names=None):
+      # Check how control trainer does it
+      return super()._delete_components(component_names)
 
-We use a concise yet expressive JSON configuration format that includes the new tensor_combinations pattern:
+  2. Minimal Code Additions
 
-```json
-{
-  "datasets": [
-    {
-      "data_root": "path/to/e2v/dataset", 
-      "dataset_type": "e2v",
-      "target_resolution": [480, 854],
-      "auto_frame_buckets": true,
-      "reshape_mode": "bicubic",
-      "remove_common_llm_caption_prefixes": true,
-      
-      "elements": [
-        {
-          "name": "main_subject", 
-          "suffixes": ["_dog.png", "_person.png", "_mask.png"],
-          "required": true,
-          "processors": {
-            "vae": {
-              "repeat": 4, 
-              "position": 0
-            },
-            "clip": {
-              "preprocess": "center_crop"
-            }
-          }
-        },
-        {
-          "name": "secondary",
-          "suffixes": ["_object.png", "_toy.png"],
-          "required": false,
-          "processors": {
-            "vae": {
-              "repeat": 4, 
-              "position": 1
-            },
-            "clip": {
-              "preprocess": "pad_white"
-            }
-          }
-        },
-        {
-          "name": "environment",
-          "suffixes": ["_background.png", "_scene.png"],
-          "required": false,
-          "processors": {
-            "vae": {
-              "repeat": 4, 
-              "position": 2
-            },
-            "clip": {
-              "preprocess": "letterbox"
-            }
-          }
-        }
-      ],
-      
-      "processors": {
-        "vae": {
-          "resolution": [480, 854],
-          "combine": "before",
-          "default_preprocess": "resize",
-          "frame_conditioning": "full",
-          "frame_index": 0,
-          "concatenate_mask": true
-        },
-        "clip": {
-          "resolution": [512, 512],
-          "default_preprocess": "center_crop"
-        },
-        "mask": {
-          "resolution": [480, 854],
-          "source": "vae",
-          "source_field": "latents",
-          "frame_conditioning": "source_length"
-        }
-      },
-      
-      "tensor_combinations": {
-        "condition_latents": ["vae", "mask"],
-        "encoder_hidden_states": ["clip"]
-      },
-      
-      "visualization": {
-        "enabled": true,
-        "output_dir": "visualizations/{run_id}",
-        "frequency": 100,
-        "processors": [
+  Add only the code necessary for E2V-specific functionality:
+  - CLIP model loading and processing
+  - Configuration-driven element handling
+  - Multiple reference processing
+
+  3. Maintain Framework Compatibility
+
+  Follow established framework patterns:
+  - Use same model device movement approach
+  - Match memory management patterns
+  - Keep consistent with parallel processing support
+
+  Debugging Approach
+
+  When encountering issues:
+
+  1. Check Control Trainer First: See how the control trainer handles the problematic area
+  2. Adapt Solution: Adapt the control trainer's solution to E2V context
+  3. Maintain Patterns: Keep consistent with framework patterns and conventions
+
+  For example, if facing a model coordination issue:
+  Control Trainer Solution: Uses _move_components_to_device() and _delete_components()
+  E2V Adaptation: Use the same pattern but add CLIP model to the component list
+
+  Configuration Format
+
+  {
+    "datasets": [
+      {
+        "data_root": "/workspace/dataset",
+        "dataset_type": "video_references",
+
+        "elements": [
           {
-            "type": "latent_save",
-            "data": ["input_latents", "predicted_latents"]
+            "name": "object",
+            "suffixes": ["_object.png"],
+            "required": true,
+            "conditioning": "reference",
+            "vae": { "repeat": 4, "position": 0 },
+            "clip": { "position": 0 }
           },
           {
-            "type": "vae_decode",
-            "data": ["input_latents", "predicted_latents"],
-            "frames": [0, -1]
+            "name": "background",
+            "suffixes": ["_background.png"],
+            "required": false,
+            "conditioning": "reference",
+            "vae": { "repeat": 1, "position": 1 }
+          },
+          {
+            "name": "captions",
+            "suffixes": [".txt"],
+            "required": true,
+            "conditioning": "text"
           }
-        ]
+        ],
+
+        "conditioning": {
+          "reference": {
+            "type": "frame",
+            "frame_conditioning_type": "full",
+            "frame_conditioning_concatenate_mask": true,
+            "resolution": [480, 854]
+          },
+          "text": {
+            "type": "text",
+            "remove_common_llm_caption_prefixes": true
+          },
+          "clip": {
+            "type": "clip",
+            "resolution": [224, 224],
+            "preprocessor": "center_crop"
+          }
+        }
       }
-    }
-  ]
-}
-```
+    ]
+  }
 
-### Configuration Design Benefits
+  Extensibility
 
-1. **Clean Separation of Concerns**:
-   - Elements define what inputs to use and their basic properties
-   - Processors define how to handle different pathways globally
-   - Each element can override processor settings as needed
-   - Tensor combinations define how processor outputs are organized into model inputs
+  This design can be easily extended to support new conditioning types by:
 
-2. **Framework-Friendly Structure**:
-   - Direct mapping to processor names via the "processors" object
-   - Simple element-processor parameter override pattern
-   - Clear pathway for extending with new processor types
-   - Configuration-driven tensor combinations for greater flexibility
+  1. Adding new conditioning types in the configuration
+  2. Implementing the corresponding preprocessing in the dataset wrapper
+  3. Adding model loading and processing in the trainer
 
-3. **Control Compatibility**:
-   - Added control-specific parameters to the VAE processor
-   - Includes frame_conditioning, frame_index, and concatenate_mask
-   - Dedicated mask processor for flexible mask generation
-   - Easily extensible for other processor-specific parameters
+  No core architectural changes would be needed to add new conditioning types.
 
-4. **Simplified Element Configuration**:
-   - Structured processor configuration within elements
-   - Clean hierarchy for element-specific processor overrides
-   - Straightforward ability to set processor to null/false to disable
-   - Clear separation between element identification and processing
+  Framework Compatibility
 
-### Visualization Configuration
+  The implementation maintains compatibility with:
+  - Accelerate framework
+  - Checkpointing mechanism
+  - Distributed training
+  - Memory management utilities
 
-The `visualization` section enables saving intermediate representations during training:
+  Summary
 
-- **Integration Point**: Inside the `_train` method of `E2VTrainer`, after forward and loss computation
-- **Access Point**: Similar to checkpointing mechanism but for visualization data
-- **Available Data**:
-  - `input_latents`: Original input latents
-  - `noisy_latents`: Latents with noise applied
-  - `conditioned_latents`: Latents with conditioning
-  - `predicted_latents`: Model predictions
-  - `reference_images`: Original reference images
-  
-This approach leverages the training loop where all necessary data is already available, requiring minimal code changes. Each processor is defined by a `type` (the method to call) with all other fields passed as kwargs, keeping the implementation concise and extensible.
+  The E2V trainer implementation focuses on leveraging inheritance from ControlTrainer to minimize code while adding
+  specific functionality for E2V training. By following this guide, you'll maintain framework compatibility while
+  creating a flexible, configuration-driven trainer for Elements-to-Video tasks.
 
-The `frequency` parameter controls how often visualizations are generated (every N steps), minimizing performance impact while providing useful debugging information.
-
-## Implementation Strategy
-
-1. **E2V Trainer Development**:
-   - Create new `e2v_trainer` module alongside existing training types
-   - Develop specialized dataset handling for multiple reference images
-   - Implement processors for the E2V conditioning approach
-   - Modify the forward pass to handle the dual-path (CLIP + VAE) conditioning
-   - Leverage existing control training code for channel concatenation
-   - Implement configuration-driven tensor combinations approach
-
-2. **Data Processing**:
-   - Create specialized dataset classes for multiple reference loading
-   - Design flexible data loaders that can handle dynamic suffix patterns
-   - Support configuration-driven element type mapping (e.g., mapping `_mask.png` or `_person.png` to "person")
-   - Develop image preparation utilities for both semantic and spatial paths
-   - Implement frame conditioning similar to control training pattern
-   - Support variable numbers of reference images (1-3) as in A2 inference code
-   - Implement dedicated mask processor for flexible mask generation
-
-3. **Training Configuration**:
-   - Add E2V-specific training types to configuration
-   - Create flexible configuration options for reference image types and naming patterns
-   - Design training.json to support dynamic suffix mapping
-   - Support explicit tensor combinations through configuration
-   - Allow specification of which element types are required vs. optional
-   - Support hierarchical processor configuration within elements
-
-4. **Testing and Validation**:
-   - Develop specialized validation dataset for E2V tasks
-   - Ensure compatibility with A2 inference code
-   - Create test cases with various naming patterns to verify flexibility
-   - Test handling of missing reference elements
-   - Validate tensor combinations configuration works as expected
-
-## Data Processing Pipeline
-
-### Complete Pipeline Outline
-
-```
-Load Data
-└─> Reference Images + Target Video
-    ├─> CLIP Pathway (Semantic Features)
-    │   ├─> Preprocess Images (resize to clip_resolution)
-    │   ├─> Run CLIP Vision Encoder 
-    │   ├─> Extract Embeddings (penultimate layer)
-    │   ├─> Project to Match Text Embedding Dimensions
-    │   ├─> Concatenate Multiple Reference Embeddings
-    │   └─> Feed as Keys/Values to Cross-Attention
-    │       └─> Used in Transformer via encoder_hidden_states_image
-    │ 
-    └─> VAE Pathway (Spatial Features)
-        ├─> Preprocess Images (resize to target_resolution)
-        ├─> Arrange in Sequence by Position Parameter
-        ├─> Apply Repetition (vae_repeat for each image)
-        ├─> Create Mini-Video of References
-        ├─> Add Zero Padding to Match Video Frame Count
-        ├─> Encode through VAE
-        ├─> Create Frame Mask (1s for reference frames, 0s elsewhere)
-        ├─> Concatenate Mask + Encoded Latents (channel dimension)
-        └─> Combine with Noisy Video Latents
-            └─> Pass Combined Tensor to Transformer via patch_embedding
-
-Target Video Processing
-├─> Encode Video through VAE
-├─> Apply Noise (Flow Matching)
-└─> Concatenate with Condition Latents from VAE Pathway
-    └─> Forward Through Model with Both Condition Types
-        ├─> Process Latents with Modified Patch Embedding
-        └─> Cross-Attention with CLIP Embeddings
-```
-
-### Reference Image Processing Details
-
-1. **VAE Spatial Pathway**:
-   - Reference images are resized to match video dimensions (target_resolution)
-   - Images are arranged in a sequence based on position parameter
-   - Each image is repeated N times based on vae_repeat value
-   - This creates a mini-video of reference images
-   - Zero padding is added to match the target video's frame count
-   - The entire sequence is encoded through VAE (like a video)
-   - VAE outputs provide spatial conditioning information
-
-2. **Mask Pathway**:
-   - Creates frame mask tensor based on VAE pathway output dimensions
-   - Mask identifies which frames contain reference images (1s) vs padding (0s)
-   - Supports multiple frame conditioning types (full, index, source_length, etc.)
-   - Tensor can be concatenated with VAE latents along the channel dimension
-   - Follows the same pattern as control conditioning masks
-
-3. **CLIP Semantic Pathway**:
-   - Reference images are resized to clip_resolution
-   - Each image is processed through CLIP vision encoder
-   - The resulting embeddings provide semantic information
-   - These embeddings feed into cross-attention layers
-
-4. **Tensor Combinations**:
-   - Processor outputs are organized via tensor_combinations configuration
-   - Typically combines VAE and mask outputs for condition_latents
-   - CLIP outputs become encoder_hidden_states for cross-attention
-   - Configuration-driven approach allows for flexible combinations
-   - No hardcoded tensor handling ensures maximum flexibility
-
-5. **Combined Effect**:
-   - VAE path provides spatial details and structure
-   - Mask path identifies reference frame locations
-   - CLIP path provides high-level semantic understanding
-   - Together they enable accurate preservation of reference elements
-   - Configuration-driven approach allows for easy experimentation
-
-## Framework Compatibility
-
-Our implementation approach is carefully designed to align with the finetrainers framework:
-
-1. **Processor Pattern**:
-   - We follow the ProcessorMixin interface from the framework
-   - Our processors integrate with the existing processor registry
-   - Input/output naming follows framework conventions
-   - BasePathwayProcessor provides common functionality for all pathways
-
-2. **Dataset Wrapper Approach**:
-   - We use the same dataset wrapping pattern as ControlTrainer
-   - IterableE2VDataset wraps existing datasets
-   - Maintains compatibility with dataset distribution and checkpointing
-   - Flexible processor registration and configuration
-
-3. **Configuration Integration**:
-   - Our configuration classes extend ConfigMixin
-   - We maintain compatibility with the framework's CLI argument handling
-   - JSON conversion happens in the framework's expected locations
-   - Support hierarchical processor configuration within elements
-
-4. **Model Specification Reuse**:
-   - We leverage WanControlModelSpecification without modification
-   - The same forward pass pattern is maintained
-   - Channel concatenation uses the same approach as control training
-   - Tensor combinations are configuration-driven for maximum flexibility
-
-5. **Frame Conditioning**:
-   - We reuse the same frame conditioning types from control training
-   - Apply the same masking approaches through dedicated MaskPathwayProcessor
-   - Added SOURCE_LENGTH conditioning type for element-specific length matching
-   - Maintain compatibility with existing inference code
-   
-6. **Tensor Combinations**:
-   - Configuration-driven approach for organizing processor outputs
-   - No hardcoded tensor handling ensures maximum flexibility
-   - Clean separation between processor functionality and tensor organization
-   - Explicit error handling with detailed messages for configuration issues
-
-## Key Files to Create/Modify
-
-### New Files Created
-- `finetrainers/trainer/e2v_trainer/__init__.py` - Export trainer and configs
-- `finetrainers/trainer/e2v_trainer/config.py` - Configuration for E2V training
-  - Includes FrameConditioningType enum
-  - ElementConfig, ProcessorConfig, E2VConfig classes
-- `finetrainers/trainer/e2v_trainer/trainer.py` - E2V trainer implementation
-- `finetrainers/trainer/e2v_trainer/data.py` - Dataset wrappers for E2V
-  - IterableE2VDataset with processor orchestration
-  - VAEPathwayProcessor, CLIPPathwayProcessor, MaskPathwayProcessor
-  - _combine_pathways using tensor_combinations configuration
-- `finetrainers/processors/e2v.py` - Dedicated processors for E2V pathways
-  - BasePathwayProcessor with common functionality
-  - VAEPathwayProcessor, CLIPPathwayProcessor implementations
-  - Batch processing support for efficient handling
-
-### Existing Files Updated
-- `finetrainers/config.py` - Added E2V training types to TrainingType enum
-- `finetrainers/trainer/__init__.py` - Import and expose E2VTrainer
-- `finetrainers/processors/__init__.py` - Import and expose new processors
-
-### Tests Created
-- `tests/trainer/test_e2v_trainer.py` - Test E2V trainer functionality
-- `tests/processors/test_e2v.py` - Test E2V processors
-
-## Development Guidelines
-
-### Core Principles
-- The WAN model IS the A2 model - A2 uses Wan's architecture with NO new parameter types
-- Wan already supports image-to-video (I2V) capabilities that A2 leverages
-- A2 is a training paradigm and data processing pipeline focused on multiple reference conditioning
-- Maintain compatibility with existing inference code in A2/ directory while using Wan's core components
-
-### Code Quality Standards
-- **FRAMEWORK ADHERENCE IS PARAMOUNT**: Never invent custom solutions when framework patterns exist. Identify how existing trainers solve similar problems and exactly replicate that pattern. When in doubt, search for the pattern in control_trainer and sft_trainer and copy it precisely. This is THE MOST IMPORTANT principle.
-- **Follow Don't Invent**: The goal is to integrate with the framework, not improve it. Follow established patterns exactly, even if you think you have a "better" solution.
-- **Minimal Code**: Use surgical precision - 10 lines is better than 100 
-- **No Implicit Defaults**: Fail explicitly rather than using hidden default values
-- **Clean Separation**: Keep concerns separated and modules focused
-- **No Code Pollution**: Avoid unnecessary verbosity and complexity
-- **Error Handling**: Fail fast and explicitly when inputs are invalid
-- **Testing**: Always run lint and typecheck commands to ensure code quality
-- **Commit Messages**: For all code changes, provide commit messages in the conventional format when youre done making changes - just provide the message do not run the command:
-  ```
-  type: concise description of the change
-
-  More detailed explanation of what was changed and why.
-  Include any important context or considerations.
-  ```
-  Where `type` is one of: fix, feat, refactor, docs, test, chore, style
-
-### Implementation Approach
-- **ALWAYS COPY PATTERNS FROM EXISTING TRAINERS**: When implementing any functionality, first find how the control_trainer or sft_trainer does it, then copy that exact pattern. This is non-negotiable.
-- **NEVER INVENT NEW PATTERNS**: Even if you think you know a "better way", the standard is to match existing code patterns precisely. Consistency trumps creativity.
-- **SEARCH BEFORE CODING**: Before writing any implementation, use search tools to locate the corresponding pattern in existing trainers.
-- **MATCH METHOD SIGNATURES AND STRUCTURES**: Keep method signatures, return types, and internal structures identical to their counterparts in existing trainers wherever possible.
-- Follow existing patterns from SFT and Control trainers
-- Reuse code where appropriate, extend where necessary
-- Minimize changes to core framework
-- Prioritize framework compatibility over cleverness
-
-#### Documentation-First Principles
-
-2. **Git History**: Use git commands to gain high-level context about recent changes:
-   - `git log`: Review recent commit messages to understand what changes have been made
-   - `git log --grep="fix:"`: Search for specific types of changes (e.g., fixes)
-   - `git show <commit>`: Examine specific changes in detail
-   - `git diff`: Compare current files with previous versions
-
-   Git history provides valuable context about intentional changes, reasons behind modifications, and potential sources of issues. Always check commit messages when debugging to see if issues have been addressed but not yet properly propagated.
-
-#### Key Documentation Principles
-
-## A2 Inference Code References
-
-The working A2 inference code provides valuable implementation details:
-
-- **Reference Processing Function**: The `prepare_latents` function in `A2/models/pipeline_a2.py` (lines 288-394) handles all reference processing.
-
-- **Mini-Video Creation**: At lines 330-347, references are arranged as a sequence and repeated based on the `vae_repeat` parameter. For example, with 3 reference images and `vae_repeat=True`, the first reference appears once, while the second and third are each repeated 4 times.
-
-- **VAE Encoding**: At line 356, the entire reference sequence is encoded through VAE, treating it like a video: `latent_condition = retrieve_latents(self.vae.encode(video_condition), generator)`.
-
-- **Frame Masking**: Lines 372-392 create a mask tensor where reference frames are marked with 1's and others with 0's. This mask is later used during conditioning.
-
-- **Channel Concatenation**: At line 394, the mask and encoded latents are concatenated along the channel dimension: `return latents, torch.concat([mask_lat_size, latent_condition], dim=1)`.
-
-- **CLIP Pathway**: Lines 570-575 show how CLIP embeddings from multiple references are concatenated and passed to the model via `encoder_hidden_states_image`.
-
-- **Model Input**: Line 610 demonstrates how the latents and condition tensor are concatenated before being passed to the model: `latent_model_input = torch.cat([latents, condition], dim=1).to(transformer_dtype)`.
+  This CLAUDE.md file provides a comprehensive guide to implementing the E2V trainer with minimal code by leveraging
+  the control trainer as much as possible, while maintaining clear principles for debugging and extension.

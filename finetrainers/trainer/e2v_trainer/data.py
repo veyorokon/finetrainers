@@ -244,41 +244,20 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 merged_config = get_processor_config(element_config, proc_name, proc_config)
                 
                 # Apply preprocessing based on processor type
-                if proc_name == "vae":
                     # Default to letterbox preprocessing for VAE
-                    preprocessor = merged_config.get("preprocessor", "letterbox")
-                    resolution = merged_config.get("resolution", [480, 854])
-                    
-                    if preprocessor == "letterbox":
-                        processed = FF.letterbox_image(element_img, resolution)
-                    elif preprocessor == "center_crop":
-                        processed = FF.center_crop_image(element_img, resolution)
-                    elif preprocessor == "resize":
-                        processed = FF.resize_image(element_img, resolution)
-                    else:
-                        # Default to letterbox
-                        processed = FF.letterbox_image(element_img, resolution)
-                        
-                elif proc_name == "clip":
-                    # Default to center_crop preprocessing for CLIP
-                    preprocessor = merged_config.get("preprocessor", "center_crop")
-                    resolution = merged_config.get("resolution", [224, 224])
-                    
-                    if preprocessor == "letterbox":
-                        processed = FF.letterbox_image(element_img, resolution)
-                    elif preprocessor == "center_crop":
-                        processed = FF.center_crop_image(element_img, resolution)
-                    elif preprocessor == "resize":
-                        processed = FF.resize_image(element_img, resolution)
-                    else:
-                        # Default to center_crop
-                        processed = FF.center_crop_image(element_img, resolution)
-                        
-                else:
-                    # Unknown processor type, skip
-                    logger.warning(f"Unknown processor type: {proc_name}, skipping")
-                    continue
+                preprocessor = merged_config.get("preprocessor", "letterbox")
+                resolution = merged_config.get("resolution", None)
                 
+                if preprocessor == "letterbox":
+                    processed = FF.letterbox_image(element_img, resolution)
+                elif preprocessor == "center_crop":
+                    processed = FF.center_crop_image(element_img, resolution)
+                elif preprocessor == "resize":
+                    processed = FF.resize_image(element_img, resolution)
+                elif preprocessor == "letterbox":
+                    # Default to letterbox
+                    processed = FF.letterbox_image(element_img, resolution)
+                        
                 # Store preprocessed tensor with metadata
                 preprocessed[proc_name][element_name] = {
                     "tensor": processed,
