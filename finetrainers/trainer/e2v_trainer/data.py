@@ -46,15 +46,8 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
     
     def __iter__(self):
         """Process dataset items according to configuration."""
-        from finetrainers import get_logger
-        logger = get_logger()
-        logger.info(f"Starting E2V dataset __iter__")
-        
         for data in iter(self.dataset):
             try:
-                # Log the data type and structure
-                logger.info(f"Processing data item of type: {type(data)}")
-                
                 # 1. Identify elements from file paths
                 element_files = self._find_element_files(data)
                 
@@ -86,9 +79,6 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
     
     def _find_element_files(self, data):
         """Match dataset files to configured elements based on suffixes."""
-        from finetrainers import get_logger
-        logger = get_logger()
-        logger.info(f"Received data with keys: {data.keys()}")
         element_files = {}
         
         # Process reference images if available
@@ -135,10 +125,6 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
     
     def _check_required_elements(self, element_files):
         """Verify all required elements are present."""
-        from finetrainers import get_logger
-        logger = get_logger()
-        logger.info(f"Checking required elements. Found elements: {list(element_files.keys())}")
-        
         for element in self.elements:
             if element.get("required", False) and element["name"] not in element_files:
                 logger.warning(f"Required element '{element['name']}' is missing")
