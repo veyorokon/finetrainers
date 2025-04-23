@@ -68,12 +68,26 @@ class E2VLowRankConfig(E2VConfig):
     
     def validate_args(self, args: "BaseArgs"):
         super().validate_args(args)
+        
+        # Debug logging
+        from finetrainers import get_logger
+        logger = get_logger()
+        logger.info(f"Debug - Validating E2V LoRA args:")
+        logger.info(f"Rank: {self.rank}")
+        logger.info(f"LoRA Alpha: {self.lora_alpha}")
+        logger.info(f"Target Modules: {self.target_modules}")
+        logger.info(f"Args dict: {vars(args)}")
+        
         assert self.rank > 0, "Rank must be a positive integer."
         assert self.lora_alpha > 0, "lora_alpha must be a positive integer."
         assert self.target_modules is not None, "target_modules must be specified for LoRA training"
     
     def map_args(self, argparse_args, mapped_args):
         super().map_args(argparse_args, mapped_args)
+        from finetrainers import get_logger
+        logger = get_logger()
+        logger.info(f"E2V LoRA argparse_args: {dir(argparse_args)}, target_modules: {getattr(argparse_args, 'target_modules', None)}")
+        
         mapped_args.rank = argparse_args.rank
         mapped_args.lora_alpha = argparse_args.lora_alpha
         mapped_args.target_modules = (

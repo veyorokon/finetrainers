@@ -249,4 +249,10 @@ Always remember that the E2V trainer is an extension of ControlTrainer, so most 
 
 ## Final Note
 
-This implementation follows the principle of minimal modification while maintaining full compatibility with the framework. By extending ControlTrainer, we inherit all its robust functionality while adding only the necessary E2V-specific features.
+This implementation follows the principle of minimal modification while maintaining full compatibility with the framework. By extending ControlTrainer, we inherit all its robust functionality while adding only the necessary E2V-specific features. focus on fixing the actual issue rather than masking it with defaults that weren't specified by the user. i dont like if else debug statements. they pollute the code. find the most targetted logging statements. we want the abosolute minimum amount of code additions for everything.
+
+When providing a commit message note the format: a header and body.
+e.g.:  fix: add debugging to E2VLowRankConfig for target_modules parsing
+
+  Add minimal logging in map_args method to diagnose why target_modules argument isn't being parsed correctly when 
+  passed as a regex pattern string, while working properly in the ControlTrainer

@@ -5,6 +5,9 @@ This tests whether the IterableE2VDataset can correctly:
 1. Identify elements from file suffixes
 2. Apply the right conditioning types 
 3. Preprocess elements according to configuration
+
+Run test:
+python tests/dataset_test_e2v.py -v
 """
 
 import os
