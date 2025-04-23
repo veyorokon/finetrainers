@@ -268,4 +268,4 @@ Refactor: Clean, remove, restructure and simplify code
 
 
 Mode requirements:
-- For logging: no new if / else statements are allowed. if youre unsure about the fields - print the dir()
+- For logging: no new if / else statements OR loops are allowed . if youre unsure about the fields - print the dir()

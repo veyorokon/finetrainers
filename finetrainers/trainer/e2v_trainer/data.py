@@ -46,8 +46,15 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
     
     def __iter__(self):
         """Process dataset items according to configuration."""
+        from finetrainers import get_logger
+        logger = get_logger()
+        logger.info(f"Starting E2V dataset __iter__")
+        
         for data in iter(self.dataset):
             try:
+                # Log the data type and structure
+                logger.info(f"Processing data item of type: {type(data)}")
+                
                 # 1. Identify elements from file paths
                 element_files = self._find_element_files(data)
                 
@@ -103,6 +110,9 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         from finetrainers import get_logger
         logger = get_logger()
         logger.info(f"Checking for video path. Has video_path: {'video_path' in data}")
+        logger.info(f"Data obj dir: {dir(data)}")
+        logger.info(f"Data obj dict-like values: {[k for k in data]}")
+        
         if "video_path" in data:
             video_path = data["video_path"]
             logger.info(f"Found video_path: {video_path}")
