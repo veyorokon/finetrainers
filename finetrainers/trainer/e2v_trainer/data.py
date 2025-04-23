@@ -143,7 +143,9 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
     
     def _preprocess_elements(self, data, element_files):
         """Preprocess elements based on conditioning types."""
+        # Create a shallow copy to store processed elements and add to original data
         processed = {}
+        shallow_copy_data = dict(data.items())
         
         for element_name, file_info in element_files.items():
             element_config = file_info["config"]
@@ -164,7 +166,7 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             elif conditioning_processor == "text":
                 self._process_text_element(processed, element_name, file_info, conditioning_config)
             elif conditioning_processor == "video":
-                self._process_video_element(processed, element_name, file_info, conditioning_config)
+                self._process_video_element(processed, element_name, file_info, conditioning_config, shallow_copy_data)
             else:
                 logger.warning(f"Unknown conditioning processor: {conditioning_processor}")
         
@@ -322,7 +324,7 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         except Exception as e:
             logger.error(f"Error processing text element {element_name}: {e}")
     
-    def _process_video_element(self, processed, element_name, file_info, conditioning_config):
+    def _process_video_element(self, processed, element_name, file_info, conditioning_config, data_dict):
         """Process element for video conditioning (target video)."""
         try:
             # Import necessary modules
@@ -387,9 +389,9 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 "tensor": processed_tensor
             }
             
-            # Also update the original data with the processed video tensor
+            # Also update the data dictionary with the processed video tensor
             # This makes it available for the trainer to use directly
-            data["video"] = processed_tensor
+            data_dict["video"] = processed_tensor
             
         except Exception as e:
             logger.error(f"Error processing video element {element_name}: {e}")
@@ -410,3 +412,6 @@ class ValidationE2VDataset(IterableE2VDataset):
                 data["element_files"] = {k: v.get("path", v.get("text", "")) 
                                          for k, v in data.get("e2v_elements", {}).items()}
             yield data
+            
+    # ValidationE2VDataset inherits all state management from IterableE2VDataset,
+    # including _sampler_iter_yielded handling for Accelerate compatibility
