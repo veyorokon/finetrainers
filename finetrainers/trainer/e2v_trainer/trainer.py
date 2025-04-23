@@ -43,6 +43,25 @@ class E2VTrainer(ControlTrainer):
                     args.elements_config = data_config["datasets"][0].get("elements", [])
                     args.conditioning_config = data_config["datasets"][0].get("conditioning", {})
         
+        # Monkey patch the Accelerate dataloader to handle missing _sampler_iter_yielded
+        from accelerate.data_loader import DataLoaderDispatcher
+        from accelerate.state import PartialState
+        from accelerate.utils import DistributedType
+        
+        def patched_adjust_state_dict_for_prefetch(self):
+            if PartialState().distributed_type != DistributedType.NO:
+                factor = PartialState().num_processes - 1
+                # Make the method resilient to missing keys
+                if "_sampler_iter_yielded" in self.dl_state_dict and self.dl_state_dict["_sampler_iter_yielded"] > 0:
+                    self.dl_state_dict["_sampler_iter_yielded"] -= factor
+                elif "_sampler_iter_yielded" not in self.dl_state_dict:
+                    self.dl_state_dict["_sampler_iter_yielded"] = 0
+                if "_num_yielded" in self.dl_state_dict and self.dl_state_dict["_num_yielded"] > 0:
+                    self.dl_state_dict["_num_yielded"] -= factor
+        
+        # Apply the monkey patch
+        DataLoaderDispatcher.adjust_state_dict_for_prefetch = patched_adjust_state_dict_for_prefetch
+        
         super().__init__(args, model_specification)
         
         # Initialize additional models
