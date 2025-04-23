@@ -57,7 +57,7 @@ dataset_cmd=(
 
 # Dataloader arguments
 dataloader_cmd=(
-  --dataloader_num_workers 4
+  --dataloader_num_workers 1
 )
 
 # Diffusion arguments

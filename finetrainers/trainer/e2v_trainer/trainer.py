@@ -132,6 +132,16 @@ class E2VTrainer(ControlTrainer):
         """
         parallel_backend = self.state.parallel_backend
         
+        # Fix for Accelerate's DataLoader with IterableDatasets
+        # This addresses a known issue in Accelerate 1.6.0 with IterableDatasets
+        # where the state dictionary doesn't have expected keys for resumability.
+        # We manually initialize these keys to prevent KeyError in adjust_state_dict_for_prefetch.
+        if hasattr(data_iterator, 'dl_state_dict'):
+            if "_sampler_iter_yielded" not in data_iterator.dl_state_dict:
+                data_iterator.dl_state_dict["_sampler_iter_yielded"] = 0
+            if "_num_yielded" not in data_iterator.dl_state_dict:
+                data_iterator.dl_state_dict["_num_yielded"] = 0
+        
         # 1. Collect samples into buffer
         buffer_size = max(1, self.args.batch_size * self.args.gradient_accumulation_steps)
         collected_samples = []
