@@ -40,6 +40,9 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         # Initialize video processor for preprocessing
         self.video_processor = VideoProcessor()
         
+        # Required for Accelerate 1.6.0 stateful dataloader compatibility
+        self._sampler_iter_yielded = 0
+        
         logger.info(f"Initialized E2V dataset with {len(self.elements)} elements")
         for element in self.elements:
             logger.info(f"  Element: {element['name']}, suffixes: {element['suffixes']}")
@@ -62,6 +65,7 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 if processed_data:
                     result = {**data}
                     result["e2v_processed"] = processed_data
+                    self._sampler_iter_yielded += 1
                     yield result
                 else:
                     logger.warning("No elements were successfully processed, skipping item")
@@ -72,10 +76,16 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
     def load_state_dict(self, state_dict):
         """Load state from checkpoint."""
         self.dataset.load_state_dict(state_dict)
+        # Load sampler state if available
+        if "_sampler_iter_yielded" in state_dict:
+            self._sampler_iter_yielded = state_dict["_sampler_iter_yielded"]
     
     def state_dict(self):
         """Save state for checkpoint."""
-        return self.dataset.state_dict()
+        state_dict = self.dataset.state_dict()
+        # Add sampler state
+        state_dict["_sampler_iter_yielded"] = self._sampler_iter_yielded
+        return state_dict
     
     def _find_element_files(self, data):
         """Match dataset files to configured elements based on suffixes."""
