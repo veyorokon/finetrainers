@@ -425,12 +425,6 @@ class E2VTrainer(ControlTrainer):
                 
                 from peft import LoraConfig
                 
-                # Debug info on arguments
-                logger.info(f"Using LoRA config with:")
-                logger.info(f"  rank: {self.args.rank}")
-                logger.info(f"  lora_alpha: {self.args.lora_alpha}")
-                logger.info(f"  target_modules: {self.args.target_modules}")
-                
                 # Configure LoRA
                 lora_config = LoraConfig(
                     r=self.args.rank,

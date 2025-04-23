@@ -254,5 +254,6 @@ This implementation follows the principle of minimal modification while maintain
 When providing a commit message note the format: a header and body.
 e.g.:  fix: add debugging to E2VLowRankConfig for target_modules parsing
 
-  Add minimal logging in map_args method to diagnose why target_modules argument isn't being parsed correctly when 
-  passed as a regex pattern string, while working properly in the ControlTrainer
+Add minimal logging in map_args method to diagnose why target_modules argument isn't being parsed correctly when 
+passed as a regex pattern string, while working properly in the ControlTrainer
+Standard headers: [fix, logging, feat, doc]
