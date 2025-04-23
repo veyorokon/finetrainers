@@ -1,8 +1,11 @@
 {
   "datasets": [
     {
-      "data_root": "/workspace/dataset",
+      "data_root": "assets/tests/dataset",
       "dataset_type": "video_references",
+      "target_resolution": [ 480, 854 ],
+      "auto_frame_buckets": true,
+      "reshape_mode": "bicubic",
 
       "elements": [
         {
@@ -25,6 +28,12 @@
           "suffixes": [ ".txt" ],
           "required": true,
           "conditioning": "text"
+        },
+        {
+          "name": "video",
+          "suffixes": [ ".mp4" ],
+          "required": true,
+          "conditioning": "target"
         }
       ],
 
@@ -43,6 +52,11 @@
           "type": "clip",
           "resolution": [ 224, 224 ],
           "preprocessor": "center_crop"
+        },
+        "target": {
+          "type": "video",
+          "resolution": [ 480, 854 ],
+          "preprocessor": "bicubic_resize_video:"
         }
       }
     }

@@ -24,14 +24,6 @@
           "vae": { "repeat": 1, "position": 1 }
         },
         {
-          "name": "character",
-          "suffixes": [ "_mask.png" ],
-          "required": false,
-          "conditioning": "reference",
-          "vae": { "repeat": 2, "position": 2 },
-          "clip": { "position": 1 }
-        },
-        {
           "name": "captions",
           "suffixes": [ ".txt" ],
           "required": true,
@@ -63,7 +55,8 @@
         },
         "target": {
           "type": "video",
-          "resolution": [ 480, 854 ]
+          "resolution": [ 480, 854 ],
+          "preprocessor": "bicubic_resize_video:"
         }
       }
     }

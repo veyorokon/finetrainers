@@ -106,20 +106,15 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                             }
                             break
         
-        # Add video source file if available
-        from finetrainers import get_logger
-        logger = get_logger()
-        
-        # Check what's in the "video" field
+        # Add video data if available - could be provided as tensor directly
         if "video" in data:
-            logger.info(f"Found video field with type: {type(data['video'])}")
-            logger.info(f"Video field: {data['video']}")
+            video_data = data["video"]
             
             # Find video element in configuration
             for element in self.elements:
                 if element.get("name") == "video":
                     element_files["video"] = {
-                        "path": data["video"],  # Use the video data directly
+                        "tensor": video_data,
                         "config": element
                     }
                     break
@@ -172,6 +167,8 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 self._process_clip_element(processed, element_name, file_info, conditioning_config)
             elif conditioning_processor == "text":
                 self._process_text_element(processed, element_name, file_info, conditioning_config)
+            elif conditioning_processor == "video":
+                self._process_video_element(processed, element_name, file_info, conditioning_config)
             else:
                 logger.warning(f"Unknown conditioning processor: {conditioning_processor}")
         
@@ -328,6 +325,78 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
             
         except Exception as e:
             logger.error(f"Error processing text element {element_name}: {e}")
+    
+    def _process_video_element(self, processed, element_name, file_info, conditioning_config):
+        """Process element for video conditioning (target video)."""
+        try:
+            # Import necessary modules
+            import torch
+            import finetrainers.functional as FF
+            
+            # Initialize video processor section if needed
+            if "video" not in processed:
+                processed["video"] = {"elements": {}}
+            
+            element_config = file_info["config"]
+            path = file_info.get("path")
+            tensor = file_info.get("tensor")
+            
+            # If we have a tensor directly, use it
+            if tensor is not None and isinstance(tensor, torch.Tensor):
+                video_tensor = tensor
+            elif path is not None:
+                # Load video from path (not needed for E2V implementation)
+                # This is just a placeholder for future extensions
+                logger.warning(f"Video loading from path not implemented: {path}")
+                return
+            else:
+                logger.warning(f"No video tensor or path provided for element {element_name}")
+                return
+            
+            # Apply preprocessing based on configuration
+            resolution = conditioning_config.get("resolution", [480, 854])
+            preprocessor = conditioning_config.get("preprocessor", "bicubic")
+            
+            # Process video through appropriate preprocessor
+            if preprocessor == "bicubic":
+                # For 4D tensor [B, C, H, W]
+                if len(video_tensor.shape) == 4:
+                    processed_tensor = FF.resize_image(video_tensor, resolution, mode="bicubic")
+                # For 5D tensor [B, C, F, H, W]
+                elif len(video_tensor.shape) == 5:
+                    batch_size, channels, frames, height, width = video_tensor.shape
+                    reshaped = video_tensor.reshape(-1, channels, height, width)
+                    resized = FF.resize_image(reshaped, resolution, mode="bicubic")
+                    processed_tensor = resized.reshape(batch_size, channels, frames, *resolution)
+                else:
+                    logger.warning(f"Unexpected tensor shape for video: {video_tensor.shape}")
+                    return
+            elif preprocessor == "center_crop":
+                if len(video_tensor.shape) == 5:  # [B, C, F, H, W]
+                    processed_tensor = FF.center_crop_video(video_tensor, resolution)
+                else:
+                    processed_tensor = FF.center_crop_image(video_tensor, resolution)
+            else:
+                # Default to bicubic resize
+                if len(video_tensor.shape) == 4:
+                    processed_tensor = FF.resize_image(video_tensor, resolution, mode="bicubic")
+                elif len(video_tensor.shape) == 5:
+                    batch_size, channels, frames, height, width = video_tensor.shape
+                    reshaped = video_tensor.reshape(-1, channels, height, width)
+                    resized = FF.resize_image(reshaped, resolution, mode="bicubic")
+                    processed_tensor = resized.reshape(batch_size, channels, frames, *resolution)
+            
+            # Store the processed tensor in the processed data
+            processed["video"]["elements"][element_name] = {
+                "tensor": processed_tensor
+            }
+            
+            # Also update the original data with the processed video tensor
+            # This makes it available for the trainer to use directly
+            data["video"] = processed_tensor
+            
+        except Exception as e:
+            logger.error(f"Error processing video element {element_name}: {e}")
 
 
 class ValidationE2VDataset(IterableE2VDataset):
