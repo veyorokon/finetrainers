@@ -40,9 +40,6 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         # Initialize video processor for preprocessing
         self.video_processor = VideoProcessor()
         
-        # Required for Accelerate 1.6.0 stateful dataloader compatibility
-        self._sampler_iter_yielded = 0
-        
         logger.info(f"Initialized E2V dataset with {len(self.elements)} elements")
         for element in self.elements:
             logger.info(f"  Element: {element['name']}, suffixes: {element['suffixes']}")
@@ -65,7 +62,6 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 if processed_data:
                     result = {**data}
                     result["e2v_processed"] = processed_data
-                    self._sampler_iter_yielded += 1
                     yield result
                 else:
                     logger.warning("No elements were successfully processed, skipping item")
@@ -76,16 +72,10 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
     def load_state_dict(self, state_dict):
         """Load state from checkpoint."""
         self.dataset.load_state_dict(state_dict)
-        # Load sampler state if available
-        if "_sampler_iter_yielded" in state_dict:
-            self._sampler_iter_yielded = state_dict["_sampler_iter_yielded"]
     
     def state_dict(self):
         """Save state for checkpoint."""
-        state_dict = self.dataset.state_dict()
-        # Add sampler state
-        state_dict["_sampler_iter_yielded"] = self._sampler_iter_yielded
-        return state_dict
+        return self.dataset.state_dict()
     
     def _find_element_files(self, data):
         """Match dataset files to configured elements based on suffixes."""
@@ -412,6 +402,3 @@ class ValidationE2VDataset(IterableE2VDataset):
                 data["element_files"] = {k: v.get("path", v.get("text", "")) 
                                          for k, v in data.get("e2v_elements", {}).items()}
             yield data
-            
-    # ValidationE2VDataset inherits all state management from IterableE2VDataset,
-    # including _sampler_iter_yielded handling for Accelerate compatibility
