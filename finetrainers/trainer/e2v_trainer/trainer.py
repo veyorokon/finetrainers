@@ -110,6 +110,10 @@ class E2VTrainer(ControlTrainer):
             self.state.parallel_backend.device
         )
         
+        # Create a reference to the Accelerate state fields
+        # This is a key step to ensure the dataset's state fields are accessible to Accelerate
+        dataset.dl_state_dict = dataset._accelerate_state.dl_state_dict
+        
         dataloader = self.state.parallel_backend.prepare_dataloader(
             dataset, 
             batch_size=1, 
@@ -522,6 +526,9 @@ class E2VTrainer(ControlTrainer):
         
         # Wrap with E2V validation dataset
         dataset = ValidationE2VDataset(dataset, dataset_config, self.state.parallel_backend.device)
+        
+        # Also make Accelerate state dict accessible directly on validation dataset
+        dataset.dl_state_dict = dataset._accelerate_state.dl_state_dict
         
         # Rest of validation follows parent implementation
         # ...
