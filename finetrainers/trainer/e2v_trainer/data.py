@@ -40,9 +40,6 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         # Initialize video processor for preprocessing
         self.video_processor = VideoProcessor()
         
-        # Initialize Accelerate-specific state fields - critical for checkpointing
-        self._sampler_iter_yielded = 0
-        
         logger.info(f"Initialized E2V dataset with {len(self.elements)} elements")
         for element in self.elements:
             logger.info(f"  Element: {element['name']}, suffixes: {element['suffixes']}")
@@ -65,8 +62,6 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 if processed_data:
                     result = {**data}
                     result["e2v_processed"] = processed_data
-                    # Track yielded samples for Accelerate
-                    self._sampler_iter_yielded += 1
                     yield result
                 else:
                     logger.warning("No elements were successfully processed, skipping item")
@@ -76,25 +71,14 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 
     def state_dict(self):
         """Return the state dictionary for checkpointing."""
-        state = {"_sampler_iter_yielded": self._sampler_iter_yielded}
-        
-        # Add underlying dataset state if available
+        # Simply delegate to the underlying dataset
         if hasattr(self.dataset, "state_dict"):
-            dataset_state = self.dataset.state_dict()
-            # Merge with our state
-            for k, v in dataset_state.items():
-                if k not in state:
-                    state[k] = v
-            
-        return state
+            return self.dataset.state_dict()
+        return {}
 
     def load_state_dict(self, state_dict):
         """Load a state dictionary from a checkpoint."""
-        # Load our state field
-        if "_sampler_iter_yielded" in state_dict:
-            self._sampler_iter_yielded = state_dict["_sampler_iter_yielded"]
-            
-        # Load underlying dataset state if available
+        # Simply delegate to the underlying dataset
         if hasattr(self.dataset, "load_state_dict"):
             self.dataset.load_state_dict(state_dict)
     

@@ -110,24 +110,12 @@ class E2VTrainer(ControlTrainer):
             self.state.parallel_backend.device
         )
         
-        # Create a standard dataloader - we'll patch it for Accelerate before preparing
-        raw_dataloader = torch.utils.data.DataLoader(
+        dataloader = self.state.parallel_backend.prepare_dataloader(
             dataset, 
             batch_size=1, 
             num_workers=self.args.dataloader_num_workers, 
             pin_memory=self.args.pin_memory
         )
-        
-        # Add necessary accelerate dataloader state directly
-        raw_dataloader.dl_state_dict = {
-            "_sampler_iter_yielded": 0,
-            "_sampler_indices_yielded": set(),
-            "_indices_fetched_for_epoch": 0,
-            "_prefetch_state": {}
-        }
-        
-        # Now let Accelerate prepare it
-        dataloader = self.state.parallel_backend._accelerator.prepare_data_loader(raw_dataloader)
         
         self.dataset = dataset
         self.dataloader = dataloader
