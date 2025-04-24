@@ -51,7 +51,7 @@ lora_cmd=(
 # Dataset arguments
 dataset_cmd=(
   --dataset_config "$TRAINING_DATASET_CONFIG"
-  --dataset_shuffle_buffer_size 8
+  --dataset_shuffle_buffer_size 1 #8
   --cache_dir "/workspace/e2v/cache/"
 )
 

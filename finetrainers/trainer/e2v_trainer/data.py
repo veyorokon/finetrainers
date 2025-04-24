@@ -69,34 +69,6 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 logger.error(f"Error processing dataset item: {e}")
                 continue
     
-    def load_state_dict(self, state_dict):
-        """Load state from checkpoint."""
-        # Initialize required Accelerate fields if they don't exist
-        if "dataset" in state_dict:
-            # These fields are required by Accelerate's DataLoaderDispatcher
-            if "_sampler_iter_yielded" not in state_dict:
-                state_dict["_sampler_iter_yielded"] = 0
-            if "_num_yielded" not in state_dict:
-                state_dict["_num_yielded"] = 0
-            if "_index_sampler_state" not in state_dict:
-                state_dict["_index_sampler_state"] = {"samples_yielded": 0}
-            
-            # Delegate to the wrapped dataset
-            self.dataset.load_state_dict(state_dict["dataset"])
-        else:
-            # Handle direct loading case (backward compatibility)
-            self.dataset.load_state_dict(state_dict)
-    
-    def state_dict(self):
-        """Save state for checkpoint."""
-        # Create state dict with required Accelerate fields
-        state_dict = {
-            "dataset": self.dataset.state_dict(),
-            "_sampler_iter_yielded": 0,  # Required by Accelerate
-            "_num_yielded": 0,           # Required by Accelerate 
-            "_index_sampler_state": {"samples_yielded": 0}  # Required by Accelerate
-        }
-        return state_dict
     
     def _find_element_files(self, data):
         """Match dataset files to configured elements based on suffixes."""
