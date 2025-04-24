@@ -45,15 +45,11 @@ class E2VTrainer(ControlTrainer):
         
         super().__init__(args, model_specification)
         
-        # Initialize additional models
+        # Initialize CLIP image encoder
         self.image_encoder = None
         
-        # Track what models are loaded
-        self._clip_loaded = False
-        
-        # Add additional component names
-        self._clip_component_names = ["image_encoder"]
-        self._all_component_names.extend(self._clip_component_names)
+        # Add image encoder to component names
+        self._all_component_names.append("image_encoder")
     
     def _prepare_models(self) -> None:
         """Prepare models for training, extending parent with CLIP model."""
@@ -65,7 +61,7 @@ class E2VTrainer(ControlTrainer):
         condition_components = self.model_specification.load_condition_models()
         if "image_encoder" in condition_components:
             self.image_encoder = condition_components["image_encoder"]
-            self._clip_loaded = True
+            logger.info("Successfully loaded image encoder")
         else:
             logger.warning("No image encoder found in model specification")
     
@@ -120,276 +116,10 @@ class E2VTrainer(ControlTrainer):
         self.dataset = dataset
         self.dataloader = dataloader
     
-    def _prepare_data(self, preprocessor, data_iterator):
-        """Process data with optimized model coordination.
-        
-        This method:
-        1. Collects samples into a buffer
-        2. Processes text through text encoder
-        3. Processes images through CLIP
-        4. Processes videos through VAE
-        5. Returns processed data for training
-        """
-        
-        # 1. Collect samples into buffer
-        buffer_size = max(1, self.args.batch_size * self.args.gradient_accumulation_steps)
-        collected_samples = []
-        for _ in range(buffer_size):
-            try:
-                batch = next(data_iterator)
-                # Handle batch format (list or single item)
-                batch = batch[0] if isinstance(batch, list) else batch
-                collected_samples.append(batch)
-            except StopIteration:
-                if not collected_samples:
-                    # No samples available
-                    logger.warning("Data iterator exhausted, no samples collected")
-                    return None, None
-                break
-        
-        # 2. Process all text data with text encoder
-        if self.text_encoder is not None:
-            self._move_components_to_device([self.text_encoder])
-            collected_samples = self._process_text_batch(collected_samples)
-            self._move_components_to_device([self.text_encoder], "cpu")
-            utils.free_memory()
-        
-        # 3. Process all CLIP data with image encoder
-        if self.image_encoder is not None:
-            self._move_components_to_device([self.image_encoder])
-            collected_samples = self._process_clip_batch(collected_samples)
-            self._move_components_to_device([self.image_encoder], "cpu")
-            utils.free_memory()
-        
-        # 4. Process all VAE data
-        if self.vae is not None:
-            self._move_components_to_device([self.vae])
-            utils._enable_vae_memory_optimizations(self.vae, self.args.enable_slicing, self.args.enable_tiling)
-            collected_samples = self._process_vae_batch(collected_samples)
-            self._move_components_to_device([self.vae], "cpu")
-            utils.free_memory()
-        
-        # 5. Process reference elements into conditioning tensors
-        collected_samples = self._combine_conditions(collected_samples)
-        
-        # 6. Return to transformer for forward pass
-        self._move_components_to_device([self.transformer])
-        
-        # Create iterators for the training loop
-        condition_iterator = iter(collected_samples)
-        latent_iterator = iter(collected_samples)
-        
-        return condition_iterator, latent_iterator
+    # We'll use the parent implementation of _prepare_data
     
-    def _process_text_batch(self, samples):
-        """Process all text data through text encoder."""
-        if not samples or self.text_encoder is None:
-            return samples
-        
-        device = self.state.parallel_backend.device
-        
-        # Process each sample
-        for i, sample in enumerate(samples):
-            if "e2v_processed" not in sample or "text" not in sample["e2v_processed"]:
-                continue
-            
-            # Get text data
-            text_data = sample["e2v_processed"]["text"]
-            if not text_data or "elements" not in text_data:
-                continue
-            
-            # Process each text element
-            for element_name, element_data in text_data["elements"].items():
-                if "text" not in element_data:
-                    continue
-                
-                text = element_data["text"]
-                
-                # Tokenize text
-                inputs = self.tokenizer(
-                    text,
-                    padding="max_length",
-                    max_length=self.tokenizer.model_max_length,
-                    truncation=True,
-                    return_tensors="pt",
-                )
-                
-                # Move to device
-                inputs = {k: v.to(device) for k, v in inputs.items()}
-                
-                # Encode text
-                with torch.no_grad():
-                    text_embeddings = self.text_encoder(**inputs)[0]
-                
-                # Store embeddings in sample
-                if "encoder_hidden_states" not in sample:
-                    sample["encoder_hidden_states"] = text_embeddings
-        
-        return samples
-    
-    def _process_clip_batch(self, samples):
-        """Process all CLIP data through image encoder."""
-        if not samples or self.image_encoder is None:
-            return samples
-        
-        device = self.state.parallel_backend.device
-        
-        # Process each sample
-        for i, sample in enumerate(samples):
-            if "e2v_processed" not in sample or "clip" not in sample["e2v_processed"]:
-                continue
-            
-            # Get clip data
-            clip_data = sample["e2v_processed"]["clip"]
-            if not clip_data or "elements" not in clip_data:
-                continue
-            
-            # Process each element
-            clip_features = []
-            for element_name, element_data in sorted(
-                clip_data["elements"].items(), 
-                key=lambda x: x[1].get("position", 0)
-            ):
-                if "tensor" not in element_data:
-                    continue
-                
-                # Process through CLIP model
-                tensor = element_data["tensor"].to(device)
-                
-                with torch.no_grad():
-                    # Apply normalization if needed
-                    # Process through CLIP vision encoder
-                    features = self.image_encoder(tensor, output_hidden_states=True)
-                    # Use penultimate layer features
-                    features = features.hidden_states[-2]
-                
-                clip_features.append(features)
-            
-            # Combine features if we have any
-            if clip_features:
-                # Concatenate along sequence dimension
-                combined_features = torch.cat(clip_features, dim=1)
-                
-                # Store in sample
-                sample["encoder_hidden_states_image"] = combined_features
-        
-        return samples
-    
-    def _process_vae_batch(self, samples):
-        """Process all VAE data through VAE encoder."""
-        if not samples or self.vae is None:
-            return samples
-        
-        device = self.state.parallel_backend.device
-        
-        # Process target videos first
-        for i, sample in enumerate(samples):
-            if "video" not in sample:
-                continue
-            
-            # Process video through VAE
-            video = sample["video"].to(device)
-            
-            # Encode with VAE
-            with torch.no_grad():
-                latents = self.vae.encode(video).latent_dist.sample()
-                latents = latents * 0.18215  # Scale factor for stable diffusion
-            
-            # Store latents in sample
-            sample["latents"] = latents
-        
-        # Process reference elements
-        for i, sample in enumerate(samples):
-            if "e2v_processed" not in sample or "frame" not in sample["e2v_processed"]:
-                continue
-            
-            # Get frame data
-            frame_data = sample["e2v_processed"]["frame"]
-            if not frame_data or "elements" not in frame_data:
-                continue
-            
-            # Process each element
-            reference_tensors = []
-            positions = []
-            
-            for element_name, element_data in sorted(
-                frame_data["elements"].items(), 
-                key=lambda x: x[1].get("position", 0)
-            ):
-                if "tensor" not in element_data:
-                    continue
-                
-                # Get tensor and metadata
-                tensor = element_data["tensor"].to(device)
-                position = element_data.get("position", 0)
-                repeat = element_data.get("repeat", 1)
-                
-                # Repeat frames if needed
-                if repeat > 1 and len(tensor.shape) >= 5:
-                    # Tensor shape should be [B, C, F, H, W]
-                    # Repeat along frame dimension (dim=2)
-                    frame = tensor
-                    repeated = []
-                    for f in range(frame.size(2)):
-                        f_tensor = frame[:, :, f:f+1]
-                        f_repeated = torch.cat([f_tensor] * repeat, dim=2)
-                        repeated.append(f_repeated)
-                    
-                    tensor = torch.cat(repeated, dim=2)
-                
-                reference_tensors.append((position, tensor))
-                positions.append(position)
-            
-            # Sort by position
-            reference_tensors.sort(key=lambda x: x[0])
-            
-            # Extract just the tensors in position order
-            tensors = [t for _, t in reference_tensors]
-            
-            if not tensors:
-                continue
-                
-            # Concatenate along temporal dimension
-            if len(tensors) > 1:
-                # For multiple reference elements, concatenate along time dimension
-                combined = torch.cat(tensors, dim=2)  # dim=2 is frames dimension
-            else:
-                combined = tensors[0]
-            
-            # Encode through VAE
-            with torch.no_grad():
-                encoded = self.vae.encode(combined).latent_dist.sample()
-                encoded = encoded * 0.18215  # Scale factor
-            
-            # Get conditioning parameters
-            conditioning_config = frame_data.get("conditioning", {})
-            frame_conditioning_type = conditioning_config.get("frame_conditioning_type", "full")
-            concatenate_mask = conditioning_config.get("frame_conditioning_concatenate_mask", True)
-            frame_conditioning_index = conditioning_config.get("frame_conditioning_index", 0)
-            
-            # Apply frame conditioning (from control_trainer)
-            conditioned_latents = apply_frame_conditioning_on_latents(
-                encoded,
-                sample["latents"].shape[2],  # Target video frames
-                channel_dim=1,
-                frame_dim=2,
-                frame_conditioning_type=frame_conditioning_type,
-                frame_conditioning_index=frame_conditioning_index,
-                concatenate_mask=concatenate_mask
-            )
-            
-            # Store in sample
-            sample["condition_latents"] = conditioned_latents
-        
-        return samples
-    
-    def _combine_conditions(self, samples):
-        """Combine processed tensors based on configuration."""
-        # This method would implement tensor_combinations logic
-        # For now, we'll keep it simple and just ensure the required
-        # tensors are available for the model
-        
-        return samples
+    # Process methods for handling the results of _prepare_data will be handled by
+    # the model specification and parent class
     
     def _move_components_to_device(self, components=None, device=None):
         """Move model components to specified device."""
@@ -405,14 +135,6 @@ class E2VTrainer(ControlTrainer):
             components = [c for c in components if c is not None]
         
         super()._move_components_to_device(components, device)
-    
-    def _delete_components(self, component_names=None):
-        """Delete components to free memory."""
-        # Extend parent method to include image_encoder
-        if component_names is None:
-            component_names = self._all_component_names
-        
-        super()._delete_components(component_names)
     
     def _prepare_trainable_parameters(self) -> None:
         """Prepare trainable parameters based on training type."""
@@ -503,17 +225,12 @@ class E2VTrainer(ControlTrainer):
     
     def _validate(self, step=None, final_validation=False) -> None:
         """Run validation with E2V-specific handling."""
-        # Similar to parent implementation, but handle E2V-specific data
         if self.args.validation_dataset_file is None:
             return
         
         logger.info("Starting validation")
         
         # Load validation dataset
-        parallel_backend = self.state.parallel_backend
-        
-        # Use the same dataset loading logic as in _prepare_dataset
-        # but with ValidationE2VDataset wrapper
         dataset = data.ValidationDataset(self.args.validation_dataset_file)
         dataset = self.state.parallel_backend.prepare_dataset(dataset)
         
@@ -521,15 +238,12 @@ class E2VTrainer(ControlTrainer):
         dataset_config = {"elements": self.args.elements_config, "conditioning": self.args.conditioning_config}
         
         # Wrap with E2V validation dataset
-        dataset = ValidationE2VDataset(dataset, dataset_config, self.state.parallel_backend.device)
+        validation_dataset = ValidationE2VDataset(dataset, dataset_config, self.state.parallel_backend.device)
         
-        # Need to patch any dataloaders created from this dataset with the same fields
+        # Store the dataset to be used by the parent implementation
+        self.validation_dataset = validation_dataset
         
-        
-        # Rest of validation follows parent implementation
-        # ...
-        
-        # We'll need to extend this with E2V-specific validation handling
+        # Use parent validation implementation
         super()._validate(step, final_validation)
 
     def _get_lora_target_modules(self):

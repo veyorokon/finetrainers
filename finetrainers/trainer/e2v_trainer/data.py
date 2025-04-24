@@ -8,16 +8,16 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union, Any
 
 import torch
-import torch.distributed.checkpoint.stateful
 from PIL import Image
 from diffusers.video_processor import VideoProcessor
 
 import finetrainers.functional as FF
 from finetrainers.logging import get_logger
+from finetrainers.trainer.control_trainer.data import IterableControlDataset
 
 logger = get_logger()
 
-class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.checkpoint.stateful.Stateful):
+class IterableE2VDataset(IterableControlDataset):
     """Dataset wrapper for E2V training.
     
     This dataset wrapper:
@@ -27,13 +27,11 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
     """
     
     def __init__(self, dataset, config, device=None):
-        super().__init__()
+        # Initialize with CUSTOM control type since we'll handle conditioning differently
+        super().__init__(dataset, control_type="CUSTOM", device=device)
         
-        self.dataset = dataset
+        # Store E2V-specific configuration
         self.config = config
-        self.device = device
-        
-        # Extract configuration sections
         self.elements = config.get("elements", [])
         self.conditioning = config.get("conditioning", {})
         
@@ -69,18 +67,8 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 logger.error(f"Error processing dataset item: {e}")
                 continue
                 
-    def state_dict(self):
-        """Return the state dictionary for checkpointing."""
-        # Simply delegate to the underlying dataset
-        if hasattr(self.dataset, "state_dict"):
-            return self.dataset.state_dict()
-        return {}
-
-    def load_state_dict(self, state_dict):
-        """Load a state dictionary from a checkpoint."""
-        # Simply delegate to the underlying dataset
-        if hasattr(self.dataset, "load_state_dict"):
-            self.dataset.load_state_dict(state_dict)
+    # state_dict() and load_state_dict() are inherited from IterableControlDataset
+    # and already delegate to the underlying dataset properly
     
     
     def _find_element_files(self, data):
@@ -398,9 +386,6 @@ class ValidationE2VDataset(IterableE2VDataset):
     
     Extends IterableE2VDataset with validation-specific functionality.
     """
-    
-    def __init__(self, dataset, config, device=None):
-        super().__init__(dataset, config, device)
     
     def __iter__(self):
         """Process dataset items for validation."""
