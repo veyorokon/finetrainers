@@ -40,8 +40,12 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         # Initialize video processor for preprocessing
         self.video_processor = VideoProcessor()
         
-        # Initialize Accelerate dataloader state field
+        # Ensure these fields are present for Accelerate DataLoader
+        # These are required by Accelerate's state management
         self._sampler_iter_yielded = 0
+        self._sampler_indices_yielded = set()
+        self._indices_fetched_for_epoch = 0
+        self._prefetch_state = {}
         
         logger.info(f"Initialized E2V dataset with {len(self.elements)} elements")
         for element in self.elements:
@@ -76,18 +80,44 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 
     def state_dict(self):
         """Return the state dictionary for checkpointing."""
-        state = self.dataset.state_dict() if hasattr(self.dataset, "state_dict") else {}
-        # Include the Accelerate-specific state
-        state["_sampler_iter_yielded"] = self._sampler_iter_yielded
+        # Start with our own state fields
+        state = {
+            "_sampler_iter_yielded": self._sampler_iter_yielded,
+            "_sampler_indices_yielded": self._sampler_indices_yielded,
+            "_indices_fetched_for_epoch": self._indices_fetched_for_epoch,
+            "_prefetch_state": self._prefetch_state,
+        }
+        
+        # Add underlying dataset state if available
+        if hasattr(self.dataset, "state_dict"):
+            dataset_state = self.dataset.state_dict()
+            # Ensure we don't overwrite our state fields if they also exist in dataset state
+            for k, v in dataset_state.items():
+                if k not in state:
+                    state[k] = v
+            
         return state
 
     def load_state_dict(self, state_dict):
         """Load a state dictionary from a checkpoint."""
-        if hasattr(self.dataset, "load_state_dict"):
-            self.dataset.load_state_dict(state_dict)
-        # Load Accelerate-specific state
+        # Load our own state fields
         if "_sampler_iter_yielded" in state_dict:
             self._sampler_iter_yielded = state_dict["_sampler_iter_yielded"]
+        if "_sampler_indices_yielded" in state_dict:
+            self._sampler_indices_yielded = state_dict["_sampler_indices_yielded"]
+        if "_indices_fetched_for_epoch" in state_dict:
+            self._indices_fetched_for_epoch = state_dict["_indices_fetched_for_epoch"]
+        if "_prefetch_state" in state_dict:
+            self._prefetch_state = state_dict["_prefetch_state"]
+            
+        # Load underlying dataset state if available
+        if hasattr(self.dataset, "load_state_dict"):
+            # Create a dict with only the non-Accelerate fields
+            dataset_state = {k: v for k, v in state_dict.items() 
+                            if k not in ["_sampler_iter_yielded", "_sampler_indices_yielded", 
+                                        "_indices_fetched_for_epoch", "_prefetch_state"]}
+            if dataset_state:  # Only call if we have state to pass
+                self.dataset.load_state_dict(dataset_state)
     
     
     def _find_element_files(self, data):
@@ -405,6 +435,14 @@ class ValidationE2VDataset(IterableE2VDataset):
     
     Extends IterableE2VDataset with validation-specific functionality.
     """
+    
+    def __init__(self, dataset, config, device=None):
+        super().__init__(dataset, config, device)
+        # Ensure all state fields are initialized here too
+        self._sampler_iter_yielded = 0
+        self._sampler_indices_yielded = set()
+        self._indices_fetched_for_epoch = 0
+        self._prefetch_state = {}
     
     def __iter__(self):
         """Process dataset items for validation."""
