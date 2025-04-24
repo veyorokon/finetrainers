@@ -40,6 +40,9 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         # Initialize video processor for preprocessing
         self.video_processor = VideoProcessor()
         
+        # Initialize Accelerate dataloader state field
+        self._sampler_iter_yielded = 0
+        
         logger.info(f"Initialized E2V dataset with {len(self.elements)} elements")
         for element in self.elements:
             logger.info(f"  Element: {element['name']}, suffixes: {element['suffixes']}")
@@ -62,12 +65,29 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 if processed_data:
                     result = {**data}
                     result["e2v_processed"] = processed_data
+                    # Track yielded samples for Accelerate
+                    self._sampler_iter_yielded += 1
                     yield result
                 else:
                     logger.warning("No elements were successfully processed, skipping item")
             except Exception as e:
                 logger.error(f"Error processing dataset item: {e}")
                 continue
+                
+    def state_dict(self):
+        """Return the state dictionary for checkpointing."""
+        state = self.dataset.state_dict() if hasattr(self.dataset, "state_dict") else {}
+        # Include the Accelerate-specific state
+        state["_sampler_iter_yielded"] = self._sampler_iter_yielded
+        return state
+
+    def load_state_dict(self, state_dict):
+        """Load a state dictionary from a checkpoint."""
+        if hasattr(self.dataset, "load_state_dict"):
+            self.dataset.load_state_dict(state_dict)
+        # Load Accelerate-specific state
+        if "_sampler_iter_yielded" in state_dict:
+            self._sampler_iter_yielded = state_dict["_sampler_iter_yielded"]
     
     
     def _find_element_files(self, data):
@@ -394,4 +414,6 @@ class ValidationE2VDataset(IterableE2VDataset):
             if "e2v_processed" in data:
                 data["element_files"] = {k: v.get("path", v.get("text", "")) 
                                          for k, v in data.get("e2v_elements", {}).items()}
+            # Note: We don't need to increment _sampler_iter_yielded here 
+            # as the parent class already does that
             yield data
