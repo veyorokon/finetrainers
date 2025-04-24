@@ -110,20 +110,12 @@ class E2VTrainer(ControlTrainer):
             self.state.parallel_backend.device
         )
         
-        # Create a reference to the Accelerate state fields
-        # This is a key step to ensure the dataset's state fields are accessible to Accelerate
-        dataset.dl_state_dict = dataset._accelerate_state.dl_state_dict
-        
         dataloader = self.state.parallel_backend.prepare_dataloader(
             dataset, 
             batch_size=1, 
             num_workers=self.args.dataloader_num_workers, 
             pin_memory=self.args.pin_memory
         )
-        
-        # Apply the fix to ensure Accelerate DataLoader has the required state fields
-        from .data import accelerate_dataloader_fix
-        dataloader = accelerate_dataloader_fix(dataloader)
         
         self.dataset = dataset
         self.dataloader = dataloader
@@ -139,15 +131,9 @@ class E2VTrainer(ControlTrainer):
         5. Returns processed data for training
         """
         
-        # Make sure Accelerate's dataloader state fields are present
-        if not hasattr(data_iterator, "dl_state_dict"):
-            from .data import accelerate_dataloader_fix
-            data_iterator = accelerate_dataloader_fix(data_iterator)
-        
         # 1. Collect samples into buffer
         buffer_size = max(1, self.args.batch_size * self.args.gradient_accumulation_steps)
         collected_samples = []
-        logger.info(f"Filling buffer from data iterator {data_iterator.dl_state_dict.get('_sampler_iter_yielded', 0)}")
         for _ in range(buffer_size):
             try:
                 batch = next(data_iterator)
@@ -537,8 +523,6 @@ class E2VTrainer(ControlTrainer):
         # Wrap with E2V validation dataset
         dataset = ValidationE2VDataset(dataset, dataset_config, self.state.parallel_backend.device)
         
-        # Also make Accelerate state dict accessible directly on validation dataset
-        dataset.dl_state_dict = dataset._accelerate_state.dl_state_dict
         
         # Rest of validation follows parent implementation
         # ...

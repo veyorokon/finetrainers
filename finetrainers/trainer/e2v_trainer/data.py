@@ -11,36 +11,11 @@ import torch
 import torch.distributed.checkpoint.stateful
 from PIL import Image
 from diffusers.video_processor import VideoProcessor
-from accelerate.data_loader import DataLoaderStateMixin
 
 import finetrainers.functional as FF
 from finetrainers.logging import get_logger
 
 logger = get_logger()
-
-# Monkey patch for Accelerate's data loader
-def accelerate_dataloader_fix(dataloader):
-    """Apply fixes to make a dataloader compatible with Accelerate."""
-    if not hasattr(dataloader, "dl_state_dict"):
-        dataloader.dl_state_dict = {
-            "_sampler_iter_yielded": 0,
-            "_sampler_indices_yielded": set(),
-            "_indices_fetched_for_epoch": 0,
-            "_prefetch_state": {}
-        }
-    return dataloader
-
-class AccelerateDatasetStateWrapper(DataLoaderStateMixin):
-    """Wrapper to provide Accelerate-compatible state fields."""
-    
-    def __init__(self):
-        # Initialize Accelerate-specific state fields
-        self.dl_state_dict = {
-            "_sampler_iter_yielded": 0,
-            "_sampler_indices_yielded": set(),
-            "_indices_fetched_for_epoch": 0,
-            "_prefetch_state": {}
-        }
 
 class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.checkpoint.stateful.Stateful):
     """Dataset wrapper for E2V training.
@@ -65,8 +40,8 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
         # Initialize video processor for preprocessing
         self.video_processor = VideoProcessor()
         
-        # Create Accelerate state wrapper
-        self._accelerate_state = AccelerateDatasetStateWrapper()
+        # Initialize Accelerate-specific state fields - critical for checkpointing
+        self._sampler_iter_yielded = 0
         
         logger.info(f"Initialized E2V dataset with {len(self.elements)} elements")
         for element in self.elements:
@@ -91,7 +66,7 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                     result = {**data}
                     result["e2v_processed"] = processed_data
                     # Track yielded samples for Accelerate
-                    self._accelerate_state.dl_state_dict["_sampler_iter_yielded"] += 1
+                    self._sampler_iter_yielded += 1
                     yield result
                 else:
                     logger.warning("No elements were successfully processed, skipping item")
@@ -101,13 +76,12 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
                 
     def state_dict(self):
         """Return the state dictionary for checkpointing."""
-        # Start with Accelerate state fields from wrapper
-        state = self._accelerate_state.dl_state_dict.copy()
+        state = {"_sampler_iter_yielded": self._sampler_iter_yielded}
         
         # Add underlying dataset state if available
         if hasattr(self.dataset, "state_dict"):
             dataset_state = self.dataset.state_dict()
-            # Ensure we don't overwrite Accelerate state fields if they exist in dataset state
+            # Merge with our state
             for k, v in dataset_state.items():
                 if k not in state:
                     state[k] = v
@@ -116,21 +90,13 @@ class IterableE2VDataset(torch.utils.data.IterableDataset, torch.distributed.che
 
     def load_state_dict(self, state_dict):
         """Load a state dictionary from a checkpoint."""
-        # Load Accelerate state fields
-        accelerate_fields = ["_sampler_iter_yielded", "_sampler_indices_yielded", 
-                            "_indices_fetched_for_epoch", "_prefetch_state"]
-        
-        for field in accelerate_fields:
-            if field in state_dict:
-                self._accelerate_state.dl_state_dict[field] = state_dict[field]
+        # Load our state field
+        if "_sampler_iter_yielded" in state_dict:
+            self._sampler_iter_yielded = state_dict["_sampler_iter_yielded"]
             
         # Load underlying dataset state if available
         if hasattr(self.dataset, "load_state_dict"):
-            # Create a dict with only the non-Accelerate fields
-            dataset_state = {k: v for k, v in state_dict.items() 
-                            if k not in accelerate_fields}
-            if dataset_state:  # Only call if we have state to pass
-                self.dataset.load_state_dict(dataset_state)
+            self.dataset.load_state_dict(state_dict)
     
     
     def _find_element_files(self, data):
@@ -451,7 +417,6 @@ class ValidationE2VDataset(IterableE2VDataset):
     
     def __init__(self, dataset, config, device=None):
         super().__init__(dataset, config, device)
-        # The parent class already initializes the Accelerate state wrapper
     
     def __iter__(self):
         """Process dataset items for validation."""
@@ -461,5 +426,4 @@ class ValidationE2VDataset(IterableE2VDataset):
             if "e2v_processed" in data:
                 data["element_files"] = {k: v.get("path", v.get("text", "")) 
                                          for k, v in data.get("e2v_elements", {}).items()}
-            # Parent already increments the state counters
             yield data
