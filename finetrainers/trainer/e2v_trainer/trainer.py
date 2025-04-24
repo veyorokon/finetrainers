@@ -106,12 +106,23 @@ class E2VTrainer(ControlTrainer):
             self.state.parallel_backend.device
         )
         
+        # Create dataloader using parent method
         dataloader = self.state.parallel_backend.prepare_dataloader(
             dataset, 
             batch_size=1, 
             num_workers=self.args.dataloader_num_workers, 
             pin_memory=self.args.pin_memory
         )
+        
+        # Critical fix: Initialize the Accelerate dataloader's state dict if missing
+        if not hasattr(dataloader, "dl_state_dict"):
+            logger.info("Adding required Accelerate state dict to dataloader")
+            dataloader.dl_state_dict = {
+                "_sampler_iter_yielded": 0,
+                "_sampler_indices_yielded": set(),
+                "_indices_fetched_for_epoch": 0,
+                "_prefetch_state": {}
+            }
         
         self.dataset = dataset
         self.dataloader = dataloader
@@ -240,8 +251,8 @@ class E2VTrainer(ControlTrainer):
         # Wrap with E2V validation dataset
         validation_dataset = ValidationE2VDataset(dataset, dataset_config, self.state.parallel_backend.device)
         
-        # Store the dataset to be used by the parent implementation
-        self.validation_dataset = validation_dataset
+        # We need to temporarily replace the validation dataset used by the parent method
+        self._validation_dataset = validation_dataset
         
         # Use parent validation implementation
         super()._validate(step, final_validation)
