@@ -18,6 +18,18 @@ from finetrainers.logging import get_logger
 
 logger = get_logger()
 
+# Monkey patch for Accelerate's data loader
+def accelerate_dataloader_fix(dataloader):
+    """Apply fixes to make a dataloader compatible with Accelerate."""
+    if not hasattr(dataloader, "dl_state_dict"):
+        dataloader.dl_state_dict = {
+            "_sampler_iter_yielded": 0,
+            "_sampler_indices_yielded": set(),
+            "_indices_fetched_for_epoch": 0,
+            "_prefetch_state": {}
+        }
+    return dataloader
+
 class AccelerateDatasetStateWrapper(DataLoaderStateMixin):
     """Wrapper to provide Accelerate-compatible state fields."""
     

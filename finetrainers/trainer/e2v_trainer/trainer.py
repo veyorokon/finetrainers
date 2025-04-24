@@ -121,6 +121,10 @@ class E2VTrainer(ControlTrainer):
             pin_memory=self.args.pin_memory
         )
         
+        # Apply the fix to ensure Accelerate DataLoader has the required state fields
+        from .data import accelerate_dataloader_fix
+        dataloader = accelerate_dataloader_fix(dataloader)
+        
         self.dataset = dataset
         self.dataloader = dataloader
     
@@ -135,9 +139,15 @@ class E2VTrainer(ControlTrainer):
         5. Returns processed data for training
         """
         
+        # Make sure Accelerate's dataloader state fields are present
+        if not hasattr(data_iterator, "dl_state_dict"):
+            from .data import accelerate_dataloader_fix
+            data_iterator = accelerate_dataloader_fix(data_iterator)
+        
         # 1. Collect samples into buffer
         buffer_size = max(1, self.args.batch_size * self.args.gradient_accumulation_steps)
         collected_samples = []
+        logger.info(f"Filling buffer from data iterator {data_iterator.dl_state_dict.get('_sampler_iter_yielded', 0)}")
         for _ in range(buffer_size):
             try:
                 batch = next(data_iterator)
