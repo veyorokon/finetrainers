@@ -117,6 +117,17 @@ class E2VTrainer(ControlTrainer):
             pin_memory=self.args.pin_memory
         )
         
+        # Initialize Accelerate dataloader state fields
+        if hasattr(dataloader, "dl_state_dict") and not isinstance(dataloader.dl_state_dict, dict):
+            # Ensure dl_state_dict is initialized as a dictionary
+            dataloader.dl_state_dict = {}
+            
+        if hasattr(dataloader, "dl_state_dict"):
+            # Add required fields for Accelerate compatibility
+            dataloader.dl_state_dict["_sampler_iter_yielded"] = 0
+            dataloader.dl_state_dict["_num_yielded"] = 0
+            dataloader.dl_state_dict["_index_sampler_state"] = {"samples_yielded": 0}
+        
         self.dataset = dataset
         self.dataloader = dataloader
     
