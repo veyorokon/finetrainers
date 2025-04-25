@@ -1,0 +1,367 @@
+import os
+import functools
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import torch
+from accelerate import init_empty_weights
+from diffusers import (
+    AutoencoderKLWan,
+    FlowMatchEulerDiscreteScheduler,
+    WanPipeline,
+    WanTransformer3DModel,
+)
+from transformers import (
+    AutoModel, 
+    AutoTokenizer, 
+    UMT5EncoderModel,
+    CLIPVisionModel,
+    CLIPImageProcessor
+)
+
+import finetrainers.functional as FF
+from finetrainers.data import VideoArtifact
+from finetrainers.logging import get_logger
+from finetrainers.models.modeling_utils import ModelSpecification
+from finetrainers.processors import ProcessorMixin, T5Processor
+from finetrainers.typing import ArtifactType, SchedulerType
+from finetrainers.utils import get_non_null_items, safetensors_torch_save_function
+
+from .base_specification import WanLatentEncodeProcessor, WanModelSpecification
+from .control_specification import WanControlModelSpecification
+
+logger = get_logger()
+
+
+class WanClipImageProcessor(ProcessorMixin):
+    """
+    Processor to encode reference images using CLIP vision model.
+    Similar to WanLatentEncodeProcessor but for CLIP visual embeddings.
+    
+    Args:
+        output_names (`List[str]`):
+            The names of the outputs that the processor returns. The outputs are:
+            - image_embeds: The CLIP visual embeddings of the input reference images.
+    """
+
+    def __init__(self, output_names: List[str]):
+        super().__init__()
+        self.output_names = output_names
+        assert len(self.output_names) == 1
+
+    def forward(
+        self,
+        image_processor: CLIPImageProcessor,
+        image_encoder: CLIPVisionModel,
+        images: List[torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Process reference images through CLIP vision model.
+        
+        Args:
+            image_processor: CLIP image processor for preprocessing images
+            image_encoder: CLIP vision model for encoding images
+            images: List of reference images to process
+            
+        Returns:
+            Dictionary with concatenated image embeddings
+        """
+        device = image_encoder.device
+        dtype = image_encoder.dtype
+        
+        image_embeds_list = []
+        
+        for image in images:
+            # Process image for CLIP
+            processed_image = image_processor(images=image, return_tensors="pt").to(device)
+            
+            # Get visual embedding (using the penultimate layer similar to A2)
+            with torch.no_grad():
+                image_embeds = image_encoder(**processed_image, output_hidden_states=True).hidden_states[-2]
+                
+            # Convert to proper dtype
+            image_embeds = image_embeds.to(dtype=dtype)
+            image_embeds_list.append(image_embeds)
+            
+        # Concatenate all reference embeddings along sequence dimension
+        all_image_embeds = torch.cat(image_embeds_list, dim=1)
+            
+        return {self.output_names[0]: all_image_embeds}
+
+
+class WanReferenceModelSpecification(WanControlModelSpecification):
+    """
+    Model specification for the Wan model with reference-based conditioning (A2 style).
+    Extends WanControlModelSpecification to add CLIP visual embedding processing.
+    """
+    
+    def __init__(
+        self,
+        pretrained_model_name_or_path: str = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+        tokenizer_id: Optional[str] = None,
+        text_encoder_id: Optional[str] = None,
+        transformer_id: Optional[str] = None,
+        vae_id: Optional[str] = None,
+        image_encoder_id: Optional[str] = None,
+        image_processor_id: Optional[str] = None,
+        text_encoder_dtype: torch.dtype = torch.bfloat16,
+        transformer_dtype: torch.dtype = torch.bfloat16,
+        vae_dtype: torch.dtype = torch.bfloat16,
+        image_encoder_dtype: torch.dtype = torch.bfloat16,
+        revision: Optional[str] = None,
+        cache_dir: Optional[str] = None,
+        condition_model_processors: List[ProcessorMixin] = None,
+        embedding_model_processors: List[ProcessorMixin] = None,
+        latent_model_processors: List[ProcessorMixin] = None,
+        control_model_processors: List[ProcessorMixin] = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(
+            pretrained_model_name_or_path=pretrained_model_name_or_path,
+            tokenizer_id=tokenizer_id,
+            text_encoder_id=text_encoder_id,
+            transformer_id=transformer_id,
+            vae_id=vae_id,
+            text_encoder_dtype=text_encoder_dtype,
+            transformer_dtype=transformer_dtype,
+            vae_dtype=vae_dtype,
+            revision=revision,
+            cache_dir=cache_dir,
+            condition_model_processors=condition_model_processors,
+            latent_model_processors=latent_model_processors,
+            control_model_processors=control_model_processors,
+        )
+        
+        self.image_encoder_id = image_encoder_id
+        self.image_processor_id = image_processor_id
+        self.image_encoder_dtype = image_encoder_dtype
+        
+        if embedding_model_processors is None:
+            embedding_model_processors = [WanClipImageProcessor(["encoder_image_embeds"])]
+            
+        self.embedding_model_processors = embedding_model_processors
+
+    def load_embedding_models(self) -> Dict[str, torch.nn.Module]:
+        """Load CLIP vision model and processor for reference-based conditioning"""
+        common_kwargs = {"revision": self.revision, "cache_dir": self.cache_dir}
+        
+        if self.image_processor_id is not None:
+            image_processor = CLIPImageProcessor.from_pretrained(self.image_processor_id, **common_kwargs)
+        else:
+            image_processor = CLIPImageProcessor.from_pretrained(
+                self.pretrained_model_name_or_path, subfolder="image_processor", **common_kwargs
+            )
+            
+        if self.image_encoder_id is not None:
+            image_encoder = CLIPVisionModel.from_pretrained(
+                self.image_encoder_id, torch_dtype=self.image_encoder_dtype, **common_kwargs
+            )
+        else:
+            image_encoder = CLIPVisionModel.from_pretrained(
+                self.pretrained_model_name_or_path, 
+                subfolder="image_encoder", 
+                torch_dtype=self.image_encoder_dtype,
+                **common_kwargs
+            )
+            
+        return {"image_processor": image_processor, "image_encoder": image_encoder}
+        
+    @torch.no_grad()
+    def prepare_embedding_conditions(
+        self,
+        image_processor: CLIPImageProcessor,
+        image_encoder: CLIPVisionModel,
+        reference_images: List[torch.Tensor],
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Process reference images through CLIP vision model"""
+        conditions = {
+            "image_processor": image_processor,
+            "image_encoder": image_encoder,
+            "images": reference_images,
+            **kwargs,
+        }
+        
+        input_keys = set(conditions.keys())
+        
+        # Process through processors
+        for processor in self.embedding_model_processors:
+            outputs = processor(**conditions)
+            conditions.update(outputs)
+            
+        # Filter out input keys
+        conditions = {k: v for k, v in conditions.items() if k not in input_keys}
+        
+        return conditions
+        
+    def forward(
+        self,
+        transformer: WanTransformer3DModel,
+        condition_model_conditions: Dict[str, torch.Tensor],
+        latent_model_conditions: Dict[str, torch.Tensor],
+        embedding_model_conditions: Dict[str, torch.Tensor],
+        sigmas: torch.Tensor,
+        generator: Optional[torch.Generator] = None,
+        compute_posterior: bool = True,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, ...]:
+        """
+        Forward pass with reference-based conditioning.
+        Add reference embeddings to the encoder_hidden_states.
+        """
+        # Get image embeddings
+        image_embeds = embedding_model_conditions.pop("encoder_image_embeds")
+        
+        # Get text embeddings
+        text_embeds = condition_model_conditions.pop("encoder_hidden_states")
+        
+        # Concatenate image and text embeddings
+        combined_embeds = torch.cat([image_embeds, text_embeds], dim=1)
+        
+        # Put back in condition_model_conditions
+        condition_model_conditions["encoder_hidden_states"] = combined_embeds
+        
+        # Call parent forward
+        return super().forward(
+            transformer=transformer,
+            condition_model_conditions=condition_model_conditions,
+            latent_model_conditions=latent_model_conditions,
+            sigmas=sigmas,
+            generator=generator,
+            compute_posterior=compute_posterior,
+            **kwargs,
+        )
+    
+    def validation(
+        self,
+        pipeline: WanPipeline,
+        prompt: str,
+        reference_images: List[torch.Tensor] = None,
+        control_image: Optional[torch.Tensor] = None,
+        control_video: Optional[torch.Tensor] = None,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
+        num_frames: Optional[int] = None,
+        num_inference_steps: int = 50,
+        generator: Optional[torch.Generator] = None,
+        frame_conditioning_type: str = "full",
+        frame_conditioning_index: int = 0,
+        **kwargs,
+    ) -> List[ArtifactType]:
+        """
+        Extend validation to include reference images for A2-style conditioning
+        """
+        from finetrainers.trainer.control_trainer.data import apply_frame_conditioning_on_latents
+
+        with torch.no_grad():
+            dtype = pipeline.vae.dtype
+            device = pipeline._execution_device
+            in_channels = self.transformer_config.in_channels  # We need to use the original in_channels
+            latents = pipeline.prepare_latents(1, in_channels, height, width, num_frames, dtype, device, generator)
+            latents_mean = (
+                torch.tensor(self.vae_config.latents_mean)
+                .view(1, self.vae_config.z_dim, 1, 1, 1)
+                .to(latents.device, latents.dtype)
+            )
+            latents_std = 1.0 / torch.tensor(self.vae_config.latents_std).view(1, self.vae_config.z_dim, 1, 1, 1).to(
+                latents.device, latents.dtype
+            )
+
+            if control_image is not None:
+                control_video = pipeline.video_processor.preprocess(
+                    control_image, height=height, width=width
+                ).unsqueeze(2)
+            else:
+                control_video = pipeline.video_processor.preprocess_video(control_video, height=height, width=width)
+
+            control_video = control_video.to(device=device, dtype=dtype)
+            control_latents = pipeline.vae.encode(control_video).latent_dist.mode()
+            control_latents = self._normalize_latents(control_latents, latents_mean, latents_std)
+            control_latents = apply_frame_conditioning_on_latents(
+                control_latents,
+                latents.shape[2],
+                channel_dim=1,
+                frame_dim=2,
+                frame_conditioning_type=frame_conditioning_type,
+                frame_conditioning_index=frame_conditioning_index,
+                concatenate_mask=self.frame_conditioning_concatenate_mask,
+            )
+            
+            # Process reference images for CLIP embedding if provided
+            if reference_images is not None and hasattr(pipeline, 'image_encoder'):
+                image_embeds_list = []
+                
+                for image in reference_images:
+                    # Convert PIL image to tensor if needed
+                    if not isinstance(image, torch.Tensor):
+                        if hasattr(pipeline, 'image_processor'):
+                            image = pipeline.image_processor(images=image, return_tensors="pt").to(device)
+                        else:
+                            # Fallback if no image_processor
+                            from PIL import Image
+                            if isinstance(image, Image.Image):
+                                from torchvision import transforms
+                                transform = transforms.Compose([
+                                    transforms.Resize((224, 224)),
+                                    transforms.ToTensor(),
+                                    transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], 
+                                                        std=[0.26862954, 0.26130258, 0.27577711])
+                                ])
+                                image = transform(image).unsqueeze(0).to(device)
+                    
+                    # Get visual embedding from the penultimate layer
+                    with torch.no_grad():
+                        image_embeds = pipeline.image_encoder(image, output_hidden_states=True).hidden_states[-2]
+                    
+                    image_embeds_list.append(image_embeds)
+                
+                # Concatenate all reference embeddings
+                all_image_embeds = torch.cat(image_embeds_list, dim=1)
+
+        generation_kwargs = {
+            "latents": latents,
+            "prompt": prompt,
+            "height": height,
+            "width": width,
+            "num_frames": num_frames,
+            "num_inference_steps": num_inference_steps,
+            "generator": generator,
+            "return_dict": True,
+            "output_type": "pil",
+        }
+        generation_kwargs = get_non_null_items(generation_kwargs)
+
+        from finetrainers.patches.dependencies.diffusers.control import control_channel_concat
+        
+        def _get_model_input(*args, **kwargs):
+            # Original model input function
+            original_output = original_func(*args, **kwargs)
+            
+            # Add reference image embeddings to encoder_hidden_states if we have them
+            if 'reference_images' in locals() and reference_images is not None:
+                encoder_hidden_states = original_output[1]  # Assuming encoder_hidden_states is the second return value
+                encoder_hidden_states = torch.cat([all_image_embeds, encoder_hidden_states], dim=1)
+                
+                # Replace encoder_hidden_states in the output
+                outputs = list(original_output)
+                outputs[1] = encoder_hidden_states
+                return tuple(outputs)
+            
+            return original_output
+        
+        # Only patch if we have reference images
+        if reference_images is not None and hasattr(pipeline, 'image_encoder'):
+            # Store original method
+            original_func = pipeline._encode_prompt
+            
+            # Temporarily patch the method
+            pipeline._encode_prompt = _get_model_input
+        
+        try:
+            with control_channel_concat(pipeline.transformer, ["hidden_states"], [control_latents], dims=[1]):
+                video = pipeline(**generation_kwargs).frames[0]
+        finally:
+            # Restore original method if we patched it
+            if reference_images is not None and hasattr(pipeline, 'image_encoder'):
+                pipeline._encode_prompt = original_func
+
+        return [VideoArtifact(value=video)]
