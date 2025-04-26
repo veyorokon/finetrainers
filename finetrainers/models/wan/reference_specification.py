@@ -6,6 +6,7 @@ import torch
 from accelerate import init_empty_weights
 from diffusers import (AutoencoderKLWan, FlowMatchEulerDiscreteScheduler,
                        WanPipeline, WanTransformer3DModel)
+from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 from diffusers.utils import load_image
 from transformers import (AutoModel, AutoTokenizer, CLIPImageProcessor,
                           CLIPVisionModel, UMT5EncoderModel)
@@ -195,16 +196,79 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             # Put back in condition_model_conditions
             condition_model_conditions["encoder_hidden_states"] = combined_embeds
         
-        # Call parent forward
-        return super().forward(
-            transformer=transformer,
-            condition_model_conditions=condition_model_conditions,
-            latent_model_conditions=latent_model_conditions,
-            sigmas=sigmas,
-            generator=generator,
-            compute_posterior=compute_posterior,
-            **kwargs,
+        # Copy the relevant code from the parent class to handle latents
+        from finetrainers.trainer.control_trainer.data import \
+            apply_frame_conditioning_on_latents
+
+        compute_posterior = False  # See explanation in prepare_latents
+        if compute_posterior:
+            latents = latent_model_conditions.pop("latents")
+            control_latents = latent_model_conditions.pop("control_latents")
+        else:
+            latents = latent_model_conditions.pop("latents")
+            control_latents = latent_model_conditions.pop("control_latents")
+            latents_mean = latent_model_conditions.pop("latents_mean")
+            latents_std = latent_model_conditions.pop("latents_std")
+
+            mu, logvar = torch.chunk(latents, 2, dim=1)
+            mu = self._normalize_latents(mu, latents_mean, latents_std)
+            logvar = self._normalize_latents(logvar, latents_mean, latents_std)
+            latents = torch.cat([mu, logvar], dim=1)
+
+            mu, logvar = torch.chunk(control_latents, 2, dim=1)
+            mu = self._normalize_latents(mu, latents_mean, latents_std)
+            logvar = self._normalize_latents(logvar, latents_mean, latents_std)
+            control_latents = torch.cat([mu, logvar], dim=1)
+
+            posterior = DiagonalGaussianDistribution(latents)
+            latents = posterior.mode()
+            del posterior
+
+            control_posterior = DiagonalGaussianDistribution(control_latents)
+            control_latents = control_posterior.mode()
+            del control_posterior
+
+        noise = torch.zeros_like(latents).normal_(generator=generator)
+        timesteps = (sigmas.flatten() * 1000.0).long()
+
+        noisy_latents = FF.flow_match_xt(latents, noise, sigmas)
+        control_latents = apply_frame_conditioning_on_latents(
+            control_latents,
+            noisy_latents.shape[2],
+            channel_dim=1,
+            frame_dim=2,
+            frame_conditioning_type=self.frame_conditioning_type,
+            frame_conditioning_index=self.frame_conditioning_index,
+            concatenate_mask=self.frame_conditioning_concatenate_mask,
         )
+        
+        # Concatenate latents along channel dimension
+        noisy_latents = torch.cat([noisy_latents, control_latents], dim=1)
+        
+        # THIS IS THE KEY ADDITION - ADD PADDING TO MATCH EXPECTED CHANNELS
+        current_channels = noisy_latents.shape[1]
+        expected_channels = transformer.config.in_channels
+        
+        if current_channels < expected_channels:
+            padding_channels = expected_channels - current_channels
+            padding_shape = list(noisy_latents.shape)
+            padding_shape[1] = padding_channels  # Channel dimension is 1
+            
+            logger.info(f"Adding {padding_channels} zero channels to latents ({current_channels} → {expected_channels})")
+            channel_padding = torch.zeros(padding_shape, device=noisy_latents.device, dtype=noisy_latents.dtype)
+            noisy_latents = torch.cat([noisy_latents, channel_padding], dim=1)
+
+        latent_model_conditions["hidden_states"] = noisy_latents.to(latents)
+
+        pred = transformer(
+            **latent_model_conditions,
+            **condition_model_conditions,
+            timestep=timesteps,
+            return_dict=False,
+        )[0]
+        target = FF.flow_match_target(noise, latents)
+
+        return pred, target, sigmas
     
     def validation(
         self,
@@ -227,9 +291,10 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         """
         Extend validation to include reference images for A2-style conditioning
         """
+        from finetrainers.processors.reference import \
+            ReferenceToControlProcessor
         from finetrainers.trainer.control_trainer.data import \
             apply_frame_conditioning_on_latents
-        from finetrainers.processors.reference import ReferenceToControlProcessor
 
         with torch.no_grad():
             dtype = pipeline.vae.dtype
