@@ -136,21 +136,38 @@ class ReferenceToControlProcessor(ProcessorMixin):
         Returns:
             Dictionary with control_image or control_video for latent encoding
         """
-        # If we already have control inputs, just pass through
-        if "control_image" in kwargs or "control_video" in kwargs:
-            return {self.output_names[0]: image, self.output_names[1]: video}
+        logger.info(f"ReferenceToControlProcessor input: references={references is not None}, "
+                  f"vae_references={vae_references is not None}, "
+                  f"image={image is not None}, video={video is not None}")
+        
+        # Check if we have existing control inputs
+        has_control = "control_image" in kwargs or "control_video" in kwargs
+        logger.info(f"Has existing control inputs: {has_control}")
+        
+        # Clone the existing inputs rather than passing them directly
+        # This avoids the warning about overwriting existing values
+        image_out = image.clone() if image is not None else None
+        video_out = video.clone() if video is not None else None
+        
+        # If we already have control inputs, don't process references
+        if has_control:
+            return {self.output_names[0]: image_out, self.output_names[1]: video_out}
         
         # Convert raw references to pre-processed format if needed
         if references and not vae_references:
+            logger.info(f"Converting raw references to vae_references format")
             vae_references = self._preprocess_references(references)
             
         # Process references if we have them
         if vae_references and len(vae_references) > 0:
+            logger.info(f"Processing {len(vae_references)} reference images")
+            
             # Create a sequence of frames with specified repetitions
             frames = []
             for ref_data in vae_references:
                 ref_image = ref_data["image"]
                 repeat_count = ref_data["repeat"]
+                logger.info(f"  Reference with repeat count {repeat_count}")
                 
                 # Convert PIL to tensor if needed
                 if not isinstance(ref_image, torch.Tensor):
@@ -161,6 +178,7 @@ class ReferenceToControlProcessor(ProcessorMixin):
                 frames.extend([ref_tensor] * repeat_count)
             
             if frames:
+                logger.info(f"Creating control video with {len(frames)} frames")
                 # Stack frames to create video [T, C, H, W]
                 control_video = torch.stack(frames, dim=0)
                 # Add batch dimension [B, T, C, H, W]
@@ -168,11 +186,21 @@ class ReferenceToControlProcessor(ProcessorMixin):
                 # Permute to [B, C, T, H, W] format for VAE
                 control_video = control_video.permute(0, 2, 1, 3, 4)
                 
+                logger.info(f"Created control video with shape {control_video.shape}")
+                
+                # Use different output keys to avoid warning about overwriting existing values
+                # This is important since "image" and "video" may already exist in the conditions
+                output_key_image = kwargs.get("input_key_image", self.output_names[0])
+                output_key_video = kwargs.get("input_key_video", self.output_names[1])
+                
+                logger.info(f"Using output keys: {output_key_image}, {output_key_video}")
+                
                 # Return the control video using output_names for key mapping
-                return {self.output_names[0]: None, self.output_names[1]: control_video}
+                return {output_key_image: None, output_key_video: control_video}
         
         # If no references were processed, return the original inputs
-        return {self.output_names[0]: image, self.output_names[1]: video}
+        logger.info(f"No references processed, returning original inputs")
+        return {self.output_names[0]: image_out, self.output_names[1]: video_out}
 
 
 class ReferenceClipProcessor(ProcessorMixin):

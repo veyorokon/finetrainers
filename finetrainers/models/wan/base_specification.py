@@ -50,18 +50,37 @@ class WanLatentEncodeProcessor(ProcessorMixin):
     ) -> Dict[str, torch.Tensor]:
         device = vae.device
         dtype = vae.dtype
+        
+        # Add debugging to help diagnose issues
+        from finetrainers.logging import get_logger
+        logger = get_logger()
+        logger.info(f"WanLatentEncodeProcessor inputs: image={image is not None}, video={video is not None}")
+        
+        # Handle the case where neither image nor video is provided
+        if image is None and video is None:
+            logger.error("Both image and video are None, cannot encode latents")
+            raise ValueError("WanLatentEncodeProcessor requires either image or video input")
 
+        # Convert image to video if provided
         if image is not None:
+            logger.info(f"Converting image with shape {image.shape} to video")
             video = image.unsqueeze(1)
 
+        assert video is not None, "Video should not be None at this point"
         assert video.ndim == 5, f"Expected 5D tensor, got {video.ndim}D tensor"
+        
+        # Process video
+        logger.info(f"Processing video with shape {video.shape}")
         video = video.to(device=device, dtype=vae.dtype)
         video = video.permute(0, 2, 1, 3, 4).contiguous()  # [B, F, C, H, W] -> [B, C, F, H, W]
+        logger.info(f"After permute, video shape: {video.shape}")
 
         if compute_posterior:
+            logger.info("Computing posterior with VAE")
             latents = vae.encode(video).latent_dist.sample(generator=generator)
             latents = latents.to(dtype=dtype)
         else:
+            logger.info("Encoding with VAE without posterior sampling")
             # TODO(aryan): refactor in diffusers to have use_slicing attribute
             # if vae.use_slicing and video.shape[0] > 1:
             #     encoded_slices = [vae._encode(x_slice) for x_slice in video.split(1)]
@@ -71,9 +90,11 @@ class WanLatentEncodeProcessor(ProcessorMixin):
             moments = vae._encode(video)
             latents = moments.to(dtype=dtype)
 
+        logger.info(f"Generated latents with shape {latents.shape}")
         latents_mean = torch.tensor(vae.config.latents_mean)
         latents_std = 1.0 / torch.tensor(vae.config.latents_std)
 
+        logger.info(f"Returning outputs with keys: {self.output_names}")
         return {self.output_names[0]: latents, self.output_names[1]: latents_mean, self.output_names[2]: latents_std}
 
 

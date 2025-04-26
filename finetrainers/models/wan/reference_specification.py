@@ -67,12 +67,20 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             # First, create the standard control processor
             standard_control_processor = WanLatentEncodeProcessor(["control_latents", "__drop__", "__drop__"])
             
-            # Then create our reference processor that runs before it
-            # Map our processor output to the keys expected by WanLatentEncodeProcessor (image, video)
+            # Use unique output names to avoid collisions with existing keys
+            # We need to pass these to avoid the warning about overwriting existing values
             reference_processor = ReferenceToControlProcessor(
-                ["image", "video"], 
-                reference_config=self.reference_config
+                ["ref_processed_image", "ref_processed_video"], 
+                reference_config=self.reference_config,
+                # Map the reference processor's outputs to what WanLatentEncodeProcessor expects
+                input_names={"ref_processed_image": "image", "ref_processed_video": "video"}
             )
+            
+            # Add logging to debug more easily
+            logger.info("Initializing control processors:")
+            logger.info(f"  Reference processor output names: {reference_processor.output_names}")
+            logger.info(f"  Reference processor input names: {reference_processor.input_names}")
+            logger.info(f"  Control processor output names: {standard_control_processor.output_names}")
             
             # Use both processors in sequence
             control_model_processors = [reference_processor, standard_control_processor]
