@@ -58,7 +58,7 @@ model_cmd=(
 
 # Control arguments
 control_cmd=(
-  --control_type none
+  --control_type custom
   --rank 16
   --lora_alpha 16
   --target_modules "blocks.*(to_q|to_k|to_v|to_out.0)"
@@ -69,7 +69,7 @@ control_cmd=(
 # Dataset arguments
 dataset_cmd=(
   --dataset_config $TRAINING_DATASET_CONFIG
-  --dataset_shuffle_buffer_size 32
+  --dataset_shuffle_buffer_size 1 #32
   --cache_dir "/workspace/wan-ref-control/cache/"
 )
 
