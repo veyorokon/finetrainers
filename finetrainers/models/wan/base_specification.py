@@ -67,6 +67,13 @@ class WanLatentEncodeProcessor(ProcessorMixin):
             video = image.unsqueeze(1)
 
         assert video is not None, "Video should not be None at this point"
+        
+        # Fix dimensionality if needed
+        if video.ndim == 4:  # [F, C, H, W]
+            logger.info(f"Converting 4D video tensor with shape {video.shape} to 5D")
+            video = video.unsqueeze(0)  # Add batch dimension [1, F, C, H, W]
+            logger.info(f"After conversion, video shape: {video.shape}")
+        
         assert video.ndim == 5, f"Expected 5D tensor, got {video.ndim}D tensor"
         
         # Process video
