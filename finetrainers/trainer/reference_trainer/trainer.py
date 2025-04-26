@@ -1,3 +1,4 @@
+import pathlib
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
 import torch
@@ -6,10 +7,11 @@ from accelerate.utils import extract_model_from_parallel
 from diffusers.utils import load_image
 from transformers import CLIPImageProcessor, CLIPVisionModel
 
-from finetrainers.data import VideoArtifact, PatternReferenceDataset 
+from finetrainers.data import PatternReferenceDataset, VideoArtifact
 from finetrainers.data.reference import initialize_reference_dataset
 from finetrainers.logging import get_logger
-from finetrainers.models.wan.reference_specification import WanReferenceModelSpecification
+from finetrainers.models.wan.reference_specification import \
+    WanReferenceModelSpecification
 from finetrainers.trainer.control_trainer.trainer import ControlTrainer
 from finetrainers.utils import get_non_null_items
 
@@ -163,9 +165,31 @@ class ReferenceTrainer(ControlTrainer):
         embedding_model_conditions = {}
         
         # Convert 'images' key to 'references' for our processor
-        if "images" in batch:
+        if "images" in batch and "references" not in batch:
             logger.info(f"Converting 'images' key to 'references' for processor compatibility")
-            batch["references"] = batch["images"]
+            # Check if images is a list of paths or already a dictionary
+            if isinstance(batch["images"], list):
+                # Convert list of paths to dictionary with object/background keys
+                # based on filenames
+                reference_dict = {}
+                for image_path in batch["images"]:
+                    # Try to extract reference type from the filename
+                    path = pathlib.Path(image_path)
+                    filename = path.name
+                    for suffix in self.config.reference_suffixes:
+                        if suffix in filename:
+                            # Strip leading underscore if present
+                            ref_type = suffix[1:] if suffix.startswith("_") else suffix
+                            reference_dict[ref_type] = image_path
+                            break
+                
+                logger.info(f"Converted image paths to reference dictionary: {list(reference_dict.keys())}")
+                batch["references"] = reference_dict
+            else:
+                logger.info("References are in the batch")
+                # Images is already in the right format
+                batch["references"] = batch["images"]
+            
             # Keep images for other processing if needed
             
         # Extract conditions as in parent class

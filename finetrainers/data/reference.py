@@ -61,7 +61,7 @@ class PatternReferenceDataset(torch.utils.data.IterableDataset, torch.distribute
         data = []
         target_files = []
         
-        if dataset_type == "video":
+        if dataset_type in ["video", "video_references"]:
             for ext in constants.SUPPORTED_VIDEO_FILE_EXTENSIONS:
                 target_files.extend(find_files(self.root.as_posix(), f"*.{ext}", depth=0))
         else:  # image
@@ -86,6 +86,7 @@ class PatternReferenceDataset(torch.utils.data.IterableDataset, torch.distribute
                         # Extract reference type from suffix (remove leading underscore if present)
                         ref_type = suffix[1:] if suffix.startswith("_") else suffix
                         reference_images[ref_type] = ref_path.as_posix()
+                        logger.info(f"Found reference image for {base_name}: {ref_type} at {ref_path}")
                         break
             
             # Skip if no reference images found
@@ -108,7 +109,7 @@ class PatternReferenceDataset(torch.utils.data.IterableDataset, torch.distribute
         data = datasets.Dataset.from_list(data)
         
         # Cast to proper type
-        if dataset_type == "video":
+        if dataset_type in ["video", "video_references"]:
             data = data.rename_column("file", "video")
             data = data.cast_column("video", datasets.Video())
         else:
@@ -156,39 +157,23 @@ def initialize_reference_dataset(
     dataset_type: str = "video",
     infinite: bool = False,
 ) -> torch.utils.data.IterableDataset:
-    """Initialize a reference dataset from a local directory or HF repository.
+    """Initialize a reference dataset from a local directory 
     
     Args:
-        dataset_name_or_root: Path to local directory or HF repo name
+        dataset_name_or_root: Path to local dir
         reference_suffixes: List of suffixes to identify reference images
-        dataset_type: Type of dataset ("video" or "image")
+        dataset_type: Type of dataset ("video", "video_references", or "image")
         infinite: Whether to loop the dataset infinitely
         
     Returns:
         An iterable dataset that pairs videos/images with reference images
     """
-    assert dataset_type in ["image", "video"]
+    assert dataset_type in ["image", "video", "video_references"], "Dataset type must be 'image', 'video', or 'video_references'"
     
-    try:
-        does_repo_exist_on_hub = repo_exists(dataset_name_or_root, repo_type="dataset")
-    except huggingface_hub.errors.HFValidationError:
-        does_repo_exist_on_hub = False
-    
-    if does_repo_exist_on_hub:
-        # Download from HF Hub
-        logger.info(f"Downloading dataset {dataset_name_or_root} from the HF Hub")
-        dataset_root = snapshot_download(dataset_name_or_root, repo_type="dataset")
-        return PatternReferenceDataset(
-            dataset_root, 
-            reference_suffixes=reference_suffixes,
-            dataset_type=dataset_type,
-            infinite=infinite
-        )
-    else:
-        # Use local directory
-        return PatternReferenceDataset(
-            dataset_name_or_root, 
-            reference_suffixes=reference_suffixes,
-            dataset_type=dataset_type, 
-            infinite=infinite
-        )
+    # Use local directory
+    return PatternReferenceDataset(
+        dataset_name_or_root, 
+        reference_suffixes=reference_suffixes,
+        dataset_type=dataset_type, 
+        infinite=infinite
+    )
