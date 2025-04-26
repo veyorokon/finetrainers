@@ -65,6 +65,7 @@ control_cmd=(
   --target_modules "blocks.*(to_q|to_k|to_v|to_out.0)"
   --frame_conditioning_type full
   --frame_conditioning_index 0
+  --frame_conditioning_concatenate_mask
 )
 
 # Dataset arguments
