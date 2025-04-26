@@ -5,6 +5,7 @@ from .canny import CannyProcessor
 from .clip import CLIPPooledProcessor
 from .glm import CogView4GLMProcessor
 from .llama import LlamaProcessor
+from .reference import ReferenceToControlProcessor, ReferenceClipProcessor
 from .t5 import T5Processor
 from .text import CaptionEmbeddingDropoutProcessor, CaptionTextDropoutProcessor
 

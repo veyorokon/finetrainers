@@ -6,75 +6,16 @@ import torch.distributed.checkpoint.stateful
 from diffusers.utils import load_image
 from diffusers.video_processor import VideoProcessor
 from PIL import Image
-import torchvision.transforms as transforms
 
 import finetrainers.functional as FF
 from finetrainers.logging import get_logger
 from finetrainers.processors import CannyProcessor, CopyProcessor
+from finetrainers.processors.reference import _crop_and_resize_pad
 from finetrainers.trainer.control_trainer.data import (ControlType,
                                                        FrameConditioningType,
                                                        IterableControlDataset)
 
 logger = get_logger()
-
-
-def _crop_and_resize_pad(image, height, width, resize_mode="bicubic"):
-    """Center crop and resize image with padding to maintain aspect ratio."""
-    if isinstance(image, torch.Tensor):
-        # Convert tensor to PIL for processing
-        if image.dim() == 3:  # [C, H, W]
-            image = image.permute(1, 2, 0).cpu().numpy()
-            image = Image.fromarray((image * 127.5 + 127.5).astype("uint8"))
-        else:
-            raise ValueError(f"Unsupported tensor shape: {image.shape}")
-    
-    # Get original dimensions
-    orig_width, orig_height = image.size
-    
-    # Determine aspect ratio
-    target_ratio = width / height
-    orig_ratio = orig_width / orig_height
-    
-    if orig_ratio > target_ratio:
-        # Image is wider than target ratio
-        new_width = int(orig_height * target_ratio)
-        new_height = orig_height
-        left = (orig_width - new_width) // 2
-        image = image.crop((left, 0, left + new_width, new_height))
-    else:
-        # Image is taller than target ratio
-        new_width = orig_width
-        new_height = int(orig_width / target_ratio)
-        top = (orig_height - new_height) // 2
-        image = image.crop((0, top, new_width, top + new_height))
-    
-    # Resize to target dimensions
-    image = image.resize((width, height), getattr(Image, resize_mode.upper()))
-    return image
-
-
-def _crop_and_resize(image, height, width, resize_mode="bicubic"):
-    """Resize image without padding, allowing aspect ratio change."""
-    if isinstance(image, torch.Tensor):
-        # Convert tensor to PIL for processing
-        if image.dim() == 3:  # [C, H, W]
-            image = image.permute(1, 2, 0).cpu().numpy()
-            image = Image.fromarray((image * 127.5 + 127.5).astype("uint8"))
-        else:
-            raise ValueError(f"Unsupported tensor shape: {image.shape}")
-    
-    # Resize to target dimensions
-    image = image.resize((width, height), getattr(Image, resize_mode.upper()))
-    return image
-
-
-def pil_to_tensor(image):
-    """Convert PIL image to normalized tensor in range [-1, 1]."""
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
-    return transform(image)
 
 
 class IterableReferenceDataset(IterableControlDataset):
@@ -108,11 +49,10 @@ class IterableReferenceDataset(IterableControlDataset):
     def __iter__(self):
         logger.info("Starting IterableReferenceDataset")
         for data in iter(self.dataset):
-            # Process reference images first, then create control_video from them
+            # Process reference images only for CLIP embedding
             if "references" in data:
-                vae_images = []
                 clip_images = []
-                processed_vae_tensors = []
+                vae_images = []
                 
                 # Get config values
                 vae_resolution = self.reference_config["vae_resolution"]
@@ -130,17 +70,13 @@ class IterableReferenceDataset(IterableControlDataset):
                         # Get repetition count (or default to 1)
                         repeat = repeat_frames[idx] if idx < len(repeat_frames) else 1
                         
-                        # Process for VAE
+                        # Process for VAE storage (no longer creating control video here)
                         vae_image = _crop_and_resize_pad(
                             ref_image,
                             height=vae_resolution[1],
                             width=vae_resolution[0]
                         )
                         vae_images.append({"image": vae_image, "repeat": repeat})
-                        
-                        # Convert to tensor for video creation
-                        vae_tensor = pil_to_tensor(vae_image)
-                        processed_vae_tensors.append((vae_tensor, repeat))
                         
                         # Process for CLIP
                         clip_image = _crop_and_resize_pad(
@@ -150,44 +86,10 @@ class IterableReferenceDataset(IterableControlDataset):
                         )
                         clip_images.append(clip_image)
                 
-                # Create control_video from reference images
-                if processed_vae_tensors:
-                    # Always create a dummy control_image or control_video even if not needed
-                    # This is a workaround to avoid the error in latent processing
-                    # By overwriting any existing control_image/control_video 
-                    
-                    # Create a sequence of frames with specified repetitions
-                    frames = []
-                    for tensor, repeat_count in processed_vae_tensors:
-                        frames.extend([tensor] * repeat_count)
-                    
-                    if frames:
-                        # Stack frames to create video [T, C, H, W]
-                        control_video = torch.stack(frames, dim=0)
-                        # Add batch dimension [B, T, C, H, W]
-                        control_video = control_video.unsqueeze(0)
-                        # Permute to [B, C, T, H, W] format for VAE
-                        control_video = control_video.permute(0, 2, 1, 3, 4)
-                        data["control_video"] = control_video
-                
                 # Store the processed images for reference path
+                # Control video creation now happens in the ReferenceToControlProcessor
                 data["vae_references"] = vae_images
                 data["clip_references"] = clip_images
-            
-            # For custom control type, always ensure we have control inputs
-            # to avoid NoneType errors during latent processing
-            if self.control_type == ControlType.CUSTOM:
-                # If no control inputs have been created yet, create dummy ones
-                if "control_image" not in data and "control_video" not in data:
-                    # Check if there's an image or video to base size on
-                    if "image" in data:
-                        # Create a dummy control image with zeros
-                        image_shape = data["image"].shape
-                        data["control_image"] = torch.zeros_like(data["image"])
-                    elif "video" in data:
-                        # Create a dummy control video with zeros
-                        video_shape = data["video"].shape
-                        data["control_video"] = torch.zeros_like(data["video"])
             
             # Now process control images/videos as in parent class
             control_augmented_data = self._run_control_processors(data)
@@ -238,11 +140,10 @@ class ValidationReferenceDataset(torch.utils.data.IterableDataset):
     def __iter__(self):
         logger.info("Starting ValidationReferenceDataset")
         for data in iter(self.dataset):
-            # Process reference images first, then create control inputs
+            # Process reference images only for CLIP embedding
             if "references" in data:
-                vae_images = []
                 clip_images = []
-                processed_vae_tensors = []
+                vae_images = []
                 
                 # Get config values
                 vae_resolution = self.reference_config["vae_resolution"]
@@ -260,17 +161,13 @@ class ValidationReferenceDataset(torch.utils.data.IterableDataset):
                         # Get repetition count (or default to 1)
                         repeat = repeat_frames[idx] if idx < len(repeat_frames) else 1
                         
-                        # Process for VAE
+                        # Process for VAE storage (no longer creating control video here)
                         vae_image = _crop_and_resize_pad(
                             ref_image,
                             height=vae_resolution[1],
                             width=vae_resolution[0]
                         )
                         vae_images.append({"image": vae_image, "repeat": repeat})
-                        
-                        # Convert to tensor for video creation
-                        vae_tensor = pil_to_tensor(vae_image)
-                        processed_vae_tensors.append((vae_tensor, repeat))
                         
                         # Process for CLIP
                         clip_image = _crop_and_resize_pad(
@@ -280,41 +177,11 @@ class ValidationReferenceDataset(torch.utils.data.IterableDataset):
                         )
                         clip_images.append(clip_image)
                 
-                # Create control_video from reference images
-                if processed_vae_tensors:
-                    # Always create a control_video from reference images 
-                    # Create a sequence of frames with specified repetitions
-                    frames = []
-                    for tensor, repeat_count in processed_vae_tensors:
-                        frames.extend([tensor] * repeat_count)
-                    
-                    if frames:
-                        # Stack frames to create video [T, C, H, W]
-                        control_video = torch.stack(frames, dim=0)
-                        # Add batch dimension [B, T, C, H, W]
-                        control_video = control_video.unsqueeze(0)
-                        # Permute to [B, C, T, H, W] format for VAE
-                        control_video = control_video.permute(0, 2, 1, 3, 4)
-                        data["control_video"] = control_video
-                
                 # Store the processed images for reference path
+                # Control video creation is handled by the ReferenceToControlProcessor
                 data["vae_references"] = vae_images
                 data["clip_references"] = clip_images
             
-            # For custom control type, always ensure we have control inputs
-            # to avoid NoneType errors during latent processing
-            if self.control_type == ControlType.CUSTOM:
-                # If no control inputs have been created yet, create dummy ones
-                if "control_image" not in data and "control_video" not in data:
-                    # Check if there's an image or video to base size on
-                    if "image" in data:
-                        # Create a dummy control image with zeros
-                        image_shape = data["image"].shape
-                        data["control_image"] = torch.zeros_like(data["image"])
-                    elif "video" in data:
-                        # Create a dummy control video with zeros
-                        video_shape = data["video"].shape
-                        data["control_video"] = torch.zeros_like(data["video"])
             
             # Process control images/videos
             control_augmented_data = self._run_control_processors(data)

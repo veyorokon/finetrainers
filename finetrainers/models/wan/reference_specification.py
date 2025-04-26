@@ -6,6 +6,7 @@ import torch
 from accelerate import init_empty_weights
 from diffusers import (AutoencoderKLWan, FlowMatchEulerDiscreteScheduler,
                        WanPipeline, WanTransformer3DModel)
+from diffusers.utils import load_image
 from transformers import (AutoModel, AutoTokenizer, CLIPImageProcessor,
                           CLIPVisionModel, UMT5EncoderModel)
 
@@ -13,7 +14,8 @@ import finetrainers.functional as FF
 from finetrainers.data import VideoArtifact
 from finetrainers.logging import get_logger
 from finetrainers.models.modeling_utils import ModelSpecification
-from finetrainers.processors import ProcessorMixin, T5Processor
+from finetrainers.processors import (ProcessorMixin, ReferenceClipProcessor,
+                                     ReferenceToControlProcessor, T5Processor)
 from finetrainers.typing import ArtifactType, SchedulerType
 from finetrainers.utils import (get_non_null_items,
                                 safetensors_torch_save_function)
@@ -24,7 +26,7 @@ from .control_specification import WanControlModelSpecification
 logger = get_logger()
 
 
-class WanClipImageProcessor(ProcessorMixin):
+class WanClipImageProcessor(ReferenceClipProcessor):
     """
     Processor to encode reference images using CLIP vision model.
     Similar to WanLatentEncodeProcessor but for CLIP visual embeddings.
@@ -105,8 +107,32 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         embedding_model_processors: List[ProcessorMixin] = None,
         latent_model_processors: List[ProcessorMixin] = None,
         control_model_processors: List[ProcessorMixin] = None,
+        reference_config: Dict[str, Any] = None,
         **kwargs,
     ) -> None:
+        # Initialize reference config
+        self.reference_config = reference_config or {
+            "vae_resolution": [854, 480],
+            "clip_resolution": [512, 512],
+            "reference_order": ["object", "background"],
+            "repeat_frames": [4, 1]
+        }
+        
+        # Create reference-to-control processor if not provided
+        if control_model_processors is None:
+            # First, create the standard control processor
+            standard_control_processor = WanLatentEncodeProcessor(["control_latents", "__drop__", "__drop__"])
+            
+            # Then create our reference processor that runs before it
+            reference_processor = ReferenceToControlProcessor(
+                ["control_image", "control_video"], 
+                reference_config=self.reference_config
+            )
+            
+            # Use both processors in sequence
+            control_model_processors = [reference_processor, standard_control_processor]
+        
+        # Initialize parent with our processors
         super().__init__(
             pretrained_model_name_or_path=pretrained_model_name_or_path,
             tokenizer_id=tokenizer_id,
@@ -123,10 +149,12 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             control_model_processors=control_model_processors,
         )
         
+        # Store image encoder configs
         self.image_encoder_id = image_encoder_id
         self.image_processor_id = image_processor_id
         self.image_encoder_dtype = image_encoder_dtype
         
+        # Setup embedding model processors for CLIP encoding
         if embedding_model_processors is None:
             embedding_model_processors = [WanClipImageProcessor(["encoder_image_embeds"])]
             

@@ -93,8 +93,13 @@ class ReferenceTrainer(ControlTrainer):
             "vae_resolution": self.config.vae_resolution,
             "clip_resolution": self.config.clip_resolution,
             "reference_order": self.config.reference_order,
-            "repeat_frames": self.config.repeat_frames
+            "repeat_frames": self.config.repeat_frames,
+            "reference_suffixes": self.config.reference_suffixes
         }
+        
+        # Also pass same reference config to the model specification
+        if isinstance(self.model_specification, WanReferenceModelSpecification):
+            self.model_specification.reference_config = reference_config
         
         return IterableReferenceDataset(
             dataset,
@@ -117,7 +122,8 @@ class ReferenceTrainer(ControlTrainer):
                 "vae_resolution": self.config.vae_resolution,
                 "clip_resolution": self.config.clip_resolution,
                 "reference_order": self.config.reference_order,
-                "repeat_frames": self.config.repeat_frames
+                "repeat_frames": self.config.repeat_frames,
+                "reference_suffixes": self.config.reference_suffixes
             }
             
             return ValidationReferenceDataset(
@@ -203,6 +209,11 @@ class ReferenceTrainer(ControlTrainer):
         
         return flow_matching_loss
     
+    # Since we now use a proper processor for reference-to-control conversion,
+    # we don't need to override the _prepare_data method anymore.
+    # The parent ControlTrainer's _prepare_data method works fine with our setup.
+    # All reference processing happens in our ReferenceToControlProcessor during preprocessing
+        
     def validation(self):
         """Run validation."""
         if not self.do_validation:
