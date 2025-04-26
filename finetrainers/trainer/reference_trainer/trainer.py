@@ -61,10 +61,27 @@ class ReferenceTrainer(ControlTrainer):
             f"  Reference Suffixes: {self.config.reference_suffixes}"
         )
     
+    def _prepare_models(self) -> None:
+        """Override parent method to use the correct in_channels value."""
+        logger.info("Initializing models for reference training")
+
+        # Get the in_channels directly from the transformer config (36 for Wan2)
+        # Instead of doubling it like in the ControlTrainer
+        original_in_channels = self.model_specification.transformer_config.in_channels
+        logger.info(f"Using original in_channels value: {original_in_channels} from model config")
+        
+        diffusion_components = self.model_specification.load_diffusion_models(original_in_channels)
+        self._set_components(diffusion_components)
+
+        if self.state.parallel_backend.pipeline_parallel_enabled:
+            raise NotImplementedError(
+                "Pipeline parallelism is not supported yet. This will be supported in the future."
+            )
+
     def _load_models(self) -> None:
         """Load all models required for training."""
-        # First load the models from the parent class
-        super()._load_models()
+        # Call our overridden _prepare_models instead of the parent's
+        self._prepare_models()
         
         # Additionally load the CLIP vision models
         if isinstance(self.model_specification, WanReferenceModelSpecification):
