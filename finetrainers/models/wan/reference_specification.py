@@ -68,8 +68,9 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             standard_control_processor = WanLatentEncodeProcessor(["control_latents", "__drop__", "__drop__"])
             
             # Then create our reference processor that runs before it
+            # Map our processor output to the keys expected by WanLatentEncodeProcessor (image, video)
             reference_processor = ReferenceToControlProcessor(
-                ["control_image", "control_video"], 
+                ["image", "video"], 
                 reference_config=self.reference_config
             )
             
@@ -206,6 +207,8 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         pipeline: WanPipeline,
         prompt: str,
         reference_images: List[torch.Tensor] = None,
+        vae_references: List[Dict[str, Any]] = None,
+        references: Dict[str, str] = None,
         control_image: Optional[torch.Tensor] = None,
         control_video: Optional[torch.Tensor] = None,
         height: Optional[int] = None,
@@ -222,6 +225,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         """
         from finetrainers.trainer.control_trainer.data import \
             apply_frame_conditioning_on_latents
+        from finetrainers.processors.reference import ReferenceToControlProcessor
 
         with torch.no_grad():
             dtype = pipeline.vae.dtype
@@ -237,13 +241,32 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 latents.device, latents.dtype
             )
 
+            # Create control video from references if needed
+            if (control_image is None and control_video is None) and (vae_references or references):
+                # Create a reference processor for validation
+                reference_processor = ReferenceToControlProcessor(
+                    ["image", "video"], 
+                    reference_config=self.reference_config
+                )
+                
+                # Process references - this handles vae_references and raw references
+                result = reference_processor(
+                    references=references,
+                    vae_references=vae_references
+                )
+                
+                # Get the control video
+                control_video = result.get("video")
+            
+            # Process existing control image/video
             if control_image is not None:
                 control_video = pipeline.video_processor.preprocess(
                     control_image, height=height, width=width
                 ).unsqueeze(2)
-            else:
+            elif control_video is not None:
                 control_video = pipeline.video_processor.preprocess_video(control_video, height=height, width=width)
 
+            # Convert to latents
             control_video = control_video.to(device=device, dtype=dtype)
             control_latents = pipeline.vae.encode(control_video).latent_dist.mode()
             control_latents = self._normalize_latents(control_latents, latents_mean, latents_std)

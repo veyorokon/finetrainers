@@ -65,7 +65,8 @@ class ReferenceToControlProcessor(ProcessorMixin):
     avoiding timing issues in the pipeline.
     """
     
-    def __init__(self, output_names: List[str], reference_config: Dict[str, Any] = None):
+    def __init__(self, output_names: List[str], reference_config: Dict[str, Any] = None, 
+                 input_names: Optional[Dict[str, str]] = None):
         super().__init__()
         self.output_names = output_names
         self.reference_config = reference_config or {
@@ -73,29 +74,21 @@ class ReferenceToControlProcessor(ProcessorMixin):
             "reference_order": ["object", "background"],
             "repeat_frames": [4, 1]
         }
+        # Default input names mapping
+        self.input_names = input_names or {}
         
-    def forward(
-        self,
-        references: Optional[Dict[str, str]] = None,
-        image: Optional[torch.Tensor] = None,
-        video: Optional[torch.Tensor] = None,
-        **kwargs
-    ) -> Dict[str, torch.Tensor]:
-        """Process reference images into control inputs.
+    def _preprocess_references(self, references: Dict[str, str]) -> List[Dict[str, Any]]:
+        """Convert raw references to pre-processed vae_references format.
         
         Args:
             references: Dictionary mapping reference types to file paths
-            image: Existing image input (passed through if no references)
-            video: Existing video input (passed through if no references)
             
         Returns:
-            Dictionary with control_image or control_video created from references
+            List of processed reference images with repeat counts
         """
-        # If we already have control inputs or no references, just pass through
-        if "control_image" in kwargs or "control_video" in kwargs or not references:
-            return {self.output_names[0]: image, self.output_names[1]: video}
+        if not references:
+            return []
             
-        # Process reference images
         processed_references = []
         
         # Get config values
@@ -120,16 +113,52 @@ class ReferenceToControlProcessor(ProcessorMixin):
                     width=vae_resolution[0]
                 )
                 
-                # Convert to tensor
-                vae_tensor = _pil_to_tensor(vae_image)
-                processed_references.append((vae_tensor, repeat))
+                processed_references.append({"image": vae_image, "repeat": repeat})
+                
+        return processed_references
+    
+    def forward(
+        self,
+        references: Optional[Dict[str, str]] = None,
+        vae_references: Optional[List[Dict[str, Any]]] = None,
+        image: Optional[torch.Tensor] = None,
+        video: Optional[torch.Tensor] = None,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        """Process reference images into control inputs.
         
-        # If we processed references, create a control video
-        if processed_references:
+        Args:
+            references: Dictionary mapping reference types to file paths
+            vae_references: Pre-processed reference images from dataset
+            image: Existing image input (passed through if no references)
+            video: Existing video input (passed through if no references)
+            
+        Returns:
+            Dictionary with control_image or control_video for latent encoding
+        """
+        # If we already have control inputs, just pass through
+        if "control_image" in kwargs or "control_video" in kwargs:
+            return {self.output_names[0]: image, self.output_names[1]: video}
+        
+        # Convert raw references to pre-processed format if needed
+        if references and not vae_references:
+            vae_references = self._preprocess_references(references)
+            
+        # Process references if we have them
+        if vae_references and len(vae_references) > 0:
             # Create a sequence of frames with specified repetitions
             frames = []
-            for tensor, repeat_count in processed_references:
-                frames.extend([tensor] * repeat_count)
+            for ref_data in vae_references:
+                ref_image = ref_data["image"]
+                repeat_count = ref_data["repeat"]
+                
+                # Convert PIL to tensor if needed
+                if not isinstance(ref_image, torch.Tensor):
+                    ref_tensor = _pil_to_tensor(ref_image)
+                else:
+                    ref_tensor = ref_image
+                    
+                frames.extend([ref_tensor] * repeat_count)
             
             if frames:
                 # Stack frames to create video [T, C, H, W]
@@ -139,7 +168,7 @@ class ReferenceToControlProcessor(ProcessorMixin):
                 # Permute to [B, C, T, H, W] format for VAE
                 control_video = control_video.permute(0, 2, 1, 3, 4)
                 
-                # Return the control video
+                # Return the control video using output_names for key mapping
                 return {self.output_names[0]: None, self.output_names[1]: control_video}
         
         # If no references were processed, return the original inputs
@@ -154,11 +183,14 @@ class ReferenceClipProcessor(ProcessorMixin):
         output_names (`List[str]`):
             The names of the outputs that the processor returns. The outputs are:
             - image_embeds: The CLIP visual embeddings of the input reference images.
+        input_names (`Dict[str, str]`, optional):
+            A mapping of input keys to the names expected by the forward method.
     """
 
-    def __init__(self, output_names: List[str]):
+    def __init__(self, output_names: List[str], input_names: Optional[Dict[str, str]] = None):
         super().__init__()
         self.output_names = output_names
+        self.input_names = input_names or {}
         assert len(self.output_names) == 1
 
     def forward(
