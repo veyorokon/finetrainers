@@ -176,9 +176,11 @@ class ReferenceTrainer(ControlTrainer):
                 generator=self.generator,
             )
         
-        # Handle reference images for CLIP encoding
-        if "clip_references" in batch:
-            embedding_model_conditions = self._encode_references(batch["clip_references"])
+        # Handle reference images for CLIP encoding if available
+        if "clip_references" in batch and len(batch["clip_references"]) > 0:
+            ref_encoding = self._encode_references(batch["clip_references"])
+            if ref_encoding is not None:
+                embedding_model_conditions = ref_encoding
         
         # Sample random sigmas for flow matching
         batch_size = condition_model_conditions["encoder_hidden_states"].shape[0]
@@ -189,8 +191,8 @@ class ReferenceTrainer(ControlTrainer):
             self.transformer,
             condition_model_conditions,
             latent_model_conditions,
-            embedding_model_conditions,
             sigmas,
+            embedding_model_conditions=embedding_model_conditions,
             generator=self.generator,
         )
         

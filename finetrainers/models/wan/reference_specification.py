@@ -190,8 +190,8 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         transformer: WanTransformer3DModel,
         condition_model_conditions: Dict[str, torch.Tensor],
         latent_model_conditions: Dict[str, torch.Tensor],
-        embedding_model_conditions: Dict[str, torch.Tensor],
         sigmas: torch.Tensor,
+        embedding_model_conditions: Dict[str, torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
         compute_posterior: bool = True,
         **kwargs,
@@ -200,17 +200,23 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         Forward pass with reference-based conditioning.
         Add reference embeddings to the encoder_hidden_states.
         """
-        # Get image embeddings
-        image_embeds = embedding_model_conditions.pop("encoder_image_embeds")
-        
-        # Get text embeddings
-        text_embeds = condition_model_conditions.pop("encoder_hidden_states")
-        
-        # Concatenate image and text embeddings
-        combined_embeds = torch.cat([image_embeds, text_embeds], dim=1)
-        
-        # Put back in condition_model_conditions
-        condition_model_conditions["encoder_hidden_states"] = combined_embeds
+        # Handle case where embedding_model_conditions is not provided
+        if embedding_model_conditions is None:
+            embedding_model_conditions = {}
+            
+        # Only modify the condition if we have image embeddings
+        if "encoder_image_embeds" in embedding_model_conditions:
+            # Get image embeddings
+            image_embeds = embedding_model_conditions.pop("encoder_image_embeds")
+            
+            # Get text embeddings
+            text_embeds = condition_model_conditions.pop("encoder_hidden_states")
+            
+            # Concatenate image and text embeddings
+            combined_embeds = torch.cat([image_embeds, text_embeds], dim=1)
+            
+            # Put back in condition_model_conditions
+            condition_model_conditions["encoder_hidden_states"] = combined_embeds
         
         # Call parent forward
         return super().forward(

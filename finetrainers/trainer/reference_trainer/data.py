@@ -151,7 +151,11 @@ class IterableReferenceDataset(IterableControlDataset):
                         clip_images.append(clip_image)
                 
                 # Create control_video from reference images
-                if processed_vae_tensors and ("control_image" not in data and "control_video" not in data):
+                if processed_vae_tensors:
+                    # Always create a dummy control_image or control_video even if not needed
+                    # This is a workaround to avoid the error in latent processing
+                    # By overwriting any existing control_image/control_video 
+                    
                     # Create a sequence of frames with specified repetitions
                     frames = []
                     for tensor, repeat_count in processed_vae_tensors:
@@ -169,6 +173,21 @@ class IterableReferenceDataset(IterableControlDataset):
                 # Store the processed images for reference path
                 data["vae_references"] = vae_images
                 data["clip_references"] = clip_images
+            
+            # For custom control type, always ensure we have control inputs
+            # to avoid NoneType errors during latent processing
+            if self.control_type == ControlType.CUSTOM:
+                # If no control inputs have been created yet, create dummy ones
+                if "control_image" not in data and "control_video" not in data:
+                    # Check if there's an image or video to base size on
+                    if "image" in data:
+                        # Create a dummy control image with zeros
+                        image_shape = data["image"].shape
+                        data["control_image"] = torch.zeros_like(data["image"])
+                    elif "video" in data:
+                        # Create a dummy control video with zeros
+                        video_shape = data["video"].shape
+                        data["control_video"] = torch.zeros_like(data["video"])
             
             # Now process control images/videos as in parent class
             control_augmented_data = self._run_control_processors(data)
@@ -262,7 +281,8 @@ class ValidationReferenceDataset(torch.utils.data.IterableDataset):
                         clip_images.append(clip_image)
                 
                 # Create control_video from reference images
-                if processed_vae_tensors and ("control_image" not in data and "control_video" not in data):
+                if processed_vae_tensors:
+                    # Always create a control_video from reference images 
                     # Create a sequence of frames with specified repetitions
                     frames = []
                     for tensor, repeat_count in processed_vae_tensors:
@@ -280,6 +300,21 @@ class ValidationReferenceDataset(torch.utils.data.IterableDataset):
                 # Store the processed images for reference path
                 data["vae_references"] = vae_images
                 data["clip_references"] = clip_images
+            
+            # For custom control type, always ensure we have control inputs
+            # to avoid NoneType errors during latent processing
+            if self.control_type == ControlType.CUSTOM:
+                # If no control inputs have been created yet, create dummy ones
+                if "control_image" not in data and "control_video" not in data:
+                    # Check if there's an image or video to base size on
+                    if "image" in data:
+                        # Create a dummy control image with zeros
+                        image_shape = data["image"].shape
+                        data["control_image"] = torch.zeros_like(data["image"])
+                    elif "video" in data:
+                        # Create a dummy control video with zeros
+                        video_shape = data["video"].shape
+                        data["control_video"] = torch.zeros_like(data["video"])
             
             # Process control images/videos
             control_augmented_data = self._run_control_processors(data)
