@@ -232,14 +232,19 @@ class WanControlModelSpecification(ControlModelSpecification):
         conditions = super().prepare_latents(**conditions)
         conditions = {k: v for k, v in conditions.items() if k not in input_keys}
 
-        control_conditions = {"image": control_image, "video": control_video, **common_kwargs}
-        input_keys = set(control_conditions.keys())
-        control_conditions = ControlModelSpecification.prepare_latents(
-            self, self.control_model_processors, **control_conditions
-        )
-        control_conditions = {k: v for k, v in control_conditions.items() if k not in input_keys}
-
-        return {**control_conditions, **conditions}
+        # Only process control inputs if they exist
+        if control_image is not None or control_video is not None:
+            control_conditions = {"image": control_image, "video": control_video, **common_kwargs}
+            input_keys = set(control_conditions.keys())
+            control_conditions = ControlModelSpecification.prepare_latents(
+                self, self.control_model_processors, **control_conditions
+            )
+            control_conditions = {k: v for k, v in control_conditions.items() if k not in input_keys}
+            return {**control_conditions, **conditions}
+        else:
+            # If we don't have control inputs yet, just return the main conditions
+            # The reference dataset will add control inputs later in the pipeline
+            return conditions
 
     def forward(
         self,
