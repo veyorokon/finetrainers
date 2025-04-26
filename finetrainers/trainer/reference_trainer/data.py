@@ -107,10 +107,29 @@ class IterableReferenceDataset(IterableControlDataset):
             
             # Log what we're yielding back
             logger.info(f"IterableReferenceDataset yielding data with keys: {list(control_augmented_data.keys())}")
+            
+            # Check for references specifically
+            if "references" in control_augmented_data:
+                logger.info(f"Original references present with keys: {list(control_augmented_data['references'].keys())}")
+            
+            # Check for vae_references
             if "vae_references" in control_augmented_data:
                 logger.info(f"vae_references present with {len(control_augmented_data['vae_references'])} items")
+                # Log details of each reference
+                for i, ref in enumerate(control_augmented_data["vae_references"]):
+                    img_type = type(ref["image"]).__name__
+                    repeat = ref["repeat"]
+                    img_info = f"size={ref['image'].size}" if hasattr(ref["image"], "size") else "no size"
+                    logger.info(f"  vae_reference {i}: type={img_type}, repeat={repeat}, {img_info}")
+            
+            # Log clip references as well
             if "clip_references" in control_augmented_data:
                 logger.info(f"clip_references present with {len(control_augmented_data['clip_references'])} items")
+                # Log type of each
+                for i, ref in enumerate(control_augmented_data["clip_references"]):
+                    img_type = type(ref).__name__
+                    img_info = f"size={ref.size}" if hasattr(ref, "size") else "no size"
+                    logger.info(f"  clip_reference {i}: type={img_type}, {img_info}")
                 
             yield control_augmented_data
 

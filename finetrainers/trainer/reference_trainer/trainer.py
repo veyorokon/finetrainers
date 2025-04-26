@@ -172,15 +172,48 @@ class ReferenceTrainer(ControlTrainer):
         has_control_image = "control_image" in batch
         has_control_video = "control_video" in batch
         has_references = "vae_references" in batch and len(batch["vae_references"]) > 0
+        has_refs = "references" in batch
         
-        # Add detailed logging
+        # Add detailed logging about what's in the batch
+        logger.info(f"===== TRAINING STEP =====")
         logger.info(f"Training batch contains keys: {list(batch.keys())}")
+        
+        # Log vae references if present
         if has_references:
             logger.info(f"Found vae_references with {len(batch['vae_references'])} items")
             for i, ref in enumerate(batch["vae_references"]):
-                logger.info(f"  Reference {i}: {type(ref['image']).__name__}, repeat={ref['repeat']}")
+                img_type = type(ref["image"]).__name__
+                repeat = ref["repeat"]
+                img_info = f"size={ref['image'].size}" if hasattr(ref["image"], "size") else "no size"
+                logger.info(f"  vae_reference {i}: type={img_type}, repeat={repeat}, {img_info}")
+        else:
+            logger.info("No vae_references found in batch")
+            
+        # Log raw references if present
+        if has_refs:
+            logger.info(f"Found references with keys: {list(batch['references'].keys())}")
+        else:
+            logger.info("No references found in batch")
+            
+        # Log control inputs
+        if has_control_image:
+            control_img = batch["control_image"]
+            logger.info(f"Control image present: {type(control_img).__name__}, shape={control_img.shape if hasattr(control_img, 'shape') else 'no shape'}")
         
+        if has_control_video:
+            control_vid = batch["control_video"]
+            logger.info(f"Control video present: {type(control_vid).__name__}, shape={control_vid.shape if hasattr(control_vid, 'shape') else 'no shape'}")
+            
+        # Log whether we have normal inputs
+        if "image" in batch and batch["image"] is not None:
+            logger.info(f"Image present with shape {batch['image'].shape}")
+            
+        if "video" in batch and batch["video"] is not None:
+            logger.info(f"Video present with shape {batch['video'].shape}")
+            
+        # Pass everything in batch to prepare_latents when we have control inputs
         if has_control_image or has_control_video:
+            logger.info("Calling prepare_latents with control inputs")
             latent_model_conditions = self.model_specification.prepare_latents(
                 self.vae,
                 image=batch.get("image"),
@@ -190,6 +223,17 @@ class ReferenceTrainer(ControlTrainer):
                 generator=self.generator,
                 # We're not adding vae_references here yet, just keeping the original flow
             )
+            
+        # Add logic for handling references - temporarily commented out
+        # elif has_references:
+        #    logger.info("Calling prepare_latents with references")
+        #    latent_model_conditions = self.model_specification.prepare_latents(
+        #        self.vae,
+        #        image=batch.get("image"),
+        #        video=batch.get("video"), 
+        #        generator=self.generator,
+        #        vae_references=batch["vae_references"]
+        #    )
         
         # Handle reference images for CLIP encoding if available
         if "clip_references" in batch and len(batch["clip_references"]) > 0:
