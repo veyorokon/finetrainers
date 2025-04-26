@@ -178,9 +178,46 @@ class ReferenceTrainer(ControlTrainer):
             device=self.state.parallel_backend.device
         )
         
-        # Use lambda function to handle PIL Images during batch collation
-        collate_fn = lambda batch: batch[0] if len(batch) > 0 else {}
+        # Define a custom collate function to handle PIL images with any batch size
+        def reference_collate_fn(batch):
+            if len(batch) == 0:
+                return {}
+                
+            # For batch size 1, just return the first item directly
+            if len(batch) == 1:
+                return batch[0]
+                
+            # For larger batch sizes, we need to handle each key appropriately
+            result = {}
+            elem = batch[0]
+            
+            for key in elem:
+                if key == 'vae_references':
+                    # Each sample has its own references - keep as list of lists
+                    result[key] = [b[key] for b in batch]
+                elif key == 'clip_references':
+                    # Each sample has its own clip references - keep as list of lists
+                    result[key] = [b[key] for b in batch]
+                elif key == 'references':
+                    # Each sample has its own references dict - keep as list of dicts
+                    result[key] = [b[key] for b in batch]
+                else:
+                    # For standard tensor data, use standard batching
+                    values = [b[key] for b in batch]
+                    if isinstance(values[0], torch.Tensor):
+                        result[key] = torch.stack(values)
+                    elif isinstance(values[0], (int, float, str, bool)):
+                        result[key] = values
+                    else:
+                        # For other types, keep as list
+                        result[key] = values
+            
+            return result
+            
+        # Use the custom collate function
+        collate_fn = reference_collate_fn
         
+        logger.info("Using custom collate_fn for reference dataset")
         dataloader = self.state.parallel_backend.prepare_dataloader(
             dataset, batch_size=1, num_workers=self.args.dataloader_num_workers, 
             pin_memory=self.args.pin_memory, collate_fn=collate_fn

@@ -29,7 +29,7 @@ class BaseParallelBackend:
     def prepare_dataset(self, *args, **kwargs) -> Any:
         raise NotImplementedError("Method `prepare_dataset` must be implemented by subclass.")
 
-    def prepare_dataloader(self, *args, **kwargs) -> Any:
+    def prepare_dataloader(self, dataset, batch_size, num_workers, pin_memory, collate_fn=None) -> Any:
         raise NotImplementedError("Method `prepare_dataloader` must be implemented by subclass.")
 
     def prepare_optimizer(self, *args, **kwargs) -> Any:

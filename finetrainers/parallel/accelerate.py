@@ -135,9 +135,10 @@ class AccelerateParallelBackend(BaseParallelBackend):
         batch_size: int = 1,
         num_workers: int = 0,
         pin_memory: bool = False,
+        collate_fn=None,
     ) -> DataLoader:
         dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory
+            dataset, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, collate_fn=collate_fn
         )
         dataloader = self._accelerator.prepare_data_loader(dataloader)
         logger.debug("AccelerateParallelBackend::prepare_dataloader completed!")

@@ -133,7 +133,7 @@ class PytorchDTensorParallelBackend(BaseParallelBackend):
         return dataset
 
     def prepare_dataloader(
-        self, dataset: torch.utils.data.IterableDataset, batch_size: int, num_workers: int, pin_memory: bool
+        self, dataset: torch.utils.data.IterableDataset, batch_size: int, num_workers: int, pin_memory: bool, collate_fn=None
     ) -> DPDataLoader:
         dp_mesh = self.get_mesh("dp_replicate")
         if dp_mesh is None:
@@ -142,7 +142,7 @@ class PytorchDTensorParallelBackend(BaseParallelBackend):
             dp_local_rank = dp_mesh.get_local_rank()
         else:
             dp_local_rank = 0
-        dataloader = DPDataLoader(dp_local_rank, dataset, batch_size=batch_size, num_workers=num_workers)
+        dataloader = DPDataLoader(dp_local_rank, dataset, batch_size=batch_size, num_workers=num_workers, collate_fn=collate_fn)
         logger.debug("PytorchDTensorParallelBackend::prepare_dataloader completed!")
         return dataloader
 
