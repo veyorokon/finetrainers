@@ -10,9 +10,9 @@ from PIL import Image
 import finetrainers.functional as FF
 from finetrainers.logging import get_logger
 from finetrainers.processors import CannyProcessor, CopyProcessor
-
-from .config import ControlType, FrameConditioningType
-from .data import IterableControlDataset
+from finetrainers.trainer.control_trainer.data import (ControlType,
+                                                       FrameConditioningType,
+                                                       IterableControlDataset)
 
 logger = get_logger()
 
