@@ -1,0 +1,18 @@
+{
+  "datasets": [
+    {
+      "data_root": "assets/tests/dataset",
+      "dataset_type": "video",
+      "reshape_mode": "bicubic",
+      "reference_suffixes": [ "_object", "_background" ],
+      "control_type": "reference",
+
+      "reference_config": {
+        "vae_resolution": [ 854, 480 ],
+        "clip_resolution": [ 512, 512 ],
+        "reference_order": [ "object", "background" ],
+        "repeat_frames": [ 4, 1 ]
+      }
+    }
+  ]
+}

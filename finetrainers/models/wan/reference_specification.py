@@ -1,22 +1,13 @@
-import os
 import functools
+import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from accelerate import init_empty_weights
-from diffusers import (
-    AutoencoderKLWan,
-    FlowMatchEulerDiscreteScheduler,
-    WanPipeline,
-    WanTransformer3DModel,
-)
-from transformers import (
-    AutoModel, 
-    AutoTokenizer, 
-    UMT5EncoderModel,
-    CLIPVisionModel,
-    CLIPImageProcessor
-)
+from diffusers import (AutoencoderKLWan, FlowMatchEulerDiscreteScheduler,
+                       WanPipeline, WanTransformer3DModel)
+from transformers import (AutoModel, AutoTokenizer, CLIPImageProcessor,
+                          CLIPVisionModel, UMT5EncoderModel)
 
 import finetrainers.functional as FF
 from finetrainers.data import VideoArtifact
@@ -24,7 +15,8 @@ from finetrainers.logging import get_logger
 from finetrainers.models.modeling_utils import ModelSpecification
 from finetrainers.processors import ProcessorMixin, T5Processor
 from finetrainers.typing import ArtifactType, SchedulerType
-from finetrainers.utils import get_non_null_items, safetensors_torch_save_function
+from finetrainers.utils import (get_non_null_items,
+                                safetensors_torch_save_function)
 
 from .base_specification import WanLatentEncodeProcessor, WanModelSpecification
 from .control_specification import WanControlModelSpecification
@@ -166,7 +158,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         return {"image_processor": image_processor, "image_encoder": image_encoder}
         
     @torch.no_grad()
-    def prepare_embedding_conditions(
+    def prepare_embeddings(
         self,
         image_processor: CLIPImageProcessor,
         image_encoder: CLIPVisionModel,
@@ -250,7 +242,8 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         """
         Extend validation to include reference images for A2-style conditioning
         """
-        from finetrainers.trainer.control_trainer.data import apply_frame_conditioning_on_latents
+        from finetrainers.trainer.control_trainer.data import \
+            apply_frame_conditioning_on_latents
 
         with torch.no_grad():
             dtype = pipeline.vae.dtype
@@ -330,7 +323,8 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         }
         generation_kwargs = get_non_null_items(generation_kwargs)
 
-        from finetrainers.patches.dependencies.diffusers.control import control_channel_concat
+        from finetrainers.patches.dependencies.diffusers.control import \
+            control_channel_concat
         
         def _get_model_input(*args, **kwargs):
             # Original model input function
