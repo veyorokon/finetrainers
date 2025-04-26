@@ -32,8 +32,8 @@ NUM_GPUS=1
 CUDA_VISIBLE_DEVICES="0"
 
 # Check the JSON files for the expected JSON format
-TRAINING_DATASET_CONFIG="examples/training/control/wan/image_condition/training.json"
-VALIDATION_DATASET_FILE="examples/training/control/wan/image_condition/validation.json"
+TRAINING_DATASET_CONFIG="examples/training/control/wan/reference_condition/training.json"
+VALIDATION_DATASET_FILE="examples/training/control/wan/reference_condition/validation.json"
 
 # Depending on how many GPUs you have available, choose your degree of parallelism and technique!
 DDP_1="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 1 --dp_shards 1 --cp_degree 1 --tp_degree 1"
@@ -52,7 +52,7 @@ parallel_cmd=(
 # Model arguments
 model_cmd=(
   --model_name "wan"
-  --pretrained_model_name_or_path "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+  --pretrained_model_name_or_path "/dev/shm/models"
   --compile_modules transformer
 )
 
@@ -70,7 +70,7 @@ control_cmd=(
 dataset_cmd=(
   --dataset_config $TRAINING_DATASET_CONFIG
   --dataset_shuffle_buffer_size 32
-  --cache_dir "/workspace/a2/cache/"
+  --cache_dir "/workspace/wan-ref-control/cache/"
 )
 
 # Dataloader arguments
@@ -87,7 +87,7 @@ diffusion_cmd=(
 # We target just the attention projections layers for LoRA training here.
 # You can modify as you please and target any layer (regex is supported)
 training_cmd=(
-  --training_type control-lora
+  --training_type reference-lora
   --seed 42
   --batch_size 1
   --train_steps 10000
@@ -122,8 +122,8 @@ validation_cmd=(
 
 # Miscellaneous arguments
 miscellaneous_cmd=(
-  --tracker_name "finetrainers-wan-control"
-  --output_dir "/raid/aryan/wan-control-image-condition"
+  --tracker_name "finetrainers-reference-control"
+  --output_dir "/workspace/wan-ref-control/"
   --init_timeout 600
   --nccl_timeout 600
   --report_to "wandb"
