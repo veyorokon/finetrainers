@@ -62,28 +62,17 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             "repeat_frames": [4, 1]
         }
         
-        # Create reference-to-control processor if not provided
+        # Create control processor if not provided
         if control_model_processors is None:
-            # First, create the standard control processor
-            standard_control_processor = WanLatentEncodeProcessor(["control_latents", "__drop__", "__drop__"])
-            
-            # Use unique output names to avoid collisions with existing keys
-            # We need to pass these to avoid the warning about overwriting existing values
-            reference_processor = ReferenceToControlProcessor(
-                ["ref_processed_image", "ref_processed_video"], 
-                reference_config=self.reference_config,
-                # Map the reference processor's outputs to what WanLatentEncodeProcessor expects
-                input_names={"ref_processed_image": "image", "ref_processed_video": "video"}
-            )
+            # With Option 4, we no longer need the ReferenceToControlProcessor
+            # because the dataset directly creates control_video
+            # Just use the standard control processor from the parent class
+            control_model_processors = [WanLatentEncodeProcessor(["control_latents", "__drop__", "__drop__"])]
             
             # Add logging to debug more easily
-            logger.info("Initializing control processors:")
-            logger.info(f"  Reference processor output names: {reference_processor.output_names}")
-            logger.info(f"  Reference processor input names: {reference_processor.input_names}")
-            logger.info(f"  Control processor output names: {standard_control_processor.output_names}")
-            
-            # Use both processors in sequence
-            control_model_processors = [reference_processor, standard_control_processor]
+            logger.info("Initializing control processors with Option 4 approach:")
+            logger.info(f"  Using standard WanLatentEncodeProcessor directly without ReferenceToControlProcessor")
+            logger.info(f"  The dataset now directly creates control_video from references")
         
         # Initialize parent with our processors
         super().__init__(
@@ -251,20 +240,69 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
 
             # Create control video from references if needed
             if (control_image is None and control_video is None) and (vae_references or references):
-                # Create a reference processor for validation
-                reference_processor = ReferenceToControlProcessor(
-                    ["image", "video"], 
-                    reference_config=self.reference_config
-                )
+                logger.info("Creating control video directly from references during validation")
                 
-                # Process references - this handles vae_references and raw references
-                result = reference_processor(
-                    references=references,
-                    vae_references=vae_references
-                )
+                # Process references directly (Option 4 approach)
+                if vae_references:
+                    # Process pre-processed references
+                    logger.info(f"Using {len(vae_references)} pre-processed vae_references")
+                    frames = []
+                    
+                    for ref_data in vae_references:
+                        ref_image = ref_data["image"]
+                        repeat_count = ref_data["repeat"]
+                        
+                        # Convert PIL to tensor if needed
+                        if not isinstance(ref_image, torch.Tensor):
+                            from finetrainers.processors.reference import _pil_to_tensor
+                            ref_tensor = _pil_to_tensor(ref_image)
+                        else:
+                            ref_tensor = ref_image
+                            
+                        frames.extend([ref_tensor] * repeat_count)
+                    
+                else:
+                    # Process raw references
+                    logger.info(f"Processing raw references during validation")
+                    from finetrainers.processors.reference import _crop_and_resize_pad, _pil_to_tensor
+                    
+                    frames = []
+                    # Extract config values
+                    vae_resolution = self.reference_config["vae_resolution"] 
+                    reference_order = self.reference_config["reference_order"]
+                    repeat_frames = self.reference_config["repeat_frames"]
+                    
+                    # Process each reference type
+                    for idx, ref_type in enumerate(reference_order):
+                        if ref_type in references:
+                            # Load reference image
+                            ref_path = references[ref_type]
+                            ref_image = load_image(ref_path)
+                            
+                            # Get repetition count
+                            repeat = repeat_frames[idx] if idx < len(repeat_frames) else 1
+                            
+                            # Process for VAE
+                            vae_image = _crop_and_resize_pad(
+                                ref_image,
+                                height=vae_resolution[1],
+                                width=vae_resolution[0]
+                            )
+                            
+                            # Convert to tensor
+                            ref_tensor = _pil_to_tensor(vae_image)
+                            frames.extend([ref_tensor] * repeat)
                 
-                # Get the control video
-                control_video = result.get("video")
+                # Create control video from frames
+                if frames:
+                    logger.info(f"Creating control video with {len(frames)} frames")
+                    # Stack frames to create video [T, C, H, W]
+                    control_video = torch.stack(frames, dim=0)
+                    # Add batch dimension [B, T, C, H, W]
+                    control_video = control_video.unsqueeze(0)
+                    # Permute to [B, C, T, H, W] format for VAE
+                    control_video = control_video.permute(0, 2, 1, 3, 4)
+                    logger.info(f"Created control video with shape {control_video.shape}")
             
             # Process existing control image/video
             if control_image is not None:
