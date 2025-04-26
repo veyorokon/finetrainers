@@ -92,43 +92,12 @@ class IterableReferenceDataset(IterableControlDataset):
                         )
                         clip_images.append(clip_image)
                 
-                # Keep clip_references for CLIP embedding
+                # Store the processed images for reference path
+                # Control video creation now happens in the ReferenceToControlProcessor
+                data["vae_references"] = vae_images
                 data["clip_references"] = clip_images
+                logger.info(f"Processed {len(vae_images)} reference images into vae_references")
                 logger.info(f"Processed {len(clip_images)} reference images into clip_references")
-                
-                # Direct control_video creation - Option 4
-                if vae_images and len(vae_images) > 0:
-                    logger.info(f"Converting {len(vae_images)} references directly to control_video")
-                    
-                    # Create a sequence of frames with specified repetitions
-                    frames = []
-                    for ref_data in vae_images:
-                        ref_image = ref_data["image"]
-                        repeat_count = ref_data["repeat"]
-                        logger.info(f"  Reference with repeat count {repeat_count}")
-                        
-                        # Convert PIL to tensor if needed
-                        if not isinstance(ref_image, torch.Tensor):
-                            from finetrainers.processors.reference import _pil_to_tensor
-                            ref_tensor = _pil_to_tensor(ref_image)
-                        else:
-                            ref_tensor = ref_image
-                            
-                        frames.extend([ref_tensor] * repeat_count)
-                    
-                    if frames:
-                        logger.info(f"Creating control video with {len(frames)} frames")
-                        # Stack frames to create video [T, C, H, W]
-                        control_video = torch.stack(frames, dim=0)
-                        # Add batch dimension [B, T, C, H, W]
-                        control_video = control_video.unsqueeze(0)
-                        # Permute to [B, C, T, H, W] format for VAE - this matches WanLatentEncodeProcessor's expectations
-                        control_video = control_video.permute(0, 2, 1, 3, 4)
-                        
-                        logger.info(f"Created control_video with shape {control_video.shape}")
-                        
-                        # Store as control_video directly - this bypasses the need for ReferenceToControlProcessor
-                        data["control_video"] = control_video
             else:
                 logger.info("No references found in data")
             
@@ -226,40 +195,11 @@ class ValidationReferenceDataset(torch.utils.data.IterableDataset):
                         )
                         clip_images.append(clip_image)
                 
-                # Keep clip_references for CLIP embedding
+                # Store the processed images for reference path
+                # Control video creation is handled by the ReferenceToControlProcessor
+                data["vae_references"] = vae_images
                 data["clip_references"] = clip_images
-                
-                # Direct control_video creation - Option 4
-                if vae_images and len(vae_images) > 0:
-                    logger.info(f"ValidationReferenceDataset: Converting {len(vae_images)} references directly to control_video")
-                    
-                    # Create a sequence of frames with specified repetitions
-                    frames = []
-                    for ref_data in vae_images:
-                        ref_image = ref_data["image"]
-                        repeat_count = ref_data["repeat"]
-                        
-                        # Convert PIL to tensor if needed
-                        if not isinstance(ref_image, torch.Tensor):
-                            from finetrainers.processors.reference import _pil_to_tensor
-                            ref_tensor = _pil_to_tensor(ref_image)
-                        else:
-                            ref_tensor = ref_image
-                            
-                        frames.extend([ref_tensor] * repeat_count)
-                    
-                    if frames:
-                        # Stack frames to create video [T, C, H, W]
-                        control_video = torch.stack(frames, dim=0)
-                        # Add batch dimension [B, T, C, H, W]
-                        control_video = control_video.unsqueeze(0)
-                        # Permute to [B, C, T, H, W] format for VAE
-                        control_video = control_video.permute(0, 2, 1, 3, 4)
-                        
-                        logger.info(f"ValidationReferenceDataset: Created control_video with shape {control_video.shape}")
-                        
-                        # Store as control_video directly
-                        data["control_video"] = control_video
+                logger.info(f"ValidationReferenceDataset: Processed {len(vae_images)} references into vae_references")
             
             # Process control images/videos
             control_augmented_data = self._run_control_processors(data)
