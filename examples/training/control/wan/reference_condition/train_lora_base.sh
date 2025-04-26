@@ -62,7 +62,7 @@ control_cmd=(
   --rank 16
   --lora_alpha 16
   --target_modules "blocks.*(to_q|to_k|to_v|to_out.0)"
-  --frame_conditioning_type index
+  --frame_conditioning_type full
   --frame_conditioning_index 0
 )
 
