@@ -2,7 +2,7 @@
   "datasets": [
     {
       "data_root": "/workspace/finetrainers/assets/tests/dataset",
-      "dataset_type": "video",
+      "dataset_type": "reference",
       "reshape_mode": "bicubic",
       "reference_suffixes": [ "_object", "_background" ],
       "control_type": "reference",
