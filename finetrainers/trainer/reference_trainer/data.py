@@ -49,8 +49,12 @@ class IterableReferenceDataset(IterableControlDataset):
     def __iter__(self):
         logger.info("Starting IterableReferenceDataset")
         for data in iter(self.dataset):
+            # Log what we initially received from the dataset
+            logger.info(f"IterableReferenceDataset received data with keys: {list(data.keys())}")
+            
             # Process reference images only for CLIP embedding
             if "references" in data:
+                logger.info(f"Processing references: {list(data['references'].keys())}")
                 clip_images = []
                 vae_images = []
                 
@@ -65,10 +69,12 @@ class IterableReferenceDataset(IterableControlDataset):
                     if ref_type in data["references"]:
                         # Load the reference image
                         ref_path = data["references"][ref_type]
+                        logger.info(f"Loading reference '{ref_type}' from {ref_path}")
                         ref_image = load_image(ref_path)
                         
                         # Get repetition count (or default to 1)
                         repeat = repeat_frames[idx] if idx < len(repeat_frames) else 1
+                        logger.info(f"Reference '{ref_type}' will repeat {repeat} times")
                         
                         # Process for VAE storage (no longer creating control video here)
                         vae_image = _crop_and_resize_pad(
@@ -90,10 +96,22 @@ class IterableReferenceDataset(IterableControlDataset):
                 # Control video creation now happens in the ReferenceToControlProcessor
                 data["vae_references"] = vae_images
                 data["clip_references"] = clip_images
+                logger.info(f"Processed {len(vae_images)} reference images into vae_references")
+                logger.info(f"Processed {len(clip_images)} reference images into clip_references")
+            else:
+                logger.info("No references found in data")
             
             # Now process control images/videos as in parent class
+            logger.info("Running control processors")
             control_augmented_data = self._run_control_processors(data)
             
+            # Log what we're yielding back
+            logger.info(f"IterableReferenceDataset yielding data with keys: {list(control_augmented_data.keys())}")
+            if "vae_references" in control_augmented_data:
+                logger.info(f"vae_references present with {len(control_augmented_data['vae_references'])} items")
+            if "clip_references" in control_augmented_data:
+                logger.info(f"clip_references present with {len(control_augmented_data['clip_references'])} items")
+                
             yield control_augmented_data
 
     def _run_control_processors(self, data: Dict[str, Any]) -> Dict[str, Any]:

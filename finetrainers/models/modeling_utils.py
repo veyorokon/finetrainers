@@ -140,8 +140,19 @@ class ModelSpecification:
     def prepare_latents(self, processors: Optional[ProcessorMixin] = None, **kwargs) -> Dict[str, Any]:
         if processors is None:
             processors = self.latent_model_processors
-        for processor in processors:
+        
+        logger.info(f"prepare_latents with {len(processors)} processors: {[p.__class__.__name__ for p in processors]}")
+        logger.info(f"Input kwargs to prepare_latents have keys: {list(kwargs.keys())}")
+        
+        if "vae_references" in kwargs:
+            logger.info(f"vae_references present with {len(kwargs['vae_references'])} items")
+        
+        for i, processor in enumerate(processors):
+            logger.info(f"Running processor {i+1}/{len(processors)}: {processor.__class__.__name__}")
             result = processor(**kwargs)
+            
+            logger.info(f"Processor {processor.__class__.__name__} returned keys: {list(result.keys())}")
+            
             result_keys = set(result.keys())
             repeat_keys = result_keys.intersection(kwargs.keys())
             if repeat_keys:
@@ -150,7 +161,17 @@ class ModelSpecification:
                     f"conditions: {repeat_keys}. Overwriting the existing values, but this may not "
                     f"be intended. Please rename the keys in the processor to avoid conflicts."
                 )
+                
+            # Create a snapshot of current keys before and after update
+            before_keys = set(kwargs.keys())
             kwargs.update(result)
+            after_keys = set(kwargs.keys())
+            new_keys = after_keys - before_keys
+            
+            if new_keys:
+                logger.info(f"Added new keys from {processor.__class__.__name__}: {new_keys}")
+                
+        logger.info(f"Final prepare_latents output has keys: {list(kwargs.keys())}")
         return kwargs
 
     def collate_conditions(self, data: List[Dict[str, Any]]) -> Dict[str, Any]:

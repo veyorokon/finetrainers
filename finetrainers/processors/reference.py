@@ -144,6 +144,13 @@ class ReferenceToControlProcessor(ProcessorMixin):
         has_control = "control_image" in kwargs or "control_video" in kwargs
         logger.info(f"Has existing control inputs: {has_control}")
         
+        # Log all available kwargs 
+        logger.info(f"Available kwargs: {list(kwargs.keys())}")
+        
+        # Check for vae_references in all possible locations
+        if "vae_references" in kwargs:
+            logger.info(f"vae_references found in kwargs with {len(kwargs['vae_references'])} items")
+            
         # Clone the existing inputs rather than passing them directly
         # This avoids the warning about overwriting existing values
         image_out = image.clone() if image is not None else None
@@ -151,6 +158,7 @@ class ReferenceToControlProcessor(ProcessorMixin):
         
         # If we already have control inputs, don't process references
         if has_control:
+            logger.info(f"Using existing control inputs")
             return {self.output_names[0]: image_out, self.output_names[1]: video_out}
         
         # Convert raw references to pre-processed format if needed
