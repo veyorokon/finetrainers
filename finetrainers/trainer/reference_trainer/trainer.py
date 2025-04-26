@@ -1,12 +1,15 @@
+import json
 import pathlib
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
+import datasets.distributed
 import torch
 import torch.nn.functional as F
 from accelerate.utils import extract_model_from_parallel
 from diffusers.utils import load_image
 from transformers import CLIPImageProcessor, CLIPVisionModel
 
+from finetrainers import data
 from finetrainers.data import PatternReferenceDataset, VideoArtifact
 from finetrainers.data.reference import initialize_reference_dataset
 from finetrainers.logging import get_logger
