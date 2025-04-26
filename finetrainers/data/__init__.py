@@ -14,6 +14,10 @@ from .dataset import (
     initialize_dataset,
     wrap_iterable_dataset_for_preprocessing,
 )
+from .reference import (
+    PatternReferenceDataset,
+    initialize_reference_dataset,
+)
 from .precomputation import (
     InMemoryDataIterable,
     InMemoryDistributedDataPreprocessor,
