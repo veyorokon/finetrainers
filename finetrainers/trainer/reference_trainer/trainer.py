@@ -6,7 +6,8 @@ from accelerate.utils import extract_model_from_parallel
 from diffusers.utils import load_image
 from transformers import CLIPImageProcessor, CLIPVisionModel
 
-from finetrainers.data import VideoArtifact, initialize_reference_dataset
+from finetrainers.data import VideoArtifact, PatternReferenceDataset 
+from finetrainers.data.reference import initialize_reference_dataset
 from finetrainers.logging import get_logger
 from finetrainers.models.wan.reference_specification import WanReferenceModelSpecification
 from finetrainers.trainer.control_trainer.trainer import ControlTrainer
