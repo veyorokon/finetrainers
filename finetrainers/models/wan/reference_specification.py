@@ -255,7 +255,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             padding_shape[1] = padding_channels  # Channel dimension is 1
             
             logger.info(f"Adding {padding_channels} zero channels to latents ({current_channels} → {expected_channels})")
-            channel_padding = torch.zeros(padding_shape, device=noisy_latents.device, dtype=noisy_latents.dtype)
+            channel_padding = torch.zeros(padding_shape, device=noisy_latents.device, dtype=noisy_latents.dtype, requires_grad=True)
             noisy_latents = torch.cat([noisy_latents, channel_padding], dim=1)
 
         latent_model_conditions["hidden_states"] = noisy_latents.to(latents)
