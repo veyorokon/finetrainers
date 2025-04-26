@@ -26,62 +26,6 @@ from .control_specification import WanControlModelSpecification
 logger = get_logger()
 
 
-class WanClipImageProcessor(ReferenceClipProcessor):
-    """
-    Processor to encode reference images using CLIP vision model.
-    Similar to WanLatentEncodeProcessor but for CLIP visual embeddings.
-    
-    Args:
-        output_names (`List[str]`):
-            The names of the outputs that the processor returns. The outputs are:
-            - image_embeds: The CLIP visual embeddings of the input reference images.
-    """
-
-    def __init__(self, output_names: List[str]):
-        super().__init__()
-        self.output_names = output_names
-        assert len(self.output_names) == 1
-
-    def forward(
-        self,
-        image_processor: CLIPImageProcessor,
-        image_encoder: CLIPVisionModel,
-        images: List[torch.Tensor],
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Process reference images through CLIP vision model.
-        
-        Args:
-            image_processor: CLIP image processor for preprocessing images
-            image_encoder: CLIP vision model for encoding images
-            images: List of reference images to process
-            
-        Returns:
-            Dictionary with concatenated image embeddings
-        """
-        device = image_encoder.device
-        dtype = image_encoder.dtype
-        
-        image_embeds_list = []
-        
-        for image in images:
-            # Process image for CLIP
-            processed_image = image_processor(images=image, return_tensors="pt").to(device)
-            
-            # Get visual embedding (using the penultimate layer similar to A2)
-            with torch.no_grad():
-                image_embeds = image_encoder(**processed_image, output_hidden_states=True).hidden_states[-2]
-                
-            # Convert to proper dtype
-            image_embeds = image_embeds.to(dtype=dtype)
-            image_embeds_list.append(image_embeds)
-            
-        # Concatenate all reference embeddings along sequence dimension
-        all_image_embeds = torch.cat(image_embeds_list, dim=1)
-            
-        return {self.output_names[0]: all_image_embeds}
-
-
 class WanReferenceModelSpecification(WanControlModelSpecification):
     """
     Model specification for the Wan model with reference-based conditioning (A2 style).
@@ -156,7 +100,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         
         # Setup embedding model processors for CLIP encoding
         if embedding_model_processors is None:
-            embedding_model_processors = [WanClipImageProcessor(["encoder_image_embeds"])]
+            embedding_model_processors = [ReferenceClipProcessor(["encoder_image_embeds"])]
             
         self.embedding_model_processors = embedding_model_processors
 
