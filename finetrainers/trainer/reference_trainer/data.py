@@ -47,10 +47,31 @@ class IterableReferenceDataset(IterableControlDataset):
         logger.info(f"  Repeat Frames: {self.reference_config['repeat_frames']}")
     
     def __iter__(self):
-        logger.info("Starting IterableReferenceDataset")
-        for data in iter(self.dataset):
+        logger.info("===== Starting IterableReferenceDataset =====")
+        logger.info(f"Reference config: {self.reference_config}")
+        
+        # First check the source dataset
+        source_iter = iter(self.dataset)
+        try:
+            first_item = next(source_iter)
+            logger.info(f"First item from source dataset has keys: {list(first_item.keys())}")
+            if "references" in first_item:
+                logger.info(f"First item has references with keys: {list(first_item['references'].keys())}")
+                for ref_key, ref_path in first_item['references'].items():
+                    logger.info(f"  Reference {ref_key}: {ref_path}")
+            else:
+                logger.warning("First item does not have 'references' key - check dataset configuration!")
+                
+            # Put the item back (restore the iterator state)
+            source_iter = itertools.chain([first_item], source_iter)
+        except StopIteration:
+            logger.error("Source dataset is empty! No data to process.")
+            source_iter = iter([])  # Empty iterator
+            
+        # Now process normally
+        for data in source_iter:
             # Log what we initially received from the dataset
-            logger.info(f"IterableReferenceDataset received data with keys: {list(data.keys())}")
+            logger.info(f"IterableReferenceDataset processing item with keys: {list(data.keys())}")
             
             # Process reference images only for CLIP embedding
             if "references" in data:
