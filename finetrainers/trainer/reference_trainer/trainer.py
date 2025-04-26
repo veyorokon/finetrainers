@@ -109,6 +109,78 @@ class ReferenceTrainer(ControlTrainer):
             reference_config=reference_config,
             device=self.device
         )
+        
+    def _prepare_dataset(self) -> None:
+        """Override parent method to use IterableReferenceDataset instead of IterableControlDataset."""
+        logger.info("Initializing reference dataset and dataloader")
+
+        with open(self.args.dataset_config, "r") as file:
+            dataset_configs = json.load(file)["datasets"]
+        logger.info(f"Training configured to use {len(dataset_configs)} datasets")
+
+        datasets = []
+        for config in dataset_configs:
+            data_root = config.pop("data_root", None)
+            dataset_file = config.pop("dataset_file", None)
+            dataset_type = config.pop("dataset_type")
+            caption_options = config.pop("caption_options", {})
+            reference_suffixes = config.pop("reference_suffixes", ["_object", "_background"])
+            reference_config = config.pop("reference_config", {})
+
+            if data_root is not None and dataset_file is not None:
+                raise ValueError("Both data_root and dataset_file cannot be provided in the same dataset config.")
+
+            dataset_name_or_root = data_root or dataset_file
+            
+            # Use the appropriate dataset initialization based on type
+            if dataset_type == "video_references":
+                logger.info(f"Initializing reference dataset from {dataset_name_or_root}")
+                dataset = initialize_reference_dataset(
+                    dataset_name_or_root, 
+                    reference_suffixes=reference_suffixes,
+                    dataset_type=dataset_type, 
+                    infinite=True
+                )
+            else:
+                dataset = data.initialize_dataset(
+                    dataset_name_or_root, dataset_type, streaming=True, infinite=True, _caption_options=caption_options
+                )
+
+            if not dataset._precomputable_once and self.args.precomputation_once:
+                raise ValueError(
+                    f"Dataset {dataset_name_or_root} does not support precomputing all embeddings at once."
+                )
+
+            logger.info(f"Initialized dataset: {dataset_name_or_root}")
+            dataset = self.state.parallel_backend.prepare_dataset(dataset)
+            dataset = data.wrap_iterable_dataset_for_preprocessing(dataset, dataset_type, config)
+            datasets.append(dataset)
+
+        dataset = data.combine_datasets(datasets, buffer_size=self.args.dataset_shuffle_buffer_size, shuffle=True)
+        
+        # Use IterableReferenceDataset instead of IterableControlDataset
+        reference_config = {
+            "vae_resolution": self.config.vae_resolution,
+            "clip_resolution": self.config.clip_resolution,
+            "reference_order": self.config.reference_order, 
+            "repeat_frames": self.config.repeat_frames,
+            "reference_suffixes": self.config.reference_suffixes
+        }
+        
+        logger.info(f"Creating IterableReferenceDataset with config: {reference_config}")
+        dataset = IterableReferenceDataset(
+            dataset, 
+            self.config.control_type, 
+            reference_config=reference_config,
+            device=self.state.parallel_backend.device
+        )
+        
+        dataloader = self.state.parallel_backend.prepare_dataloader(
+            dataset, batch_size=1, num_workers=self.args.dataloader_num_workers, pin_memory=self.args.pin_memory
+        )
+
+        self.dataset = dataset
+        self.dataloader = dataloader
     
     def _create_validation_dataset(self) -> Optional[torch.utils.data.IterableDataset]:
         """Create the validation dataset."""
