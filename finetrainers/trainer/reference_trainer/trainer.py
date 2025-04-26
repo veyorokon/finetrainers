@@ -162,6 +162,12 @@ class ReferenceTrainer(ControlTrainer):
         condition_model_conditions = {}
         embedding_model_conditions = {}
         
+        # Convert 'images' key to 'references' for our processor
+        if "images" in batch:
+            logger.info(f"Converting 'images' key to 'references' for processor compatibility")
+            batch["references"] = batch["images"]
+            # Keep images for other processing if needed
+            
         # Extract conditions as in parent class
         if "caption" in batch:
             condition_model_conditions = self.model_specification.prepare_conditions(
@@ -191,7 +197,9 @@ class ReferenceTrainer(ControlTrainer):
             
         # Log raw references if present
         if has_refs:
-            logger.info(f"Found references with keys: {list(batch['references'].keys())}")
+            logger.info(f"Found references with keys: {list(batch['references'].keys()) if isinstance(batch['references'], dict) else 'list'}")
+            if "images" in batch:
+                logger.info(f"Converted from 'images' with {len(batch['images']) if isinstance(batch['images'], list) else 'unknown'} items")
         else:
             logger.info("No references found in batch")
             
