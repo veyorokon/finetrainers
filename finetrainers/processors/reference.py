@@ -188,15 +188,14 @@ class ReferenceToControlProcessor(ProcessorMixin):
                 
                 logger.info(f"Created control video with shape {control_video.shape}")
                 
-                # Use different output keys to avoid warning about overwriting existing values
-                # This is important since "image" and "video" may already exist in the conditions
-                output_key_image = kwargs.get("input_key_image", self.output_names[0])
-                output_key_video = kwargs.get("input_key_video", self.output_names[1])
-                
-                logger.info(f"Using output keys: {output_key_image}, {output_key_video}")
+                # Return the control video using defined output_names
+                # These should be unique names that don't conflict with existing inputs  
+                logger.info(f"Using output keys: {self.output_names[0]}, {self.output_names[1]}")
                 
                 # Return the control video using output_names for key mapping
-                return {output_key_image: None, output_key_video: control_video}
+                result = {self.output_names[0]: None, self.output_names[1]: control_video}
+                logger.info(f"Final output keys: {list(result.keys())}")
+                return result
         
         # If no references were processed, return the original inputs
         logger.info(f"No references processed, returning original inputs")
