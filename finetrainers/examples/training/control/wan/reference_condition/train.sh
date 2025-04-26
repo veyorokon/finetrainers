@@ -1,5 +1,10 @@
 #!/bin/bash
 
+#tmux new-session -d -s e2v_train 'bash /workspace/finetrainers/examples/training/e2v/wan/train_lora_base.sh > /workspace/e2v_log.txt 2>&1' 
+
+#git fetch && git stash && git pull && tmux new-session -d -s e2v_train 'bash /workspace/finetrainers/examples/training/e2v/wan/train_lora_base.sh > /workspace/e2v_log.txt 2>&1'  
+
+
 set -e -x
 
 # export TORCH_LOGS="+dynamo,recompiles,graph_breaks"
@@ -11,12 +16,12 @@ export TORCH_NCCL_ENABLE_MONITORING=0
 export FINETRAINERS_LOG_LEVEL="INFO"
 
 # Download the validation dataset
-if [ ! -d "examples/training/control/wan/image_condition/validation_dataset" ]; then
-  echo "Downloading validation dataset..."
-  huggingface-cli download --repo-type dataset finetrainers/OpenVid-1k-split-validation --local-dir examples/training/control/wan/image_condition/validation_dataset
-else
-  echo "Validation dataset already exists. Skipping download."
-fi
+# if [ ! -d "examples/training/control/wan/image_condition/validation_dataset" ]; then
+#   echo "Downloading validation dataset..."
+#   huggingface-cli download --repo-type dataset finetrainers/OpenVid-1k-split-validation --local-dir examples/training/control/wan/image_condition/validation_dataset
+# else
+#   echo "Validation dataset already exists. Skipping download."
+# fi
 
 # Finetrainers supports multiple backends for distributed training. Select your favourite and benchmark the differences!
 # BACKEND="accelerate"
@@ -54,9 +59,9 @@ model_cmd=(
 # Control arguments
 control_cmd=(
   --control_type none
-  --rank 128
-  --lora_alpha 128
-  --target_modules "blocks.*(to_q|to_k|to_v|to_out.0|ff.net.0.proj|ff.net.2)"
+  --rank 16
+  --lora_alpha 16
+  --target_modules "blocks.*(to_q|to_k|to_v|to_out.0)"
   --frame_conditioning_type index
   --frame_conditioning_index 0
 )
@@ -65,6 +70,7 @@ control_cmd=(
 dataset_cmd=(
   --dataset_config $TRAINING_DATASET_CONFIG
   --dataset_shuffle_buffer_size 32
+  --cache_dir "/workspace/a2/cache/"
 )
 
 # Dataloader arguments
