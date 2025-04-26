@@ -191,8 +191,8 @@ class ReferenceToControlProcessor(ProcessorMixin):
                 control_video = torch.stack(frames, dim=0)
                 # Add batch dimension [B, T, C, H, W]
                 control_video = control_video.unsqueeze(0)
-                # Permute to [B, C, T, H, W] format for VAE
-                control_video = control_video.permute(0, 2, 1, 3, 4)
+                # The base processor expects [B, F, C, H, W] which it will then permute
+                # Don't permute here, let the base WanLatentEncodeProcessor handle it
                 
                 logger.info(f"Created control video with shape {control_video.shape}")
                 
