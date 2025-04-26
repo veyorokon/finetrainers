@@ -54,6 +54,7 @@ model_cmd=(
   --model_name "wan"
   --pretrained_model_name_or_path "/dev/shm/models"
   --compile_modules transformer
+  --in_channels 36
 )
 
 # Control arguments
