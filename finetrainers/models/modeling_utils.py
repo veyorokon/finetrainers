@@ -141,14 +141,31 @@ class ModelSpecification:
         if processors is None:
             processors = self.latent_model_processors
         
-        logger.info(f"prepare_latents with {len(processors)} processors: {[p.__class__.__name__ for p in processors]}")
+        logger.info(f"ModelSpecification.prepare_latents with {len(processors)} processors: {[p.__class__.__name__ for p in processors]}")
         logger.info(f"Input kwargs to prepare_latents have keys: {list(kwargs.keys())}")
         
         if "vae_references" in kwargs:
             logger.info(f"vae_references present with {len(kwargs['vae_references'])} items")
+            # Log the type and structure for debugging
+            refs = kwargs["vae_references"]
+            logger.info(f"vae_references type: {type(refs)}, item type: {type(refs[0]) if refs else 'empty'}")
+            
+        # Log other important keys
+        for key in ["image", "video", "control_image", "control_video"]:
+            if key in kwargs:
+                value = kwargs[key]
+                if value is not None:
+                    logger.info(f"{key} present with shape: {value.shape if hasattr(value, 'shape') else 'no shape'}")
+                else:
+                    logger.info(f"{key} is None")
         
         for i, processor in enumerate(processors):
             logger.info(f"Running processor {i+1}/{len(processors)}: {processor.__class__.__name__}")
+            
+            # Check again if vae_references is still in kwargs before processor
+            if "vae_references" in kwargs:
+                logger.info(f"vae_references still present before processor {i+1}")
+            
             result = processor(**kwargs)
             
             logger.info(f"Processor {processor.__class__.__name__} returned keys: {list(result.keys())}")

@@ -171,6 +171,14 @@ class ReferenceTrainer(ControlTrainer):
         # Handle control images/videos for VAE encoding
         has_control_image = "control_image" in batch
         has_control_video = "control_video" in batch
+        has_references = "vae_references" in batch and len(batch["vae_references"]) > 0
+        
+        # Add detailed logging
+        logger.info(f"Training batch contains keys: {list(batch.keys())}")
+        if has_references:
+            logger.info(f"Found vae_references with {len(batch['vae_references'])} items")
+            for i, ref in enumerate(batch["vae_references"]):
+                logger.info(f"  Reference {i}: {type(ref['image']).__name__}, repeat={ref['repeat']}")
         
         if has_control_image or has_control_video:
             latent_model_conditions = self.model_specification.prepare_latents(
@@ -180,6 +188,7 @@ class ReferenceTrainer(ControlTrainer):
                 control_image=batch.get("control_image"),
                 control_video=batch.get("control_video"),
                 generator=self.generator,
+                # We're not adding vae_references here yet, just keeping the original flow
             )
         
         # Handle reference images for CLIP encoding if available

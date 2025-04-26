@@ -218,6 +218,10 @@ class WanControlModelSpecification(ControlModelSpecification):
         compute_posterior: bool = True,
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
+        logger.info(f"WanControlModelSpecification.prepare_latents called with kwargs: {list(kwargs.keys())}")
+        if "vae_references" in kwargs:
+            logger.info(f"vae_references found in kwargs with {len(kwargs['vae_references'])} items")
+        
         common_kwargs = {
             "vae": vae,
             "generator": generator,
@@ -227,13 +231,25 @@ class WanControlModelSpecification(ControlModelSpecification):
             "compute_posterior": False,
             **kwargs,
         }
+        
+        logger.info(f"common_kwargs contains keys: {list(common_kwargs.keys())}")
+        
         conditions = {"image": image, "video": video, **common_kwargs}
         input_keys = set(conditions.keys())
+        
+        logger.info(f"Calling super().prepare_latents with keys: {list(conditions.keys())}")
         conditions = super().prepare_latents(**conditions)
         conditions = {k: v for k, v in conditions.items() if k not in input_keys}
 
+        # At this point, we need to check if vae_references is in common_kwargs
+        logger.info(f"After first processor, common_kwargs still has keys: {list(common_kwargs.keys())}")
+        
         control_conditions = {"image": control_image, "video": control_video, **common_kwargs}
+        logger.info(f"control_conditions has keys: {list(control_conditions.keys())}")
+        
         input_keys = set(control_conditions.keys())
+        
+        logger.info(f"Calling ControlModelSpecification.prepare_latents with keys: {list(control_conditions.keys())}")
         control_conditions = ControlModelSpecification.prepare_latents(
             self, self.control_model_processors, **control_conditions
         )
