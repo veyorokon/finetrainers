@@ -29,7 +29,7 @@ BACKEND="ptd"
 
 # In this setting, I'm using 1 GPU on 4-GPU node for training
 NUM_GPUS=1
-CUDA_VISIBLE_DEVICES="3"
+CUDA_VISIBLE_DEVICES="0"
 
 # Check the JSON files for the expected JSON format
 TRAINING_DATASET_CONFIG="examples/training/control/wan/image_condition/training.json"
