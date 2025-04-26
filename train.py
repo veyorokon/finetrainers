@@ -1,11 +1,12 @@
 import sys
 import traceback
 
-from finetrainers import (BaseArgs, ControlTrainer, E2VTrainer, SFTTrainer,
-                          TrainingType, get_logger)
+from finetrainers import (BaseArgs, ControlTrainer, ReferenceTrainer,
+                          SFTTrainer, TrainingType, get_logger)
 from finetrainers.config import _get_model_specifiction_cls
 from finetrainers.trainer.control_trainer.config import (ControlFullRankConfig,
                                                          ControlLowRankConfig)
+from finetrainers.trainer.reference_trainer.config import ReferenceConfig
 from finetrainers.trainer.sft_trainer.config import (SFTFullRankConfig,
                                                      SFTLowRankConfig)
 
@@ -42,6 +43,8 @@ def main():
             training_cls = ControlLowRankConfig
         elif training_type == TrainingType.CONTROL_FULL_FINETUNE:
             training_cls = ControlFullRankConfig
+        elif training_type in [TrainingType.REFERENCE_LORA, TrainingType.REFERENCE_FULL_FINETUNE]:
+            training_cls = ReferenceConfig
         else:
             raise ValueError(f"Training type {training_type} not supported.")
 
@@ -59,6 +62,8 @@ def main():
             text_encoder_3_id=args.text_encoder_3_id,
             transformer_id=args.transformer_id,
             vae_id=args.vae_id,
+            image_encoder_id=getattr(args, 'image_encoder_id', None),
+            image_processor_id=getattr(args, 'image_processor_id', None),
             text_encoder_dtype=args.text_encoder_dtype,
             text_encoder_2_dtype=args.text_encoder_2_dtype,
             text_encoder_3_dtype=args.text_encoder_3_dtype,
@@ -72,8 +77,8 @@ def main():
             trainer = SFTTrainer(args, model_specification)
         elif args.training_type in [TrainingType.CONTROL_LORA, TrainingType.CONTROL_FULL_FINETUNE]:
             trainer = ControlTrainer(args, model_specification)
-        elif args.training_type in [TrainingType.E2V_LORA, TrainingType.E2V_FULL_FINETUNE]:
-            trainer = E2VTrainer(args, model_specification)
+        elif args.training_type in [TrainingType.REFERENCE_LORA, TrainingType.REFERENCE_FULL_FINETUNE]:
+            trainer = ReferenceTrainer(args, model_specification)
         else:
             raise ValueError(f"Training type {args.training_type} not supported.")
 
