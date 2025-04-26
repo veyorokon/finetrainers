@@ -178,8 +178,12 @@ class ReferenceTrainer(ControlTrainer):
             device=self.state.parallel_backend.device
         )
         
+        # Use lambda function to handle PIL Images during batch collation
+        collate_fn = lambda batch: batch[0] if len(batch) > 0 else {}
+        
         dataloader = self.state.parallel_backend.prepare_dataloader(
-            dataset, batch_size=1, num_workers=self.args.dataloader_num_workers, pin_memory=self.args.pin_memory
+            dataset, batch_size=1, num_workers=self.args.dataloader_num_workers, 
+            pin_memory=self.args.pin_memory, collate_fn=collate_fn
         )
 
         self.dataset = dataset
