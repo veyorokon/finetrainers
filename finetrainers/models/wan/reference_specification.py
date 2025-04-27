@@ -24,6 +24,77 @@ from finetrainers.utils import (get_non_null_items,
 from .base_specification import WanLatentEncodeProcessor, WanModelSpecification
 from .control_specification import WanControlModelSpecification
 
+
+def apply_reference_frame_conditioning(
+    latents: torch.Tensor,
+    expected_num_frames: int,
+    frame_conditioning_type: str,
+    frame_conditioning_index: Optional[int] = None,
+    channel_dim: int = 1,
+    frame_dim: int = 2,
+    concatenate_mask: bool = True,
+) -> torch.Tensor:
+    """
+    Apply frame conditioning for reference model with optional A2-style single-channel mask.
+    
+    This function first applies standard frame conditioning, then optionally creates a 
+    single-channel mask to concatenate, mimicking the A2 paper's approach.
+    
+    Args:
+        latents: Control latents to condition
+        expected_num_frames: Number of frames to match
+        frame_conditioning_type: Type of conditioning ("index", "full", etc.)
+        frame_conditioning_index: Index for index-based conditioning
+        channel_dim: Dimension for channels
+        frame_dim: Dimension for frames
+        concatenate_mask: Whether to concatenate a single-channel mask
+        
+    Returns:
+        Conditioned latents, optionally with single-channel mask concatenated
+    """
+    from finetrainers.trainer.control_trainer.data import apply_frame_conditioning_on_latents
+
+    # First apply normal frame conditioning (without concatenation)
+    masked_latents = apply_frame_conditioning_on_latents(
+        latents,
+        expected_num_frames,
+        channel_dim=channel_dim,
+        frame_dim=frame_dim,
+        frame_conditioning_type=frame_conditioning_type,
+        frame_conditioning_index=frame_conditioning_index,
+        concatenate_mask=False,  # Never use built-in concatenate, we handle it ourselves
+    )
+    
+    # If we don't need to concatenate mask, return the masked latents directly
+    if not concatenate_mask:
+        return masked_latents
+    
+    # Create a single-channel mask
+    mask_shape = list(masked_latents.shape)
+    mask_shape[channel_dim] = 1  # Single channel for mask
+    mask = torch.zeros(mask_shape, device=masked_latents.device, dtype=masked_latents.dtype)
+    
+    # Set 1s for reference frames based on frame_conditioning_type
+    if frame_conditioning_type == "index":
+        frame_index = min(frame_conditioning_index or 0, mask_shape[frame_dim] - 1)
+        indexing = [slice(None)] * len(mask_shape)
+        indexing[frame_dim] = frame_index
+        mask[tuple(indexing)] = 1
+    elif frame_conditioning_type == "first_and_last":
+        indexing = [slice(None)] * len(mask_shape)
+        indexing[frame_dim] = 0
+        mask[tuple(indexing)] = 1
+        indexing[frame_dim] = -1
+        mask[tuple(indexing)] = 1
+    elif frame_conditioning_type == "full":
+        mask.fill_(1)  # Fill with 1s for all frames
+        
+    # Concatenate masked latents with the single-channel mask
+    result = torch.cat([masked_latents, mask], dim=channel_dim)
+    logger.info(f"Applied A2-style reference conditioning with single-channel mask: {result.shape}")
+    
+    return result
+
 logger = get_logger()
 
 
@@ -232,13 +303,15 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         timesteps = (sigmas.flatten() * 1000.0).long()
 
         noisy_latents = FF.flow_match_xt(latents, noise, sigmas)
-        control_latents = apply_frame_conditioning_on_latents(
+        
+        # Use our custom reference frame conditioning function
+        control_latents = apply_reference_frame_conditioning(
             control_latents,
             noisy_latents.shape[2],
-            channel_dim=1,
-            frame_dim=2,
             frame_conditioning_type=self.frame_conditioning_type,
             frame_conditioning_index=self.frame_conditioning_index,
+            channel_dim=1,
+            frame_dim=2,
             concatenate_mask=self.frame_conditioning_concatenate_mask,
         )
         
@@ -342,13 +415,13 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             control_video = control_video.to(device=device, dtype=dtype)
             control_latents = pipeline.vae.encode(control_video).latent_dist.mode()
             control_latents = self._normalize_latents(control_latents, latents_mean, latents_std)
-            control_latents = apply_frame_conditioning_on_latents(
+            control_latents = apply_reference_frame_conditioning(
                 control_latents,
                 latents.shape[2],
-                channel_dim=1,
-                frame_dim=2,
                 frame_conditioning_type=frame_conditioning_type,
                 frame_conditioning_index=frame_conditioning_index,
+                channel_dim=1,
+                frame_dim=2,
                 concatenate_mask=self.frame_conditioning_concatenate_mask,
             )
             
