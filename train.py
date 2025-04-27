@@ -1,5 +1,6 @@
 import sys
 import traceback
+import logging
 
 from finetrainers import (BaseArgs, ControlTrainer, ReferenceTrainer,
                           SFTTrainer, TrainingType, get_logger)
@@ -9,6 +10,9 @@ from finetrainers.trainer.control_trainer.config import (ControlFullRankConfig,
 from finetrainers.trainer.reference_trainer.config import ReferenceConfig
 from finetrainers.trainer.sft_trainer.config import (SFTFullRankConfig,
                                                      SFTLowRankConfig)
+
+# Prevent duplicate logs by ensuring the root logger doesn't propagate to parent
+logging.getLogger('finetrainers').propagate = False
 
 logger = get_logger()
 
