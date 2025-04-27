@@ -25,8 +25,8 @@ class ReferenceConfig(ControlLowRankConfig):
     # Type of reference conditioning
     reference_type: ReferenceType = ReferenceType.A2
     
-    # Reference image configuration
-    vae_resolution: List[int] = field(default_factory=lambda: [854, 480])
+    # Reference image configuration (height, width format to match video_resolution_buckets)
+    vae_resolution: List[int] = field(default_factory=lambda: [480, 854])
     clip_resolution: List[int] = field(default_factory=lambda: [512, 512])
     reference_order: List[str] = field(default_factory=lambda: ["object", "background"])
     repeat_frames: List[int] = field(default_factory=lambda: [4, 1])
@@ -46,10 +46,10 @@ class ReferenceConfig(ControlLowRankConfig):
             self.repeat_frames.extend([1] * (len(self.reference_order) - len(self.repeat_frames)))
             
         if len(self.vae_resolution) != 2:
-            raise ValueError("vae_resolution must be [width, height]")
+            raise ValueError("vae_resolution must be [height, width]")
             
         if len(self.clip_resolution) != 2:
-            raise ValueError("clip_resolution must be [width, height]")
+            raise ValueError("clip_resolution must be [height, width]")
     
     def add_args(self, parser):
         """Add reference-specific arguments to the parser."""
@@ -59,8 +59,8 @@ class ReferenceConfig(ControlLowRankConfig):
         # Then add reference-specific arguments
         parser.add_argument("--reference_type", type=str, default=ReferenceType.A2.value,
                            choices=[x.value for x in ReferenceType.__members__.values()])
-        parser.add_argument("--vae_resolution", type=int, nargs=2, default=[854, 480])
-        parser.add_argument("--clip_resolution", type=int, nargs=2, default=[512, 512])
+        parser.add_argument("--vae_resolution", type=int, nargs=2, default=[480, 854], help="[height, width]")
+        parser.add_argument("--clip_resolution", type=int, nargs=2, default=[512, 512], help="[height, width]")
         parser.add_argument("--reference_order", type=str, nargs="+", default=["object", "background"])
         parser.add_argument("--repeat_frames", type=int, nargs="+", default=[4, 1])
         parser.add_argument("--reference_suffixes", type=str, nargs="+", default=["_object", "_background"])

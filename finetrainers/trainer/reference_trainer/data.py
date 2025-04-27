@@ -35,8 +35,8 @@ class IterableReferenceDataset(IterableControlDataset):
         super().__init__(dataset, control_type, device)
         
         self.reference_config = reference_config or {
-            "vae_resolution": [854, 480],
-            "clip_resolution": [512, 512],
+            "vae_resolution": [480, 854],  # [height, width] to match video_resolution_buckets
+            "clip_resolution": [512, 512], # [height, width]
             "reference_order": ["object", "background"],
             "repeat_frames": [1, 4]
         }
@@ -101,16 +101,16 @@ class IterableReferenceDataset(IterableControlDataset):
                         # Process for VAE storage (no longer creating control video here)
                         vae_image = _crop_and_resize_pad(
                             ref_image,
-                            height=vae_resolution[1],
-                            width=vae_resolution[0]
+                            height=vae_resolution[0],  # [height, width] format
+                            width=vae_resolution[1]
                         )
                         vae_images.append({"image": vae_image, "repeat": repeat})
                         
                         # Process for CLIP
                         clip_image = _crop_and_resize_pad(
                             ref_image,
-                            height=clip_resolution[1],
-                            width=clip_resolution[0]
+                            height=clip_resolution[0],  # [height, width] format
+                            width=clip_resolution[1]
                         )
                         clip_images.append(clip_image)
                 
@@ -178,8 +178,8 @@ class ValidationReferenceDataset(torch.utils.data.IterableDataset):
         self._video_processor = VideoProcessor()
         
         self.reference_config = reference_config or {
-            "vae_resolution": [854, 480],
-            "clip_resolution": [512, 512],
+            "vae_resolution": [480, 854],  # [height, width] to match video_resolution_buckets
+            "clip_resolution": [512, 512], # [height, width]
             "reference_order": ["object", "background"],
             "repeat_frames": [1, 4]
         }
@@ -223,16 +223,16 @@ class ValidationReferenceDataset(torch.utils.data.IterableDataset):
                         # Process for VAE storage (no longer creating control video here)
                         vae_image = _crop_and_resize_pad(
                             ref_image,
-                            height=vae_resolution[1],
-                            width=vae_resolution[0]
+                            height=vae_resolution[0],  # [height, width] format
+                            width=vae_resolution[1]
                         )
                         vae_images.append({"image": vae_image, "repeat": repeat})
                         
                         # Process for CLIP
                         clip_image = _crop_and_resize_pad(
                             ref_image,
-                            height=clip_resolution[1],
-                            width=clip_resolution[0]
+                            height=clip_resolution[0],  # [height, width] format
+                            width=clip_resolution[1]
                         )
                         clip_images.append(clip_image)
                 

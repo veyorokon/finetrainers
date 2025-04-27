@@ -14,7 +14,9 @@ logger = get_logger()
 
 
 def _crop_and_resize_pad(image, height, width, resize_mode="bicubic"):
-    """Center crop and resize image with padding to maintain aspect ratio."""
+    """Center crop and resize image with padding to maintain aspect ratio.
+    Uses height, width order to match video_resolution_buckets convention.
+    """
     if isinstance(image, torch.Tensor):
         # Convert tensor to PIL for processing
         if image.dim() == 3:  # [C, H, W]
@@ -70,7 +72,7 @@ class ReferenceToControlProcessor(ProcessorMixin):
         super().__init__()
         self.output_names = output_names
         self.reference_config = reference_config or {
-            "vae_resolution": [854, 480],
+            "vae_resolution": [480, 854],  # [height, width] to match video_resolution_buckets
             "reference_order": ["object", "background"],
             "repeat_frames": [4, 1]
         }
@@ -109,8 +111,8 @@ class ReferenceToControlProcessor(ProcessorMixin):
                 # Process for VAE
                 vae_image = _crop_and_resize_pad(
                     ref_image,
-                    height=vae_resolution[1],
-                    width=vae_resolution[0]
+                    height=vae_resolution[0],  # [height, width] format
+                    width=vae_resolution[1]
                 )
                 
                 processed_references.append({"image": vae_image, "repeat": repeat})

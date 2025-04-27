@@ -10,7 +10,7 @@
         [ 49, 480, 854 ]
       ],
       "reference_config": {
-        "vae_resolution": [ 854, 480 ],
+        "vae_resolution": [ 480, 854 ],
         "clip_resolution": [ 512, 512 ],
         "reference_order": [ "object", "background" ],
         "repeat_frames": [ 4, 1 ]
