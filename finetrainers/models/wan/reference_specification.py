@@ -94,18 +94,32 @@ def apply_reference_frame_conditioning(
     result = torch.cat([masked_latents, mask], dim=channel_dim)
     logger.info(f"Applied A2-style reference conditioning with single-channel mask: {result.shape}")
     
-    # Add padding to reach the expected channel count for A2 model (36 channels)
-    expected_channels = 36 #NOTE: This needs to be updated to be dynamic. 
-    current_channels = result.shape[channel_dim]
+    # Calculate dynamic padding:
+    # - Each VAE latent has 16 channels
+    # - We just added 1 channel for the mask
+    # - The transformer expects 36 channels total
+    # - So we need 36 - (16 + 16 + 1) = 3 additional padding channels
     
-    if current_channels < expected_channels:
-        padding_channels = expected_channels - current_channels
+    # Get the current channel count
+    vae_channels = 16  # Standard VAE latent channels 
+    total_expected = 36  # Transformer input channels
+    current_control_channels = result.shape[channel_dim]
+    
+    # Calculate how many channels we'll have after concatenating with noisy_latents
+    total_after_concat = vae_channels + current_control_channels
+    
+    # Calculate how many padding channels we need
+    if total_after_concat < total_expected:
+        padding_channels = total_expected - total_after_concat
         padding_shape = list(result.shape)
         padding_shape[channel_dim] = padding_channels
         
-        logger.info(f"Adding {padding_channels} zero channels to match A2 model requirements ({current_channels} → {expected_channels})")
+        logger.info(f"Dynamically adding {padding_channels} padding channels (current: {current_control_channels}, " +
+                  f"total after concat: {total_after_concat}, target: {total_expected})")
         channel_padding = torch.zeros(padding_shape, device=result.device, dtype=result.dtype, requires_grad=True)
         result = torch.cat([result, channel_padding], dim=channel_dim)
+    elif total_after_concat > total_expected:
+        logger.warning(f"Control latents will have too many channels after concat: {total_after_concat} > {total_expected}")
     
     return result
 
@@ -332,6 +346,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         # Concatenate latents along channel dimension
         # Control latents should already have the right number of channels from apply_reference_frame_conditioning
         noisy_latents = torch.cat([noisy_latents, control_latents], dim=1)
+        logger.info(f"Final concatenated latents shape for transformer: {noisy_latents.shape}")
         
         latent_model_conditions["hidden_states"] = noisy_latents.to(latents)
 
