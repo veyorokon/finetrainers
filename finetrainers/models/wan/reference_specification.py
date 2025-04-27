@@ -52,7 +52,8 @@ def apply_reference_frame_conditioning(
     Returns:
         Conditioned latents, optionally with single-channel mask concatenated
     """
-    from finetrainers.trainer.control_trainer.data import apply_frame_conditioning_on_latents
+    from finetrainers.trainer.control_trainer.data import \
+        apply_frame_conditioning_on_latents
 
     # First apply normal frame conditioning (without concatenation)
     masked_latents = apply_frame_conditioning_on_latents(
@@ -92,6 +93,19 @@ def apply_reference_frame_conditioning(
     # Concatenate masked latents with the single-channel mask
     result = torch.cat([masked_latents, mask], dim=channel_dim)
     logger.info(f"Applied A2-style reference conditioning with single-channel mask: {result.shape}")
+    
+    # Add padding to reach the expected channel count for A2 model (36 channels)
+    expected_channels = 36 #NOTE: This needs to be updated to be dynamic. 
+    current_channels = result.shape[channel_dim]
+    
+    if current_channels < expected_channels:
+        padding_channels = expected_channels - current_channels
+        padding_shape = list(result.shape)
+        padding_shape[channel_dim] = padding_channels
+        
+        logger.info(f"Adding {padding_channels} zero channels to match A2 model requirements ({current_channels} → {expected_channels})")
+        channel_padding = torch.zeros(padding_shape, device=result.device, dtype=result.dtype, requires_grad=True)
+        result = torch.cat([result, channel_padding], dim=channel_dim)
     
     return result
 
@@ -316,21 +330,9 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         )
         
         # Concatenate latents along channel dimension
+        # Control latents should already have the right number of channels from apply_reference_frame_conditioning
         noisy_latents = torch.cat([noisy_latents, control_latents], dim=1)
         
-        # THIS IS THE KEY ADDITION - ADD PADDING TO MATCH EXPECTED CHANNELS
-        current_channels = noisy_latents.shape[1]
-        expected_channels = transformer.config.in_channels
-        
-        if current_channels < expected_channels:
-            padding_channels = expected_channels - current_channels
-            padding_shape = list(noisy_latents.shape)
-            padding_shape[1] = padding_channels  # Channel dimension is 1
-            
-            logger.info(f"Adding {padding_channels} zero channels to latents ({current_channels} → {expected_channels})")
-            channel_padding = torch.zeros(padding_shape, device=noisy_latents.device, dtype=noisy_latents.dtype, requires_grad=True)
-            noisy_latents = torch.cat([noisy_latents, channel_padding], dim=1)
-
         latent_model_conditions["hidden_states"] = noisy_latents.to(latents)
 
         pred = transformer(

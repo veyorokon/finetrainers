@@ -6,6 +6,9 @@ read this: /Users/veyorokon/Projects/ai/mine/finetrainers/configs/a2.json
   
 A2 is Wan - just finetuned for reference. we're reverse engineering the training code. 
 
+
+When i ask you a question or im obviously talking about the code and inquiring etc. I want your thoughts and suggestions. Absolutely do not show me code here. idgaf im asking in ENGLISH A QUESTION SO ANSWER IN ENGLISH. 
+
 ## Final Note
 
 This implementation follows the principle of minimal modification while maintaining full compatibility with the framework. By extending ControlTrainer, we inherit all its robust functionality while adding only the necessary E2V-specific features. focus on fixing the actual issue rather than masking it with defaults that weren't specified by the user. 
