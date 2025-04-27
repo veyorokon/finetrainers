@@ -62,33 +62,25 @@ class ReferenceTrainer(ControlTrainer):
         )
     
     def _prepare_models(self) -> None:
-        """Override parent method using half the in_channels value.
+        """Override parent method to use the correct in_channels value.
         
-        The parent implementation doubles the in_channels, so we work around this
-        by halving it before calling the parent implementation. This way we get the
-        correct value without duplicating code.
+        Instead of reusing the parent method which doubles the in_channels, 
+        we implement our own version that uses the correct value directly.
         """
         logger.info("Initializing models for reference training")
 
-        # Get the in_channels from the transformer config (36 for Wan2)
-        original_in_channels = self.model_specification.transformer_config.in_channels
+        # Get the in_channels directly from the transformer config (36 for Wan2)
+        in_channels = self.model_specification.transformer_config.in_channels
+        logger.info(f"Using in_channels value: {in_channels} from model config")
         
-        # Store the original value
-        original_control_layer = self.model_specification._original_control_layer_in_features
+        # Load diffusion components with the exact in_channels we want
+        diffusion_components = self.model_specification.load_diffusion_models(in_channels)
+        self._set_components(diffusion_components)
         
-        # Temporarily set this to half the value, so when parent doubles it, we get the right value
-        # For example: if we need 36 channels, we set it to 18, parent doubles to 36
-        self.model_specification._original_control_layer_in_features = original_in_channels // 2
-        logger.info(f"Temporarily setting control layer in features to {self.model_specification._original_control_layer_in_features} " +
-                   f"(half of {original_in_channels}) for parent's doubling")
-                   
-        # Call parent implementation which will double the value
-        try:
-            super()._prepare_models()
-            logger.info(f"Successfully initialized models with in_channels={original_in_channels}")
-        finally:
-            # Restore the original value
-            self.model_specification._original_control_layer_in_features = original_control_layer
+        if self.state.parallel_backend.pipeline_parallel_enabled:
+            raise NotImplementedError(
+                "Pipeline parallelism is not supported yet. This will be supported in the future."
+            )
 
     def _load_models(self) -> None:
         """Load all models required for training."""
