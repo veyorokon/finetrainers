@@ -177,3 +177,68 @@ def initialize_reference_dataset(
         dataset_type=dataset_type, 
         infinite=infinite
     )
+
+
+def generate_video_resolution_buckets(
+    data_root: str,
+    video_resolutions: List[List[int]],
+    reference_suffixes: List[str] = None,
+) -> List[Tuple[int, int, int]]:
+    """Generate video_resolution_buckets by collecting frame counts from dataset
+    
+    Args:
+        data_root: Path to dataset directory
+        video_resolutions: List of [height, width] pairs
+        reference_suffixes: List of suffixes to identify reference images
+        
+    Returns:
+        List of (frame_count, height, width) tuples for all videos in dataset
+    """
+    logger.info(f"Generating video_resolution_buckets for dataset in {data_root}")
+    
+    # Validate input
+    if not video_resolutions:
+        raise ValueError("At least one video resolution must be provided")
+    
+    # Find all video files in the dataset
+    video_files = []
+    for ext in constants.SUPPORTED_VIDEO_FILE_EXTENSIONS:
+        video_files.extend(find_files(data_root, f"*.{ext}", depth=0))
+    
+    if not video_files:
+        raise ValueError(f"No video files found in {data_root}")
+    
+    logger.info(f"Found {len(video_files)} video files in {data_root}")
+    
+    # Get frame counts for all videos
+    frame_counts = set()
+    for video_file in tqdm(video_files, desc="Scanning videos for frame counts"):
+        try:
+            video = load_video(video_file)
+            if isinstance(video, torch.Tensor):
+                frame_count = video.shape[0]
+            else:
+                # Handle other possible return types
+                frame_count = len(video)
+            frame_counts.add(frame_count)
+            logger.info(f"Video {video_file} has {frame_count} frames")
+        except Exception as e:
+            logger.warning(f"Failed to load video {video_file}: {e}")
+    
+    if not frame_counts:
+        raise ValueError("Could not determine frame counts from dataset")
+    
+    logger.info(f"Found {len(frame_counts)} unique frame counts: {sorted(frame_counts)}")
+    
+    # Generate buckets by combining each resolution with each frame count
+    buckets = []
+    for resolution in video_resolutions:
+        if len(resolution) != 2:
+            raise ValueError(f"Each resolution must be [height, width], got {resolution}")
+        
+        height, width = resolution
+        for frame_count in sorted(frame_counts):
+            buckets.append((frame_count, height, width))
+    
+    logger.info(f"Generated {len(buckets)} video_resolution_buckets: {buckets}")
+    return buckets

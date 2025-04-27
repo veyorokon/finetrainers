@@ -150,6 +150,20 @@ class ReferenceTrainer(ControlTrainer):
             caption_options = config.pop("caption_options", {})
             reference_suffixes = config.pop("reference_suffixes", ["_object", "_background"])
             reference_config = config.pop("reference_config", {})
+            
+            # Handle auto-generating video_resolution_buckets if needed
+            if "video_resolutions" in config and "video_resolution_buckets" not in config and data_root:
+                logger.info(f"Auto-generating video_resolution_buckets from {data_root}")
+                video_resolutions = config.pop("video_resolutions")
+                video_resolution_buckets = generate_video_resolution_buckets(
+                    data_root,
+                    video_resolutions,
+                    reference_suffixes
+                )
+                config["video_resolution_buckets"] = video_resolution_buckets
+                logger.info(f"Generated {len(video_resolution_buckets)} video_resolution_buckets")
+            elif "video_resolutions" in config and data_root is None:
+                logger.warning("Cannot auto-generate video_resolution_buckets without data_root")
 
             if data_root is not None and dataset_file is not None:
                 raise ValueError("Both data_root and dataset_file cannot be provided in the same dataset config.")

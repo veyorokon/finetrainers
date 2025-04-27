@@ -29,7 +29,7 @@ Logging: No logical changes to code just logging statements.
 Feat: code changes to implement new feature
 Doc: Documentation creating
 Refactor: Clean, remove, restructure and simplify code
-
+Understanding current scenario: Explain what I want clearly in 1 - 2 sentences. 
 
 Mode requirements:
 - For logging: no new if / else statements OR loops are allowed . if youre unsure about the fields - print the dir()
