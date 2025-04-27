@@ -4,8 +4,8 @@ from typing import Any, Dict, List, Optional, Union
 
 import torch
 import torchvision.transforms as transforms
-from PIL import Image
 from diffusers.utils import load_image
+from PIL import Image
 
 from finetrainers.logging import get_logger
 from finetrainers.processors.base import ProcessorMixin
@@ -71,11 +71,7 @@ class ReferenceToControlProcessor(ProcessorMixin):
                  input_names: Optional[Dict[str, str]] = None):
         super().__init__()
         self.output_names = output_names
-        self.reference_config = reference_config or {
-            "vae_resolution": [480, 854],  # [height, width] to match video_resolution_buckets
-            "reference_order": ["object", "background"],
-            "repeat_frames": [4, 1]
-        }
+        self.reference_config = reference_config
         # Default input names mapping
         self.input_names = input_names or {}
         
