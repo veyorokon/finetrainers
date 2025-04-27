@@ -11,7 +11,8 @@ from transformers import CLIPImageProcessor, CLIPVisionModel
 
 from finetrainers import data
 from finetrainers.data import PatternReferenceDataset, VideoArtifact
-from finetrainers.data.reference import initialize_reference_dataset
+from finetrainers.data.reference import (generate_video_resolution_buckets,
+                                         initialize_reference_dataset)
 from finetrainers.logging import get_logger
 from finetrainers.models.wan.reference_specification import \
     WanReferenceModelSpecification

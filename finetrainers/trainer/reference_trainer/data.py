@@ -9,7 +9,6 @@ from diffusers.video_processor import VideoProcessor
 from PIL import Image
 
 import finetrainers.functional as FF
-from finetrainers.data.reference import generate_video_resolution_buckets
 from finetrainers.logging import get_logger
 from finetrainers.processors import CannyProcessor, CopyProcessor
 from finetrainers.processors.reference import _crop_and_resize_pad
