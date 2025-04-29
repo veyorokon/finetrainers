@@ -348,12 +348,12 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         # Control latents should already have the right number of channels from apply_reference_frame_conditioning
         noisy_latents = torch.cat([noisy_latents, control_latents], dim=1)
         logger.info(f"Final concatenated latents shape for transformer: {noisy_latents.shape}")
-        
+        import os
+
         # Debug visualization of latent channels - only in the first few steps
         if os.environ.get("REFERENCE_DEBUG_LATENTS") == "1":
             from finetrainers.utils.debug import save_latent_channels
-            import os
-            
+
             # Create a unique identifier for this step
             step_id = os.environ.get("REFERENCE_DEBUG_STEP_ID", "0")
             
