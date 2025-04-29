@@ -91,15 +91,16 @@ def apply_reference_frame_conditioning(
     elif frame_conditioning_type == "full":
         mask.fill_(1)  # Fill with 1s for all frames
         
-    # Concatenate masked latents with the single-channel mask
-    result = torch.cat([masked_latents, mask], dim=channel_dim)
+    # Concatenate the mask with masked latents (mask FIRST, then latents)
+    # This matches the A2 model's inference code ordering
+    result = torch.cat([mask, masked_latents], dim=channel_dim)
     logger.info(f"Applied A2-style reference conditioning with single-channel mask: {result.shape}")
     
     # Calculate dynamic padding:
     # - Each VAE latent has 16 channels
-    # - We just added 1 channel for the mask
+    # - We have 1 channel for the mask and 16 for the reference
     # - The transformer expects 36 channels total
-    # - So we need 36 - (16 + 16 + 1) = 3 additional padding channels
+    # - So we need 36 - (16 + 1 + 16) = 3 additional padding channels
     
     # Get the current channel count
     vae_channels = 16  # Standard VAE latent channels 
