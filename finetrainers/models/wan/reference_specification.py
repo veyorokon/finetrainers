@@ -352,22 +352,26 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
 
         # Debug visualization of latent channels - only in the first few steps
         if os.environ.get("REFERENCE_DEBUG_LATENTS") == "1":
-            from finetrainers.utils.debug import save_latent_channels
+            from finetrainers.utils import create_channel_frame_grid, save_latent_channels
 
             # Create a unique identifier for this step
             step_id = os.environ.get("REFERENCE_DEBUG_STEP_ID", "0")
             
-            # Save mask channel (16) and a few content channels
+            # Save to debug directory
             output_dir = os.path.join("debug_latents", f"step_{step_id}")
             
-            # First 3 content channels
-            save_latent_channels(noisy_latents, output_dir, "content", [0, 1, 2])
-            
+            # Save individual channels for quick reference
             # Mask channel (should be at index 16)
             save_latent_channels(noisy_latents, output_dir, "mask", [16])
             
-            # A few conditioning channels
-            save_latent_channels(noisy_latents, output_dir, "condition", [17, 18, 19])
+            # Create channel×frame grid visualization
+            # Group sizes: content (16), mask (1), conditioning (16), padding (3)
+            create_channel_frame_grid(
+                noisy_latents,
+                output_dir,
+                filename=f"latent_grid_{step_id}.png",
+                group_sizes=[16, 1, 16, 3]
+            )
             
             # Increment step counter
             next_step = int(step_id) + 1
