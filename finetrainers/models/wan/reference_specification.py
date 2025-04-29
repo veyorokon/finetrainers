@@ -1,5 +1,6 @@
 import functools
 import os
+import pathlib
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
@@ -347,6 +348,30 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         # Control latents should already have the right number of channels from apply_reference_frame_conditioning
         noisy_latents = torch.cat([noisy_latents, control_latents], dim=1)
         logger.info(f"Final concatenated latents shape for transformer: {noisy_latents.shape}")
+        
+        # Debug visualization of latent channels - only in the first few steps
+        if os.environ.get("REFERENCE_DEBUG_LATENTS") == "1":
+            from finetrainers.utils.debug import save_latent_channels
+            import os
+            
+            # Create a unique identifier for this step
+            step_id = os.environ.get("REFERENCE_DEBUG_STEP_ID", "0")
+            
+            # Save mask channel (16) and a few content channels
+            output_dir = os.path.join("debug_latents", f"step_{step_id}")
+            
+            # First 3 content channels
+            save_latent_channels(noisy_latents, output_dir, "content", [0, 1, 2])
+            
+            # Mask channel (should be at index 16)
+            save_latent_channels(noisy_latents, output_dir, "mask", [16])
+            
+            # A few conditioning channels
+            save_latent_channels(noisy_latents, output_dir, "condition", [17, 18, 19])
+            
+            # Increment step counter
+            next_step = int(step_id) + 1
+            os.environ["REFERENCE_DEBUG_STEP_ID"] = str(next_step)
         
         latent_model_conditions["hidden_states"] = noisy_latents.to(latents)
 

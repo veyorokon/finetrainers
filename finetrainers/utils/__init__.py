@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .activation_checkpoint import apply_activation_checkpointing
 from .data import determine_batch_size, should_perform_precomputation
+from .debug import save_latent_channels
 from .diffusion import (
     _enable_vae_memory_optimizations,
     default_flow_shift,
