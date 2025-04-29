@@ -362,11 +362,11 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             output_dir = os.path.join("debug_latents", f"step_{step_id}")
             
             # Save individual channels for quick reference
-            # Mask channel (should be at index 16)
+            # Mask channel (should be at index 16 in final tensor)
             save_latent_channels(noisy_latents, output_dir, "mask", [16])
             
             # Create channel×frame grid visualization
-            # Group sizes: content (16), mask (1), conditioning (16), padding (3)
+            # Group sizes now match A2 inference order: content (16), mask (1), conditioning (16), padding (3)
             create_channel_frame_grid(
                 noisy_latents,
                 output_dir,
