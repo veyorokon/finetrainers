@@ -89,23 +89,7 @@ def apply_reference_frame_conditioning(
         indexing[frame_dim] = -1
         mask[tuple(indexing)] = 1
     elif frame_conditioning_type == "full":
-        # Detect reference frames by checking for non-zero content
-        for batch_idx in range(masked_latents.shape[0]):
-            for frame_idx in range(masked_latents.shape[frame_dim]):
-                # Create indexing for this specific frame
-                frame_indexing = [batch_idx] + [slice(None)] * (frame_dim - 1) + [frame_idx] + [slice(None)] * (len(mask_shape) - frame_dim - 1)
-                # Get the frame data
-                frame_data = masked_latents[tuple(frame_indexing)]
-                
-                # If frame has any non-zero content, it's a reference frame
-                if frame_data.abs().sum() > 0:
-                    # Set corresponding mask value to 1
-                    mask_indexing = [batch_idx] + [slice(None)] * (frame_dim - 1) + [frame_idx] + [slice(None)] * (len(mask_shape) - frame_dim - 1)
-                    mask[tuple(mask_indexing)] = 1
-        
-        # Log how many reference frames we detected
-        logger.info(f"Mask shape: {mask.shape}, non-zero elements: {(mask > 0).sum().item()}")
-        logger.info(f"Expected to find reference frames out of {masked_latents.shape[frame_dim]} total frames")
+        mask.fill_(1)  # Fill with 1s for all frames
         
     # Concatenate the mask with masked latents (mask FIRST, then latents)
     # This matches the A2 model's inference code ordering
@@ -377,19 +361,6 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             # Mask channel (should be at index 16 in final tensor)
             save_latent_channels(noisy_latents, output_dir, "mask", [16])
             
-            # Also save the raw control latents before concatenation
-            if os.path.exists(output_dir):
-                np.save(os.path.join(output_dir, f"control_latents_{step_id}.npy"), 
-                       control_latents.detach().cpu().numpy())
-                
-            # Log frame-by-frame stats for the control latents
-            logger.info(f"Control latents shape: {control_latents.shape}")
-            for frame_idx in range(control_latents.shape[2]):
-                frame = control_latents[0, :, frame_idx]
-                non_zero = (frame.abs() > 1e-6).float().sum().item()
-                total = frame.numel()
-                logger.info(f"Frame {frame_idx}: {non_zero}/{total} non-zero elements")
-            
             # Create channel×frame grid visualization
             # Group sizes now match A2 inference order: content (16), mask (1), conditioning (16), padding (3)
             create_channel_frame_grid(
@@ -397,14 +368,6 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 output_dir,
                 filename=f"latent_grid_{step_id}.png",
                 group_sizes=[16, 1, 16, 3]
-            )
-            
-            # Create a separate visualization for just the control latents
-            create_channel_frame_grid(
-                control_latents.unsqueeze(0),  # Add batch dim if needed
-                output_dir,
-                filename=f"control_latents_{step_id}.png",
-                group_sizes=[control_latents.shape[1]]
             )
             
             # Increment step counter
