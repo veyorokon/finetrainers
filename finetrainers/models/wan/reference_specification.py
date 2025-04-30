@@ -1,28 +1,19 @@
-import functools
-import os
-import pathlib
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-from accelerate import init_empty_weights
-from diffusers import (AutoencoderKLWan, FlowMatchEulerDiscreteScheduler,
-                       WanPipeline, WanTransformer3DModel)
+from diffusers import WanPipeline, WanTransformer3DModel
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
-from diffusers.utils import load_image
-from transformers import (AutoModel, AutoTokenizer, CLIPImageProcessor,
-                          CLIPVisionModel, UMT5EncoderModel)
+from transformers import CLIPImageProcessor, CLIPVisionModel
 
 import finetrainers.functional as FF
 from finetrainers.data import VideoArtifact
 from finetrainers.logging import get_logger
-from finetrainers.models.modeling_utils import ModelSpecification
 from finetrainers.processors import (ProcessorMixin, ReferenceClipProcessor,
-                                     ReferenceToControlProcessor, T5Processor)
-from finetrainers.typing import ArtifactType, SchedulerType
-from finetrainers.utils import (get_non_null_items,
-                                safetensors_torch_save_function)
+                                     ReferenceToControlProcessor)
+from finetrainers.typing import ArtifactType
+from finetrainers.utils import get_non_null_items
 
-from .base_specification import WanLatentEncodeProcessor, WanModelSpecification
+from .base_specification import WanLatentEncodeProcessor
 from .control_specification import WanControlModelSpecification
 
 
