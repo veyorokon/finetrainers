@@ -181,10 +181,23 @@ class ReferenceToControlProcessor(ProcessorMixin):
                 else:
                     ref_tensor = ref_image
                     
+                # Log what we're extending with
+                logger.info(f"Adding reference '{ref_type}' with repeat count {repeat_count}, tensor shape: {ref_tensor.shape}")
+                # Log the min/max values of the reference tensor to check if it contains data
+                logger.info(f"Reference tensor min: {ref_tensor.min().item()}, max: {ref_tensor.max().item()}")
                 frames.extend([ref_tensor] * repeat_count)
             
             if frames:
                 logger.info(f"Creating control video with {len(frames)} frames")
+                # Log details about each frame for debugging
+                for i, frame in enumerate(frames):
+                    # Calculate some statistics about the frame
+                    min_val = frame.min().item()
+                    max_val = frame.max().item()
+                    mean_val = frame.mean().item()
+                    std_val = frame.std().item()
+                    logger.info(f"Frame {i}: min={min_val:.6f}, max={max_val:.6f}, mean={mean_val:.6f}, std={std_val:.6f}")
+                
                 # Stack frames to create video [T, C, H, W]
                 control_video = torch.stack(frames, dim=0)
                 # Add batch dimension [B, T, C, H, W]

@@ -377,6 +377,19 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             # Mask channel (should be at index 16 in final tensor)
             save_latent_channels(noisy_latents, output_dir, "mask", [16])
             
+            # Also save the raw control latents before concatenation
+            if os.path.exists(output_dir):
+                np.save(os.path.join(output_dir, f"control_latents_{step_id}.npy"), 
+                       control_latents.detach().cpu().numpy())
+                
+            # Log frame-by-frame stats for the control latents
+            logger.info(f"Control latents shape: {control_latents.shape}")
+            for frame_idx in range(control_latents.shape[2]):
+                frame = control_latents[0, :, frame_idx]
+                non_zero = (frame.abs() > 1e-6).float().sum().item()
+                total = frame.numel()
+                logger.info(f"Frame {frame_idx}: {non_zero}/{total} non-zero elements")
+            
             # Create channel×frame grid visualization
             # Group sizes now match A2 inference order: content (16), mask (1), conditioning (16), padding (3)
             create_channel_frame_grid(
@@ -384,6 +397,14 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 output_dir,
                 filename=f"latent_grid_{step_id}.png",
                 group_sizes=[16, 1, 16, 3]
+            )
+            
+            # Create a separate visualization for just the control latents
+            create_channel_frame_grid(
+                control_latents.unsqueeze(0),  # Add batch dim if needed
+                output_dir,
+                filename=f"control_latents_{step_id}.png",
+                group_sizes=[control_latents.shape[1]]
             )
             
             # Increment step counter
