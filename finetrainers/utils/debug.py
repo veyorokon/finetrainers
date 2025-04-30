@@ -109,32 +109,35 @@ def create_channel_frame_grid(
     batch_size, num_channels, num_frames, height, width = latents.shape
     latent_data = latents[0]  # [C, T, H, W]
     
+    # Log how many frames we're visualizing
+    logger.info(f"Visualizing {num_frames} frames across {num_channels} channels")
+    
     # Set default group sizes if not provided
     if group_sizes is None:
         # Default groups: content (16), mask (1), conditioning (16), padding (3)
         group_sizes = [16, 1, 16, 3]
     
-    # Normalization done inline for simplicity
-    
     # Get colormap
     cmap = cm.get_cmap('viridis')
     
+    # For better visualization, increase the spacing between frames
+    frame_spacing = spacing * 3  # Triple the spacing between frames for clarity
+    
     # Calculate grid dimensions with spacing
     grid_width = num_channels * width + (num_channels - 1) * spacing
-    grid_height = num_frames * height + (num_frames - 1) * spacing
+    grid_height = num_frames * height + (num_frames - 1) * frame_spacing
     
     # Add extra spacing for channel groups
     if group_sizes:
         # Add wide separators between groups
         group_separators = len(group_sizes) - 1
-        grid_width += group_separators * (spacing * 3)
+        grid_width += group_separators * (spacing * 5)  # Thicker separation
     
     # Create the grid image
     grid_img = Image.new('RGB', (grid_width, grid_height), color='black')
     
     # Track the current x position
     x_pos = 0
-    channel_idx = 0
     
     # Process each channel group
     group_start_idx = 0
@@ -151,6 +154,10 @@ def create_channel_frame_grid(
                 # Get channel data for this frame
                 data = latent_data[c, t].numpy()
                 
+                # Calculate some stats for this frame
+                non_zero = (np.abs(data) > 1e-6).sum()
+                total = data.size
+                
                 # Normalize data to [0,1]
                 min_val, max_val = data.min(), data.max()
                 if min_val == max_val:
@@ -164,8 +171,8 @@ def create_channel_frame_grid(
                 # Create image
                 channel_img = Image.fromarray(colored_data)
                 
-                # Calculate position
-                y_pos = t * (height + spacing)
+                # Calculate position - using frame_spacing for better separation
+                y_pos = t * (height + frame_spacing)
                 
                 # Paste into grid
                 grid_img.paste(channel_img, (x_pos, y_pos))
@@ -176,7 +183,11 @@ def create_channel_frame_grid(
         # Move to next group (with extra spacing between groups)
         group_start_idx = group_end_idx
         if group_idx < len(group_sizes) - 1:
-            x_pos += spacing * 2  # Extra spacing between groups
+            # Draw a vertical white line to separate groups
+            line_width = spacing * 5
+            line_img = Image.new('RGB', (line_width, grid_height), color='white')
+            grid_img.paste(line_img, (x_pos, 0))
+            x_pos += line_width
     
     # Save the grid
     file_path = output_path / filename

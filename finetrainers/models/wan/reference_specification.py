@@ -329,6 +329,13 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
 
         noisy_latents = FF.flow_match_xt(latents, noise, sigmas)
         
+        # Let's inspect control_latents before processing
+        logger.info(f"Before apply_reference_frame_conditioning, control_latents shape: {control_latents.shape}")
+        for f_idx in range(min(8, control_latents.shape[2])):
+            frame_data = control_latents[0, :, f_idx]
+            non_zero = (frame_data.abs() > 1e-6).float().sum().item()
+            logger.info(f"Frame {f_idx}: {non_zero} non-zero values out of {frame_data.numel()}")
+            
         # Use our custom reference frame conditioning function
         control_latents = apply_reference_frame_conditioning(
             control_latents,

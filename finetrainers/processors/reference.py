@@ -185,9 +185,6 @@ class ReferenceToControlProcessor(ProcessorMixin):
             
             if frames:
                 logger.info(f"Creating control video with {len(frames)} frames")
-                # Print shapes of each frame
-                for i, frame in enumerate(frames):
-                    logger.info(f"Frame {i} shape: {frame.shape}")
                 
                 # Stack frames to create video [T, C, H, W]
                 control_video = torch.stack(frames, dim=0)
