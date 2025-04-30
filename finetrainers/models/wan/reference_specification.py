@@ -89,7 +89,23 @@ def apply_reference_frame_conditioning(
         indexing[frame_dim] = -1
         mask[tuple(indexing)] = 1
     elif frame_conditioning_type == "full":
-        mask.fill_(1)  # Fill with 1s for all frames
+        # Detect reference frames by checking for non-zero content
+        for batch_idx in range(masked_latents.shape[0]):
+            for frame_idx in range(masked_latents.shape[frame_dim]):
+                # Create indexing for this specific frame
+                frame_indexing = [batch_idx] + [slice(None)] * (frame_dim - 1) + [frame_idx] + [slice(None)] * (len(mask_shape) - frame_dim - 1)
+                # Get the frame data
+                frame_data = masked_latents[tuple(frame_indexing)]
+                
+                # If frame has any non-zero content, it's a reference frame
+                if frame_data.abs().sum() > 0:
+                    # Set corresponding mask value to 1
+                    mask_indexing = [batch_idx] + [slice(None)] * (frame_dim - 1) + [frame_idx] + [slice(None)] * (len(mask_shape) - frame_dim - 1)
+                    mask[tuple(mask_indexing)] = 1
+        
+        # Log how many reference frames we detected
+        ref_frame_count = (mask > 0).sum(dim=[0, 1, 3, 4]).item()
+        logger.info(f"Detected {ref_frame_count} reference frames out of {masked_latents.shape[frame_dim]} total frames")
         
     # Concatenate the mask with masked latents (mask FIRST, then latents)
     # This matches the A2 model's inference code ordering
