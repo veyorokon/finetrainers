@@ -126,29 +126,21 @@ def create_channel_frame_grid(
             # Get frame data
             data = latent_data[c, t].numpy()
             
-            # Normalize to [0,1] with better handling of padding
-            # Check if this is mostly padding (near-zero values)
-            is_padding = np.abs(data).max() < 1e-4
+            # Direct raw value visualization for all channels
+            # Just shift from [-1,1] to [0,1] range without any other normalization
+            # This preserves the exact values, with 0 mapping to 0.5 (mid-gray)
+            norm_data = (data + 1.0) * 0.5
             
-            if is_padding:
-                # If it's padding, make it pure black
-                norm_data = np.zeros_like(data)
-                # Use a different colormap for padding
-                colored_data = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
-            else:
-                # For active frames, use robust normalization
-                min_val, max_val = data.min(), data.max()
-                abs_max = max(abs(min_val), abs(max_val))
-                
-                # If very small values, treat as zero
-                if abs_max < 1e-3:
-                    norm_data = np.zeros_like(data)
-                else:
-                    # Center at zero and scale by absolute maximum
-                    norm_data = np.clip(data / abs_max, -1, 1) * 0.5 + 0.5
-                
-                # Apply colormap
-                colored_data = (cmap(norm_data) * 255).astype(np.uint8)
+            # Make sure we clamp the range to [0,1] to avoid colormap errors
+            norm_data = np.clip(norm_data, 0, 1)
+            
+            # Apply colormap
+            colored_data = (cmap(norm_data) * 255).astype(np.uint8)
+            
+            # Add debugging info
+            if t == 0 and c == 0:  # Log only for first frame of first channel
+                logger.info(f"Raw value range: min={data.min():.4f}, max={data.max():.4f}")
+                logger.info(f"Normalized range: min={norm_data.min():.4f}, max={norm_data.max():.4f}")
             
             # Create image
             frame_img = Image.fromarray(colored_data)
