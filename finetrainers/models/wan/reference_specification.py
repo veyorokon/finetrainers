@@ -80,6 +80,11 @@ def apply_reference_frame_conditioning(
     mask_shape[channel_dim] = 1  # Single channel for mask
     mask = torch.zeros(mask_shape, device=latents.device, dtype=latents.dtype)
     
+    # Calculate temporal compression factor (if original frames < expected frames)
+    # This handles the case where reference images are repeated to match expected frames
+    temporal_compression = expected_num_frames / original_frames if original_frames > 0 else 1
+    logger.info(f"Temporal compression factor: {temporal_compression:.2f} (original: {original_frames}, expected: {expected_num_frames})")
+    
     # Copy the kept frames to result and mark them in the mask
     for result_idx, latent_idx in enumerate(kept_indices):
         if result_idx >= expected_num_frames:
@@ -96,10 +101,20 @@ def apply_reference_frame_conditioning(
         # Copy the frame data
         result[tuple(target_slice)] = latents[tuple(source_slice)]
         
-        # Mark this frame in the mask
-        mask[tuple(target_slice)] = 1
-        
-        logger.info(f"Copied frame {latent_idx} to result frame {result_idx} and marked in mask")
+        # Only mark this frame in the mask if it corresponds to an original reference frame
+        # For repeated frames (due to temporal compression), we only want to mark the first instance
+        should_mark = True
+        if temporal_compression > 1:
+            # If we have compression, only mark frames that would be the first instance of a reference frame
+            original_frame_index = int(result_idx / temporal_compression)
+            is_first_instance = abs(result_idx - original_frame_index * temporal_compression) < 1
+            should_mark = is_first_instance
+            
+        if should_mark:
+            mask[tuple(target_slice)] = 1
+            logger.info(f"Copied frame {latent_idx} to result frame {result_idx} and MARKED in mask")
+        else:
+            logger.info(f"Copied frame {latent_idx} to result frame {result_idx} but NOT marked in mask (repeated frame)")
     
     # If mask is not needed, return result directly
     if not concatenate_mask:
@@ -110,8 +125,18 @@ def apply_reference_frame_conditioning(
     mask_max = mask.max().item()
     mask_mean = mask.mean().item()
     mask_nonzero = (mask > 0).float().sum().item()
+    marked_frames = 0
+    
+    # Count how many frames have any non-zero mask values
+    for f in range(mask.shape[frame_dim]):
+        frame_slice = [slice(None)] * mask.ndim
+        frame_slice[frame_dim] = f
+        if mask[tuple(frame_slice)].sum() > 0:
+            marked_frames += 1
+    
     logger.info(f"Mask stats: min={mask_min:.6f}, max={mask_max:.6f}, mean={mask_mean:.6f}, " +
-              f"non-zero={mask_nonzero} out of {mask.numel()}")
+              f"non-zero={mask_nonzero} out of {mask.numel()}, " +
+              f"marked_frames={marked_frames} out of {mask.shape[frame_dim]}")
     
     # Concatenate mask with result (mask first, then latents)
     # This matches the A2 inference code ordering
