@@ -152,6 +152,19 @@ class ReferenceTrainer(ControlTrainer):
             reference_suffixes = config.pop("reference_suffixes", ["_object", "_background"])
             reference_config = config.pop("reference_config", {})
             
+            # Update the trainer config with values from the dataset config
+            if reference_config:
+                logger.info(f"Found reference_config in dataset: {reference_config}")
+                if "repeat_frames" in reference_config:
+                    self.config.repeat_frames = reference_config["repeat_frames"]
+                    logger.info(f"Updated repeat_frames from dataset config: {self.config.repeat_frames}")
+                if "vae_resolution" in reference_config:
+                    self.config.vae_resolution = reference_config["vae_resolution"]
+                if "clip_resolution" in reference_config:
+                    self.config.clip_resolution = reference_config["clip_resolution"]
+                if "reference_order" in reference_config:
+                    self.config.reference_order = reference_config["reference_order"]
+            
             # Handle auto-generating video_resolution_buckets if needed
             if "video_resolutions" in config and "video_resolution_buckets" not in config and data_root:
                 logger.info(f"Auto-generating video_resolution_buckets from {data_root}")

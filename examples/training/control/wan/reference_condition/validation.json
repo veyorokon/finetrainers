@@ -13,7 +13,7 @@
         "vae_resolution": [ 480, 854 ],
         "clip_resolution": [ 512, 512 ],
         "reference_order": [ "object", "background" ],
-        "repeat_frames": [ 4, 1 ]
+        "repeat_frames": [ 4, 4 ]
       }
     }
   ]
