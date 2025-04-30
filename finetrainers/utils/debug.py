@@ -126,16 +126,21 @@ def create_channel_frame_grid(
             # Get frame data
             data = latent_data[c, t].numpy()
             
-            # Direct raw value visualization for all channels
-            # Just shift from [-1,1] to [0,1] range without any other normalization
-            # This preserves the exact values, with 0 mapping to 0.5 (mid-gray)
+            # Direct raw value visualization with grayscale for clearer interpretation
+            # Shift from [-1,1] to [0,1] range for direct visualization
             norm_data = (data + 1.0) * 0.5
             
-            # Make sure we clamp the range to [0,1] to avoid colormap errors
+            # Make sure we clamp the range to [0,1]
             norm_data = np.clip(norm_data, 0, 1)
             
-            # Apply colormap
-            colored_data = (cmap(norm_data) * 255).astype(np.uint8)
+            # Convert to grayscale (0 = black, 1 = white)
+            # Create RGB with uniform values (grayscale)
+            grayscale = (norm_data * 255).astype(np.uint8)
+            colored_data = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
+            colored_data[..., 0] = grayscale  # R
+            colored_data[..., 1] = grayscale  # G
+            colored_data[..., 2] = grayscale  # B
+            colored_data[..., 3] = 255        # A (fully opaque)
             
             # Add debugging info
             if t == 0 and c == 0:  # Log only for first frame of first channel
