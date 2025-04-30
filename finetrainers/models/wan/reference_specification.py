@@ -157,12 +157,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         **kwargs,
     ) -> None:
         # Initialize reference config
-        self.reference_config = reference_config or {
-            "vae_resolution": [480, 854],  # [height, width] to match video_resolution_buckets
-            "clip_resolution": [512, 512], # [height, width]
-            "reference_order": ["object", "background"],
-            "repeat_frames": [4, 1]
-        }
+        self.reference_config = reference_config 
         
         # Create reference-to-control processor if not provided
         if control_model_processors is None:
@@ -353,7 +348,8 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
 
         # Debug visualization of latent channels - only in the first few steps
         if os.environ.get("REFERENCE_DEBUG_LATENTS") == "1":
-            from finetrainers.utils import create_channel_frame_grid, save_latent_channels
+            from finetrainers.utils import (create_channel_frame_grid,
+                                            save_latent_channels)
 
             # Create a unique identifier for this step
             step_id = os.environ.get("REFERENCE_DEBUG_STEP_ID", "0")

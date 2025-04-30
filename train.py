@@ -52,7 +52,23 @@ def main():
         else:
             raise ValueError(f"Training type {training_type} not supported.")
 
-        args.register_args(training_cls())
+        # For reference trainer, load from JSON if dataset_config is provided
+        dataset_config = None
+        for i, arg in enumerate(argv):
+            if arg == "--dataset_config" and i + 1 < len(argv):
+                dataset_config = argv[i + 1]
+                break
+            elif arg.startswith("--dataset_config="):
+                dataset_config = arg.split("=", 1)[1]
+                break
+                
+        if training_type in [TrainingType.REFERENCE_LORA, TrainingType.REFERENCE_FULL_FINETUNE] and dataset_config:
+            logger.info(f"Loading reference configuration from JSON: {dataset_config}")
+            config = ReferenceConfig.from_json(dataset_config)
+            args.register_args(config)
+        else:
+            # Use default configuration for non-reference trainers or when no dataset_config
+            args.register_args(training_cls())
         args = args.parse_args()
 
         model_specification_cls = _get_model_specifiction_cls(args.model_name, args.training_type)
