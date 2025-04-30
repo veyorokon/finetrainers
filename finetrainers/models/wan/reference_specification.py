@@ -96,6 +96,13 @@ def apply_reference_frame_conditioning(
             indexing = [slice(None)] * len(mask_shape)
             indexing[frame_dim] = i
             mask[tuple(indexing)] = 1
+        # Log mask statistics for debugging
+        mask_min = mask.min().item()
+        mask_max = mask.max().item()
+        mask_mean = mask.mean().item()
+        mask_nonzero = (mask > 0).float().sum().item()
+        logger.info(f"Mask stats: min={mask_min:.6f}, max={mask_max:.6f}, mean={mask_mean:.6f}, " +
+                  f"non-zero={mask_nonzero} out of {mask.numel()}")
         logger.info(f"Marked {num_reference_frames} frames as reference frames in mask")
         
     # Concatenate the mask with masked latents (mask FIRST, then latents)
@@ -358,6 +365,16 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         # Control latents should already have the right number of channels from apply_reference_frame_conditioning
         noisy_latents = torch.cat([noisy_latents, control_latents], dim=1)
         logger.info(f"Final concatenated latents shape for transformer: {noisy_latents.shape}")
+        
+        # Diagnostic logging - check the mask channel in final concatenated tensor
+        # Mask should be at channel 16 (after the content channels)
+        mask_channel = noisy_latents[:, 16]
+        mask_min = mask_channel.min().item()
+        mask_max = mask_channel.max().item()
+        mask_mean = mask_channel.mean().item()
+        mask_nonzero = (mask_channel > 0.5).float().sum().item()
+        logger.info(f"Final mask channel stats: min={mask_min:.6f}, max={mask_max:.6f}, mean={mask_mean:.6f}, " +
+                  f"non-zero={mask_nonzero} out of {mask_channel.numel()}")
         import os
 
         # Debug visualization of latent channels - only in the first few steps
