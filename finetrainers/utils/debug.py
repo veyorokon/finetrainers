@@ -81,19 +81,7 @@ def create_channel_frame_grid(
     spacing: int = 2,
     group_sizes: Optional[List[int]] = None,
 ) -> str:
-    """
-    Create a grid visualization with channels as columns and frames as rows.
-    
-    Args:
-        latents: Tensor of shape [B, C, T, H, W] with channels and frames
-        output_dir: Directory to save visualization
-        filename: Output filename 
-        spacing: Pixels of spacing between channels/frames
-        group_sizes: Optional list of channel group sizes for visual separation
-        
-    Returns:
-        Path to saved grid image
-    """
+    """Simple visualization of latents as a grid of frames x channels."""
     # Create output directory
     output_path = pathlib.Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -109,90 +97,58 @@ def create_channel_frame_grid(
     batch_size, num_channels, num_frames, height, width = latents.shape
     latent_data = latents[0]  # [C, T, H, W]
     
-    # Log how many frames we're visualizing
-    logger.info(f"Visualizing {num_frames} frames across {num_channels} channels")
-    
-    # Set default group sizes if not provided
-    if group_sizes is None:
-        # Default groups: content (16), mask (1), conditioning (16), padding (3)
-        group_sizes = [16, 1, 16, 3]
+    logger.info(f"Grid with {num_channels} channels x {num_frames} frames")
     
     # Get colormap
     cmap = cm.get_cmap('viridis')
     
-    # For better visualization, increase the spacing between frames
-    frame_spacing = spacing * 3  # Triple the spacing between frames for clarity
+    # Set spacing
+    spacing = 2
     
-    # Calculate grid dimensions with spacing
+    # Calculate total size
     grid_width = num_channels * width + (num_channels - 1) * spacing
-    grid_height = num_frames * height + (num_frames - 1) * frame_spacing
+    grid_height = num_frames * height + (num_frames - 1) * spacing
     
-    # Add extra spacing for channel groups
-    if group_sizes:
-        # Add wide separators between groups
-        group_separators = len(group_sizes) - 1
-        grid_width += group_separators * (spacing * 5)  # Thicker separation
-    
-    # Create the grid image
+    # Create empty grid
     grid_img = Image.new('RGB', (grid_width, grid_height), color='black')
     
-    # Track the current x position
-    x_pos = 0
-    
-    # Process each channel group
-    group_start_idx = 0
-    for group_idx, group_size in enumerate(group_sizes):
-        group_end_idx = group_start_idx + group_size
+    # Generate one column per channel, with frames as rows
+    for c in range(num_channels):
+        # Create a column for this channel
+        col_width = width
+        col_height = num_frames * height + (num_frames - 1) * spacing
+        col_img = Image.new('RGB', (col_width, col_height), color='black')
         
-        # Process channels in this group
-        for c in range(group_start_idx, group_end_idx):
-            if c >= num_channels:
-                break
-                
-            # Process each frame for this channel
-            for t in range(num_frames):
-                # Get channel data for this frame
-                data = latent_data[c, t].numpy()
-                
-                # Calculate some stats for this frame
-                non_zero = (np.abs(data) > 1e-6).sum()
-                total = data.size
-                
-                # Normalize data to [0,1]
-                min_val, max_val = data.min(), data.max()
-                if min_val == max_val:
-                    norm_data = np.zeros_like(data) if min_val < 0 else np.ones_like(data)
-                else:
-                    norm_data = (data - min_val) / (max_val - min_val)
-                
-                # Apply colormap
-                colored_data = (cmap(norm_data) * 255).astype(np.uint8)
-                
-                # Create image
-                channel_img = Image.fromarray(colored_data)
-                
-                # Calculate position - using frame_spacing for better separation
-                y_pos = t * (height + frame_spacing)
-                
-                # Paste into grid
-                grid_img.paste(channel_img, (x_pos, y_pos))
+        # Process each frame for this channel
+        for t in range(num_frames):
+            # Get frame data
+            data = latent_data[c, t].numpy()
             
-            # Move to next channel
-            x_pos += width + spacing
+            # Normalize to [0,1]
+            min_val, max_val = data.min(), data.max()
+            if min_val == max_val:
+                norm_data = np.zeros_like(data) if min_val < 0 else np.ones_like(data)
+            else:
+                norm_data = (data - min_val) / (max_val - min_val)
+            
+            # Apply colormap
+            colored_data = (cmap(norm_data) * 255).astype(np.uint8)
+            
+            # Create image
+            frame_img = Image.fromarray(colored_data)
+            
+            # Paste into column
+            y_pos = t * (height + spacing)
+            col_img.paste(frame_img, (0, y_pos))
         
-        # Move to next group (with extra spacing between groups)
-        group_start_idx = group_end_idx
-        if group_idx < len(group_sizes) - 1:
-            # Draw a vertical white line to separate groups
-            line_width = spacing * 5
-            line_img = Image.new('RGB', (line_width, grid_height), color='white')
-            grid_img.paste(line_img, (x_pos, 0))
-            x_pos += line_width
+        # Paste column into grid
+        x_pos = c * (width + spacing)
+        grid_img.paste(col_img, (x_pos, 0))
     
     # Save the grid
     file_path = output_path / filename
     grid_img.save(file_path)
     
-    logger.info(f"Saved channel-frame grid to {file_path}")
+    logger.info(f"Saved grid to {file_path}")
     
     return str(file_path)
