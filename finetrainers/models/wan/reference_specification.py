@@ -74,6 +74,8 @@ def apply_reference_frame_conditioning(
     # Create a single-channel mask
     mask_shape = list(masked_latents.shape)
     mask_shape[channel_dim] = 1  # Single channel for mask
+    logger.info(f"Original masked_latents shape: {masked_latents.shape}, creating mask with shape: {mask_shape}")
+    logger.info(f"Expected num frames: {expected_num_frames}, actual frames in mask: {mask_shape[frame_dim]}")
     mask = torch.zeros(mask_shape, device=masked_latents.device, dtype=masked_latents.dtype)
     
     # Set 1s for reference frames based on frame_conditioning_type
@@ -92,10 +94,20 @@ def apply_reference_frame_conditioning(
         # Instead of filling all frames with 1s, fill exactly the number 
         # of frames we have in the masked_latents tensor
         num_reference_frames = masked_latents.shape[frame_dim]
+        logger.info(f"Setting 1s for {num_reference_frames} frames in mask with {mask.shape[frame_dim]} total frames")
+        
+        # Print the shape again
+        logger.info(f"Current mask shape: {mask.shape}")
+        
         for i in range(num_reference_frames):
             indexing = [slice(None)] * len(mask_shape)
             indexing[frame_dim] = i
             mask[tuple(indexing)] = 1
+            logger.info(f"Set mask[{i}] = 1")
+            
+        # Check how many frames have 1s
+        frames_with_1s = sum([(mask.select(frame_dim, i) > 0.5).any().item() for i in range(mask.shape[frame_dim])])
+        logger.info(f"After setting values, {frames_with_1s} frames have 1s out of {mask.shape[frame_dim]} total")
         # Log mask statistics for debugging
         mask_min = mask.min().item()
         mask_max = mask.max().item()
