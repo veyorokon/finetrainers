@@ -9,6 +9,8 @@ import torch
 from PIL import Image
 from matplotlib import cm
 
+# Ensure NumPy is imported as np
+
 from finetrainers.logging import get_logger
 
 logger = get_logger()
@@ -126,7 +128,7 @@ def create_channel_frame_grid(
             
             # Normalize to [0,1] with better handling of padding
             # Check if this is mostly padding (near-zero values)
-            is_padding = data.abs().max() < 1e-4
+            is_padding = np.abs(data).max() < 1e-4
             
             if is_padding:
                 # If it's padding, make it pure black
