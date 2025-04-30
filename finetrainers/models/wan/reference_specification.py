@@ -89,7 +89,14 @@ def apply_reference_frame_conditioning(
         indexing[frame_dim] = -1
         mask[tuple(indexing)] = 1
     elif frame_conditioning_type == "full":
-        mask.fill_(1)  # Fill with 1s for all frames
+        # Instead of filling all frames with 1s, fill exactly the number 
+        # of frames we have in the masked_latents tensor
+        num_reference_frames = masked_latents.shape[frame_dim]
+        for i in range(num_reference_frames):
+            indexing = [slice(None)] * len(mask_shape)
+            indexing[frame_dim] = i
+            mask[tuple(indexing)] = 1
+        logger.info(f"Marked {num_reference_frames} frames as reference frames in mask")
         
     # Concatenate the mask with masked latents (mask FIRST, then latents)
     # This matches the A2 model's inference code ordering
