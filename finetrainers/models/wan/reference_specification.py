@@ -104,8 +104,8 @@ def apply_reference_frame_conditioning(
                     mask[tuple(mask_indexing)] = 1
         
         # Log how many reference frames we detected
-        ref_frame_count = (mask > 0).sum(dim=[0, 1, 3, 4]).item()
-        logger.info(f"Detected {ref_frame_count} reference frames out of {masked_latents.shape[frame_dim]} total frames")
+        logger.info(f"Mask shape: {mask.shape}, non-zero elements: {(mask > 0).sum().item()}")
+        logger.info(f"Expected to find reference frames out of {masked_latents.shape[frame_dim]} total frames")
         
     # Concatenate the mask with masked latents (mask FIRST, then latents)
     # This matches the A2 model's inference code ordering
