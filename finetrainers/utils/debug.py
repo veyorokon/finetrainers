@@ -124,15 +124,29 @@ def create_channel_frame_grid(
             # Get frame data
             data = latent_data[c, t].numpy()
             
-            # Normalize to [0,1]
-            min_val, max_val = data.min(), data.max()
-            if min_val == max_val:
-                norm_data = np.zeros_like(data) if min_val < 0 else np.ones_like(data)
-            else:
-                norm_data = (data - min_val) / (max_val - min_val)
+            # Normalize to [0,1] with better handling of padding
+            # Check if this is mostly padding (near-zero values)
+            is_padding = data.abs().max() < 1e-4
             
-            # Apply colormap
-            colored_data = (cmap(norm_data) * 255).astype(np.uint8)
+            if is_padding:
+                # If it's padding, make it pure black
+                norm_data = np.zeros_like(data)
+                # Use a different colormap for padding
+                colored_data = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
+            else:
+                # For active frames, use robust normalization
+                min_val, max_val = data.min(), data.max()
+                abs_max = max(abs(min_val), abs(max_val))
+                
+                # If very small values, treat as zero
+                if abs_max < 1e-3:
+                    norm_data = np.zeros_like(data)
+                else:
+                    # Center at zero and scale by absolute maximum
+                    norm_data = np.clip(data / abs_max, -1, 1) * 0.5 + 0.5
+                
+                # Apply colormap
+                colored_data = (cmap(norm_data) * 255).astype(np.uint8)
             
             # Create image
             frame_img = Image.fromarray(colored_data)
