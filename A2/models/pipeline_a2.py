@@ -1,26 +1,25 @@
 import html
-from typing import Any, Callable, Dict, List, Optional, Union, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import ftfy
+import PIL
 import regex as re
 import torch
-from transformers import AutoTokenizer, UMT5EncoderModel
-
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
-from diffusers.loaders import WanLoraLoaderMixin 
 from diffusers.image_processor import PipelineImageInput
+from diffusers.loaders import WanLoraLoaderMixin
 # from diffusers.models import AutoencoderKLWan, WanTransformer3DModel
 from diffusers.models import AutoencoderKLWan
-from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
-from diffusers.utils import is_torch_xla_available, logging, replace_example_docstring
-from diffusers.utils.torch_utils import randn_tensor
-from diffusers.video_processor import VideoProcessor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.wan.pipeline_output import WanPipelineOutput
-from transformers import AutoTokenizer, CLIPImageProcessor, CLIPVisionModel, UMT5EncoderModel
+from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
+from diffusers.utils import (is_torch_xla_available, logging,
+                             replace_example_docstring)
+from diffusers.utils.torch_utils import randn_tensor
+from diffusers.video_processor import VideoProcessor
 from models.transformer_a2 import A2Model
-
-import PIL
+from transformers import (AutoTokenizer, CLIPImageProcessor, CLIPVisionModel,
+                          UMT5EncoderModel)
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
@@ -391,6 +390,9 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
         mask_lat_size = mask_lat_size.transpose(1, 2)
         mask_lat_size = mask_lat_size.to(latent_condition.device)
 
+        # Create the combined tensor that will be returned
+        combined_tensor = torch.concat([mask_lat_size, latent_condition], dim=1)
+
         # ===== START DEBUG VISUALIZATION (Can be easily removed) =====
         try:
             # Only run visualization if the DEBUG_A2_STRUCTURE env var is set
@@ -398,8 +400,8 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 import os
                 import pathlib
                 import numpy as np
-                from PIL import Image
                 from matplotlib import cm
+                from PIL import Image
                 
                 # Create debug directory
                 debug_dir = "infer_debug"
@@ -410,17 +412,14 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 print(f"[DEBUG] Latents shape: {latents.shape}")
                 print(f"[DEBUG] Mask shape: {mask_lat_size.shape}")
                 print(f"[DEBUG] Latent condition shape: {latent_condition.shape}")
-                
-                # Get the combined tensor that will be returned
-                combined = torch.concat([mask_lat_size, latent_condition], dim=1)
-                print(f"[DEBUG] Combined tensor shape: {combined.shape}")
+                print(f"[DEBUG] Combined tensor shape: {combined_tensor.shape}")
                 
                 # Save structure information to a text file
                 with open(f"{debug_dir}/tensor_structure.txt", "w") as f:
                     f.write(f"Latents shape: {latents.shape}\n")
                     f.write(f"Mask shape: {mask_lat_size.shape}\n")
                     f.write(f"Latent condition shape: {latent_condition.shape}\n")
-                    f.write(f"Combined shape: {combined.shape}\n\n")
+                    f.write(f"Combined shape: {combined_tensor.shape}\n\n")
                     
                     # Analyze mask values
                     mask_min = mask_lat_size.min().item()
@@ -579,7 +578,7 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 # Create the channel-frame grid of the combined tensor
                 # Using the exact same visualization function as in training
                 grid_file = create_channel_frame_grid(
-                    combined,
+                    combined_tensor,
                     debug_dir,
                     filename="infer_latent_grid.png",
                     spacing=2,
@@ -591,7 +590,7 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
             print(f"[DEBUG] Visualization failed: {e}")
         # ===== END DEBUG VISUALIZATION =====
 
-        return latents, torch.concat([mask_lat_size, latent_condition], dim=1)
+        return latents, combined_tensor
 
     @property
     def guidance_scale(self):
