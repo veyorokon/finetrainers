@@ -396,8 +396,10 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
             # Only run visualization if the DEBUG_A2_STRUCTURE env var is set
             if os.environ.get("DEBUG_A2_STRUCTURE") == "1":
                 import os
+                import pathlib
                 import numpy as np
                 from PIL import Image
+                from matplotlib import cm
                 
                 # Create debug directory
                 debug_dir = "infer_debug"
@@ -434,74 +436,156 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
                     content_mean = latent_condition.mean().item()
                     f.write(f"Content values - min: {content_min:.6f}, max: {content_max:.6f}, mean: {content_mean:.6f}\n")
                 
-                # Function to visualize a channel from a tensor
-                def save_simple_visualization(tensor, name, channel=0):
-                    # Take first batch and specified channel
-                    data = tensor[0, channel].detach().cpu().float().numpy()
+                # Save individual mask channels for verification
+                def save_latent_channels(latents, output_dir, prefix, channel_indices=None, frame_idx=0):
+                    """Matches finetrainers.utils.debug.save_latent_channels for consistent visualization"""
+                    output_path = pathlib.Path(output_dir)
+                    output_path.mkdir(parents=True, exist_ok=True)
                     
-                    # Normalize based on tensor type
-                    is_mask = name == "mask"
+                    # Move to CPU
+                    latents = latents.detach().cpu()
                     
-                    # Create directory for this visualization
-                    os.makedirs(f"{debug_dir}/{name}_ch{channel}", exist_ok=True)
+                    # Extract appropriate data
+                    if latents.dim() == 5:  # [B, C, T, H, W]
+                        lat = latents[0, :, frame_idx].numpy()
+                    else:  # [B, C, H, W]
+                        lat = latents[0].numpy()
                     
-                    # Save first few frames
-                    for frame_idx in range(min(10, data.shape[0])):
-                        frame_data = data[frame_idx]
+                    # Select channels to visualize
+                    if channel_indices is None:
+                        channel_indices = list(range(lat.shape[0]))
+                    
+                    saved_paths = []
+                    
+                    # Save each selected channel
+                    for channel_idx in channel_indices:
+                        # Extract channel data
+                        channel_data = lat[channel_idx]
                         
-                        # Normalize to 0-1 range
-                        if is_mask:
-                            # For mask: already in 0-1 range
-                            norm_data = np.clip(frame_data, 0, 1)
-                        else:
-                            # For latents: assume -1 to 1 range
-                            norm_data = (frame_data + 1.0) * 0.5
-                            norm_data = np.clip(norm_data, 0, 1)
+                        # Direct normalization like in training code
+                        norm_data = (channel_data + 1.0) * 0.5
+                        norm_data = np.clip(norm_data, 0, 1)
                         
-                        # Create grayscale image
+                        # Convert to grayscale image
                         grayscale = (norm_data * 255).astype(np.uint8)
-                        img = Image.fromarray(grayscale)
+                        colored_data = np.zeros((channel_data.shape[0], channel_data.shape[1], 4), dtype=np.uint8)
+                        colored_data[..., 0] = grayscale  # R
+                        colored_data[..., 1] = grayscale  # G
+                        colored_data[..., 2] = grayscale  # B
+                        colored_data[..., 3] = 255        # A
+                        
+                        img = Image.fromarray(colored_data)
                         
                         # Save the image
-                        img.save(f"{debug_dir}/{name}_ch{channel}/frame{frame_idx}.png")
-                
-                # Visualize mask channel
-                save_simple_visualization(mask_lat_size, "mask", 0)
-                
-                # Visualize a few content channels
-                for ch in range(min(3, latent_condition.shape[1])):
-                    save_simple_visualization(latent_condition, f"content", ch)
-                
-                # Create a grid visualization of the first frame of each channel
-                height, width = combined.shape[3], combined.shape[4]
-                num_channels = min(20, combined.shape[1])  # Limit to first 20 channels
-                frame_idx = 0  # First frame
-                
-                grid_image = Image.new('RGB', (width * num_channels, height), color="black")
-                
-                # Add each channel to the grid
-                for c in range(num_channels):
-                    # Get frame data for first frame
-                    data = combined[0, c, frame_idx].detach().cpu().float().numpy()
+                        filename = f"{prefix}_ch{channel_idx}.png"
+                        output_file = output_path / filename
+                        img.save(output_file)
+                        saved_paths.append(str(output_file))
+                        
+                        print(f"[DEBUG] Saved channel {channel_idx} to {output_file}")
                     
-                    # Normalize appropriately
-                    if c == 0:  # Mask channel
-                        norm_data = np.clip(data, 0, 1)
-                        channel_type = "mask"
-                    else:  # Content channels
-                        norm_data = (data + 1.0) * 0.5
-                        norm_data = np.clip(norm_data, 0, 1)
-                        channel_type = "content"
-                    
-                    # Create grayscale image
-                    grayscale = (norm_data * 255).astype(np.uint8)
-                    img = Image.fromarray(grayscale)
-                    
-                    # Add channel number to image
-                    grid_image.paste(img, (c * width, 0))
+                    return saved_paths
                 
-                # Save the grid
-                grid_image.save(f"{debug_dir}/channel_grid_frame{frame_idx}.png")
+                # Save mask channel visualization
+                save_latent_channels(mask_lat_size, debug_dir, "mask", [0])
+                
+                # Save a few content channels
+                save_latent_channels(latent_condition, debug_dir, "content", [0, 1, 2])
+                
+                # THIS FUNCTION MATCHES finetrainers.utils.debug.create_channel_frame_grid EXACTLY
+                def create_channel_frame_grid(latents, output_dir, filename="latent_grid.png", spacing=2, group_sizes=None):
+                    """Matches finetrainers.utils.debug.create_channel_frame_grid for consistent visualization"""
+                    # Create output directory
+                    output_path = pathlib.Path(output_dir)
+                    output_path.mkdir(parents=True, exist_ok=True)
+                    
+                    # Move to CPU
+                    latents = latents.detach().cpu()
+                    
+                    # Only support video latents (5D) with this visualization
+                    if latents.dim() != 5:
+                        raise ValueError("Channel-frame grid only supports 5D latents [B, C, T, H, W]")
+                    
+                    # Extract dimensions - taking only first batch
+                    batch_size, num_channels, num_frames, height, width = latents.shape
+                    latent_data = latents[0]  # [C, T, H, W]
+                    
+                    print(f"[DEBUG] Grid with {num_channels} channels x {num_frames} frames")
+                    
+                    # Get colormap
+                    cmap = cm.get_cmap('viridis')
+                    
+                    # Calculate total size
+                    grid_width = num_channels * width + (num_channels - 1) * spacing
+                    grid_height = num_frames * height + (num_frames - 1) * spacing
+                    
+                    # Create empty grid
+                    grid_img = Image.new('RGB', (grid_width, grid_height), color='black')
+                    
+                    # Generate one column per channel, with frames as rows
+                    for c in range(num_channels):
+                        # Create a column for this channel
+                        col_width = width
+                        col_height = num_frames * height + (num_frames - 1) * spacing
+                        col_img = Image.new('RGB', (col_width, col_height), color='black')
+                        
+                        # Process each frame for this channel
+                        for t in range(num_frames):
+                            # Get frame data
+                            data = latent_data[c, t].numpy()
+                            
+                            # Direct raw value visualization with grayscale
+                            # Shift from [-1,1] to [0,1] range for visualization
+                            norm_data = (data + 1.0) * 0.5
+                            norm_data = np.clip(norm_data, 0, 1)
+                            
+                            # Convert to grayscale (0 = black, 1 = white)
+                            grayscale = (norm_data * 255).astype(np.uint8)
+                            colored_data = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
+                            colored_data[..., 0] = grayscale  # R
+                            colored_data[..., 1] = grayscale  # G
+                            colored_data[..., 2] = grayscale  # B
+                            colored_data[..., 3] = 255        # A (fully opaque)
+                            
+                            # Add debugging info
+                            if t == 0 and c == 0:  # Log only for first frame of first channel
+                                print(f"[DEBUG] Raw value range: min={data.min():.4f}, max={data.max():.4f}")
+                                print(f"[DEBUG] Normalized range: min={norm_data.min():.4f}, max={norm_data.max():.4f}")
+                            
+                            # Create image
+                            frame_img = Image.fromarray(colored_data)
+                            
+                            # Paste into column
+                            y_pos = t * (height + spacing)
+                            col_img.paste(frame_img, (0, y_pos))
+                        
+                        # Paste column into grid
+                        x_pos = c * (width + spacing)
+                        grid_img.paste(col_img, (x_pos, 0))
+                    
+                    # Save the grid
+                    file_path = output_path / filename
+                    grid_img.save(file_path)
+                    
+                    print(f"[DEBUG] Saved grid to {file_path}")
+                    
+                    return str(file_path)
+                
+                # Create group sizes array based on tensor structure
+                # For A2: Mask(1) + Content(16)
+                group_sizes = [1, latent_condition.shape[1]]
+                print(f"[DEBUG] Using group sizes: {group_sizes}")
+                
+                # Create the channel-frame grid of the combined tensor
+                # Using the exact same visualization function as in training
+                grid_file = create_channel_frame_grid(
+                    combined,
+                    debug_dir,
+                    filename="infer_latent_grid.png",
+                    spacing=2,
+                    group_sizes=group_sizes
+                )
+                
                 print(f"[DEBUG] Visualization complete! Check {debug_dir}/ for results")
         except Exception as e:
             print(f"[DEBUG] Visualization failed: {e}")
