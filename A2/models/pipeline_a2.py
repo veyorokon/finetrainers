@@ -391,6 +391,122 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
         mask_lat_size = mask_lat_size.transpose(1, 2)
         mask_lat_size = mask_lat_size.to(latent_condition.device)
 
+        # ===== START DEBUG VISUALIZATION (Can be easily removed) =====
+        try:
+            # Only run visualization if the DEBUG_A2_STRUCTURE env var is set
+            if os.environ.get("DEBUG_A2_STRUCTURE") == "1":
+                import os
+                import numpy as np
+                from PIL import Image
+                
+                # Create debug directory
+                debug_dir = "infer_debug"
+                os.makedirs(debug_dir, exist_ok=True)
+                print(f"[DEBUG] Saving A2 structure visualization to {debug_dir}/")
+                
+                # Print tensor shapes for reference
+                print(f"[DEBUG] Latents shape: {latents.shape}")
+                print(f"[DEBUG] Mask shape: {mask_lat_size.shape}")
+                print(f"[DEBUG] Latent condition shape: {latent_condition.shape}")
+                
+                # Get the combined tensor that will be returned
+                combined = torch.concat([mask_lat_size, latent_condition], dim=1)
+                print(f"[DEBUG] Combined tensor shape: {combined.shape}")
+                
+                # Save structure information to a text file
+                with open(f"{debug_dir}/tensor_structure.txt", "w") as f:
+                    f.write(f"Latents shape: {latents.shape}\n")
+                    f.write(f"Mask shape: {mask_lat_size.shape}\n")
+                    f.write(f"Latent condition shape: {latent_condition.shape}\n")
+                    f.write(f"Combined shape: {combined.shape}\n\n")
+                    
+                    # Analyze mask values
+                    mask_min = mask_lat_size.min().item()
+                    mask_max = mask_lat_size.max().item()
+                    mask_mean = mask_lat_size.mean().item()
+                    mask_nonzero = (mask_lat_size > 0.5).float().sum().item()
+                    f.write(f"Mask values - min: {mask_min:.6f}, max: {mask_max:.6f}, mean: {mask_mean:.6f}\n")
+                    f.write(f"Mask non-zero values: {mask_nonzero} out of {mask_lat_size.numel()}\n\n")
+                    
+                    # Analyze content values
+                    content_min = latent_condition.min().item()
+                    content_max = latent_condition.max().item()
+                    content_mean = latent_condition.mean().item()
+                    f.write(f"Content values - min: {content_min:.6f}, max: {content_max:.6f}, mean: {content_mean:.6f}\n")
+                
+                # Function to visualize a channel from a tensor
+                def save_simple_visualization(tensor, name, channel=0):
+                    # Take first batch and specified channel
+                    data = tensor[0, channel].detach().cpu().float().numpy()
+                    
+                    # Normalize based on tensor type
+                    is_mask = name == "mask"
+                    
+                    # Create directory for this visualization
+                    os.makedirs(f"{debug_dir}/{name}_ch{channel}", exist_ok=True)
+                    
+                    # Save first few frames
+                    for frame_idx in range(min(10, data.shape[0])):
+                        frame_data = data[frame_idx]
+                        
+                        # Normalize to 0-1 range
+                        if is_mask:
+                            # For mask: already in 0-1 range
+                            norm_data = np.clip(frame_data, 0, 1)
+                        else:
+                            # For latents: assume -1 to 1 range
+                            norm_data = (frame_data + 1.0) * 0.5
+                            norm_data = np.clip(norm_data, 0, 1)
+                        
+                        # Create grayscale image
+                        grayscale = (norm_data * 255).astype(np.uint8)
+                        img = Image.fromarray(grayscale)
+                        
+                        # Save the image
+                        img.save(f"{debug_dir}/{name}_ch{channel}/frame{frame_idx}.png")
+                
+                # Visualize mask channel
+                save_simple_visualization(mask_lat_size, "mask", 0)
+                
+                # Visualize a few content channels
+                for ch in range(min(3, latent_condition.shape[1])):
+                    save_simple_visualization(latent_condition, f"content", ch)
+                
+                # Create a grid visualization of the first frame of each channel
+                height, width = combined.shape[3], combined.shape[4]
+                num_channels = min(20, combined.shape[1])  # Limit to first 20 channels
+                frame_idx = 0  # First frame
+                
+                grid_image = Image.new('RGB', (width * num_channels, height), color="black")
+                
+                # Add each channel to the grid
+                for c in range(num_channels):
+                    # Get frame data for first frame
+                    data = combined[0, c, frame_idx].detach().cpu().float().numpy()
+                    
+                    # Normalize appropriately
+                    if c == 0:  # Mask channel
+                        norm_data = np.clip(data, 0, 1)
+                        channel_type = "mask"
+                    else:  # Content channels
+                        norm_data = (data + 1.0) * 0.5
+                        norm_data = np.clip(norm_data, 0, 1)
+                        channel_type = "content"
+                    
+                    # Create grayscale image
+                    grayscale = (norm_data * 255).astype(np.uint8)
+                    img = Image.fromarray(grayscale)
+                    
+                    # Add channel number to image
+                    grid_image.paste(img, (c * width, 0))
+                
+                # Save the grid
+                grid_image.save(f"{debug_dir}/channel_grid_frame{frame_idx}.png")
+                print(f"[DEBUG] Visualization complete! Check {debug_dir}/ for results")
+        except Exception as e:
+            print(f"[DEBUG] Visualization failed: {e}")
+        # ===== END DEBUG VISUALIZATION =====
+
         return latents, torch.concat([mask_lat_size, latent_condition], dim=1)
 
     @property

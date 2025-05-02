@@ -1,19 +1,17 @@
-import torch 
 import os
-from PIL import Image 
-import numpy as np 
-from diffusers import AutoencoderKLWan
-from transformers import CLIPVisionModel 
-from diffusers.video_processor import VideoProcessor
-from diffusers import UniPCMultistepScheduler 
-from diffusers.utils import export_to_video, load_image 
+
+import numpy as np
+import torch
+from diffusers import AutoencoderKLWan, UniPCMultistepScheduler
 from diffusers.image_processor import VaeImageProcessor
-
-from models.transformer_a2 import A2Model 
-from models.pipeline_a2 import A2Pipeline 
-from models.utils import _crop_and_resize_pad, _crop_and_resize, write_mp4
+from diffusers.utils import export_to_video, load_image
+from diffusers.video_processor import VideoProcessor
 from huggingface_hub import snapshot_download
-
+from models.pipeline_a2 import A2Pipeline
+from models.transformer_a2 import A2Model
+from models.utils import _crop_and_resize, _crop_and_resize_pad, write_mp4
+from PIL import Image
+from transformers import CLIPVisionModel
 
 prompt = "A man is holding a teddy bear in the forest." 
 negative_prompt = "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
@@ -26,11 +24,11 @@ seed = 42
 # model parameters 
 device = "cuda"
 video_path = "output.mp4"
-pipeline_path = "Skywork/SkyReels-A2"
+pipeline_path = "/dev/shm/models"
 dtype = torch.bfloat16
 
 # download models
-snapshot_download(repo_id="Skywork/SkyReels-A2", local_dir="Skywork/SkyReels-A2")
+#snapshot_download(repo_id="Skywork/SkyReels-A2", local_dir="Skywork/SkyReels-A2")
 
 # load models 
 image_encoder = CLIPVisionModel.from_pretrained(pipeline_path, subfolder="image_encoder", torch_dtype=torch.float32) 
