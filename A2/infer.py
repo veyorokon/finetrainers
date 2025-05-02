@@ -13,6 +13,8 @@ from models.utils import _crop_and_resize, _crop_and_resize_pad, write_mp4
 from PIL import Image
 from transformers import CLIPVisionModel
 
+#  DEBUG_A2_STRUCTURE=1 python /Users/veyorokon/Projects/ai/mine/finetrainers/A2/infer.py
+
 prompt = "A man is holding a teddy bear in the forest." 
 negative_prompt = "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
 
