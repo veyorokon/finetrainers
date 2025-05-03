@@ -265,8 +265,8 @@ def trim_transparency(
 def letterbox_image(
     image: torch.Tensor, 
     size: Tuple[int, int], 
-    padding_color: float = 0.0,
-    trim_alpha: bool = False,
+    padding_color: float = 1.0,
+    trim_alpha: bool = True,
     alpha_threshold: float = 0.1,
     padding_buffer: int = 0
 ) -> torch.Tensor:
@@ -288,6 +288,24 @@ def letterbox_image(
         has_alpha = (image.shape[1] == 4) if image.dim() == 4 else (image.shape[0] == 4)
         if has_alpha:
             image = trim_transparency(image, alpha_threshold, padding_buffer)
+            
+            # Create a canvas with padding_color and place the image on top
+            if image.dim() == 4:
+                batch_size, num_channels, height, width = image.shape
+                # Create canvas with same dimensions but RGB channels
+                canvas = torch.ones((batch_size, 3, height, width), device=image.device) * padding_color
+                # Copy RGB channels from image to canvas
+                canvas[:, :3, :, :] = image[:, :3, :, :]
+                # Convert to RGB
+                image = canvas
+            else:
+                num_channels, height, width = image.shape
+                # Create canvas with same dimensions but RGB channels
+                canvas = torch.ones((3, height, width), device=image.device) * padding_color
+                # Copy RGB channels from image to canvas
+                canvas[:3, :, :] = image[:3, :, :]
+                # Convert to RGB
+                image = canvas
     
     # Get dimensions
     has_batch_dim = image.dim() == 4

@@ -7,6 +7,7 @@ import torchvision.transforms as transforms
 from diffusers.utils import load_image
 from PIL import Image
 
+from finetrainers.functional.image import letterbox_image
 from finetrainers.logging import get_logger
 from finetrainers.processors.base import ProcessorMixin
 
@@ -113,10 +114,13 @@ class ReferenceToControlProcessor(ProcessorMixin):
                 repeat = repeat_frames[idx] if idx < len(repeat_frames) else 1
                 
                 # Process for VAE
-                vae_image = _crop_and_resize_pad(
-                    ref_image,
-                    height=vae_resolution[0],  # [height, width] format
-                    width=vae_resolution[1]
+                # vae_image = _crop_and_resize_pad(
+                #     ref_image,
+                #     height=vae_resolution[0],  # [height, width] format
+                #     width=vae_resolution[1]
+                # )
+                vae_image = letterbox_image(
+                    ref_image, vae_resolution
                 )
                 
                 processed_references.append({"image": vae_image, "repeat": repeat, "type": ref_type})
