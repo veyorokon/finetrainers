@@ -348,35 +348,29 @@ def apply_reference_frame_conditioning(
         # Default to keeping all frames
         kept_indices = list(range(original_frames))
     
-    # Log which frames we're keeping
+    # Limit to expected frame count
+    kept_indices = kept_indices[:expected_num_frames]
     logger.info(f"Keeping frames: {kept_indices}")
     
-    # Create a mask to mark which frames have reference data
-    # This will be all zeros initially
+    # Create the mask tensor (1 where frames are kept, 0 elsewhere)
     mask_shape = list(result.shape)
     mask_shape[channel_dim] = 1  # Single channel for mask
     mask = torch.zeros(mask_shape, device=latents.device, dtype=latents.dtype)
     
-    # Copy the kept frames to result and mark them in the mask
-    for result_idx, latent_idx in enumerate(kept_indices):
-        if result_idx >= expected_num_frames:
-            break  # Don't exceed expected frame count
-            
-        # Get source frame
-        source_slice = [slice(None)] * latents.ndim
-        source_slice[frame_dim] = latent_idx
+    # Fast way to copy multiple frames to result and set mask
+    if kept_indices:
+        # Convert kept_indices to tensor for indexing
+        kept_indices_tensor = torch.tensor(kept_indices, device=latents.device)
         
-        # Get target frame
-        target_slice = [slice(None)] * result.ndim
-        target_slice[frame_dim] = result_idx
+        # Copy selected frames from latents to result
+        # This selects frames at positions in kept_indices from latents
+        # and places them at the beginning of result
+        result[:, :, :len(kept_indices)] = latents[:, :, kept_indices_tensor]
         
-        # Copy the frame data
-        result[tuple(target_slice)] = latents[tuple(source_slice)]
+        # Set mask to 1 for kept frames
+        mask[:, :, :len(kept_indices)] = 1
         
-        # Mark this frame in the mask
-        mask[tuple(target_slice)] = 1
-        
-        logger.info(f"Copied frame {latent_idx} to result frame {result_idx} and marked in mask")
+        logger.info(f"Copied {len(kept_indices)} frames and set mask values")
     
     # If mask is not needed, return result directly
     if not concatenate_mask:
@@ -392,14 +386,9 @@ def apply_reference_frame_conditioning(
     
     # Create 4 mask channels (A2 model expects 4 mask + 16 content + 16 conditioning = 36 channels)
     num_mask_channels = 4
-    all_mask_channels = []
     
-    # Add 4 copies of the same mask
-    for _ in range(num_mask_channels):
-        all_mask_channels.append(mask.clone())
-    
-    # Combine all mask channels
-    masks = torch.cat(all_mask_channels, dim=channel_dim)
+    # Expand mask to 4 channels directly using repeat
+    masks = mask.repeat(1, num_mask_channels, 1, 1, 1)
     
     # Concatenate masks with result (masks first, then content)
     combined = torch.cat([masks, result], dim=channel_dim)
