@@ -390,6 +390,9 @@ def apply_reference_frame_conditioning(
     # Expand mask to 4 channels directly using repeat
     masks = mask.repeat(1, num_mask_channels, 1, 1, 1)
     
+    # Ensure masks require gradients (for compatibility with previous code)
+    masks = masks.requires_grad_(True)
+    
     # Concatenate masks with result (masks first, then content)
     combined = torch.cat([masks, result], dim=channel_dim)
     
