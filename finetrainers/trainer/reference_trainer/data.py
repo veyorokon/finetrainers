@@ -9,6 +9,7 @@ from diffusers.video_processor import VideoProcessor
 from PIL import Image
 
 import finetrainers.functional as FF
+from finetrainers.functional.image import letterbox_image
 from finetrainers.logging import get_logger
 from finetrainers.processors import CannyProcessor, CopyProcessor
 from finetrainers.processors.reference import _crop_and_resize_pad
@@ -96,18 +97,14 @@ class IterableReferenceDataset(IterableControlDataset):
                         logger.info(f"Reference '{ref_type}' will repeat {repeat} times")
                         
                         # Process for VAE storage (no longer creating control video here)
-                        vae_image = _crop_and_resize_pad(
-                            ref_image,
-                            height=vae_resolution[0],  # [height, width] format
-                            width=vae_resolution[1]
+                        vae_image = letterbox_image(
+                            ref_image, vae_resolution
                         )
                         vae_images.append({"image": vae_image, "repeat": repeat})
                         
                         # Process for CLIP
-                        clip_image = _crop_and_resize_pad(
-                            ref_image,
-                            height=clip_resolution[0],  # [height, width] format
-                            width=clip_resolution[1]
+                        clip_image = letterbox_image(
+                            ref_image, clip_resolution
                         )
                         clip_images.append(clip_image)
                 
@@ -215,18 +212,14 @@ class ValidationReferenceDataset(torch.utils.data.IterableDataset):
                         repeat = repeat_frames[idx] if idx < len(repeat_frames) else 1
                         
                         # Process for VAE storage (no longer creating control video here)
-                        vae_image = _crop_and_resize_pad(
-                            ref_image,
-                            height=vae_resolution[0],  # [height, width] format
-                            width=vae_resolution[1]
+                        vae_image = letterbox_image(
+                            ref_image, vae_resolution
                         )
                         vae_images.append({"image": vae_image, "repeat": repeat})
                         
                         # Process for CLIP
-                        clip_image = _crop_and_resize_pad(
-                            ref_image,
-                            height=clip_resolution[0],  # [height, width] format
-                            width=clip_resolution[1]
+                        clip_image = letterbox_image(
+                            ref_image, clip_resolution
                         )
                         clip_images.append(clip_image)
                 
