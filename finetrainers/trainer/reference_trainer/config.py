@@ -190,7 +190,7 @@ class ReferenceConfig(ControlLowRankConfig):
             "--vae_combine",
             type=str,
             choices=["before", "after"],
-            default=json_defaults.get("vae_combine", "before"),
+            default=json_defaults.get("vae_combine"),  # No fallback default, require it in JSON
             help="Method for combining references: 'before' (combine images then VAE) or 'after' (VAE encode individually)"
         )
     

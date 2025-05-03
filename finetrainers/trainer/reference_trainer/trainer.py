@@ -155,11 +155,9 @@ class ReferenceTrainer(ControlTrainer):
             reference_suffixes = config.pop("reference_suffixes", ["_object", "_background"])
             reference_config = config.pop("reference_config", {})
             
-            # Get vae_combine setting from dataset config if present
-            vae_combine = config.pop("vae_combine", None)
-            if vae_combine is not None:
-                logger.info(f"Found vae_combine in dataset config: {vae_combine}")
-                self.config.vae_combine = vae_combine
+            # vae_combine should only exist in reference_config
+            if "vae_combine" in config:
+                config.pop("vae_combine")
             
             # Update the trainer config with values from the dataset config
             if reference_config:
@@ -176,11 +174,6 @@ class ReferenceTrainer(ControlTrainer):
                 if "vae_combine" in reference_config:
                     self.config.vae_combine = reference_config["vae_combine"]
                     logger.info(f"Updated vae_combine from reference_config: {self.config.vae_combine}")
-                    
-                    # Also update model specification if available
-                    if isinstance(self.model_specification, WanReferenceModelSpecification):
-                        self.model_specification.reference_config["vae_combine"] = self.config.vae_combine
-                        logger.info(f"Updated model specification reference_config vae_combine: {self.model_specification.reference_config['vae_combine']}")
             
             # Handle auto-generating video_resolution_buckets if needed
             if "video_resolutions" in config and "video_resolution_buckets" not in config and data_root:
