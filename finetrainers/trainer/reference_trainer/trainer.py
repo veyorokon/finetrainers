@@ -176,6 +176,11 @@ class ReferenceTrainer(ControlTrainer):
                 if "vae_combine" in reference_config:
                     self.config.vae_combine = reference_config["vae_combine"]
                     logger.info(f"Updated vae_combine from reference_config: {self.config.vae_combine}")
+                    
+                    # Also update model specification if available
+                    if isinstance(self.model_specification, WanReferenceModelSpecification):
+                        self.model_specification.reference_config["vae_combine"] = self.config.vae_combine
+                        logger.info(f"Updated model specification reference_config vae_combine: {self.model_specification.reference_config['vae_combine']}")
             
             # Handle auto-generating video_resolution_buckets if needed
             if "video_resolutions" in config and "video_resolution_buckets" not in config and data_root:
