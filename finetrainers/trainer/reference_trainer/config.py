@@ -34,18 +34,19 @@ class ReferenceConfig(ControlLowRankConfig):
     reference_type: ReferenceType = ReferenceType.A2
     
     # Reference image configuration (height, width format to match video_resolution_buckets)
-    vae_resolution: List[int] = field(default_factory=lambda: [480, 854])
-    clip_resolution: List[int] = field(default_factory=lambda: [512, 512])
-    reference_order: List[str] = field(default_factory=lambda: ["object", "background"])
-    repeat_frames: List[int] = field(default_factory=lambda: [4, 1])  # This will be overridden by JSON values
+    # All these values must be explicitly set in reference_config, no defaults
+    vae_resolution: List[int] = None
+    clip_resolution: List[int] = None
+    reference_order: List[str] = None
+    repeat_frames: List[int] = None
     
     # VAE combination method ('before' or 'after')
-    # 'before': combine reference images before VAE encoding (current behavior)
+    # 'before': combine reference images before VAE encoding
     # 'after': encode each reference image separately and combine in latent space
-    vae_combine: str = "before"
+    vae_combine: str = None
     
     # Reference patterns for finding reference images
-    reference_suffixes: List[str] = field(default_factory=lambda: ["_object", "_background"])
+    reference_suffixes: List[str] = None
     
     @classmethod
     def from_json(cls, json_path: str) -> "ReferenceConfig":
@@ -94,6 +95,17 @@ class ReferenceConfig(ControlLowRankConfig):
         """Validate the configuration."""
         super().validate_args(None)  # Pass None as args since we're not using args here
         
+        # Check that all required fields are set
+        required_fields = [
+            'vae_resolution', 'clip_resolution', 'reference_order', 
+            'repeat_frames', 'reference_suffixes', 'vae_combine'
+        ]
+        
+        for field in required_fields:
+            if getattr(self, field) is None:
+                raise ValueError(f"Required field '{field}' is not set in ReferenceConfig")
+        
+        # Validate field values
         if len(self.reference_order) < 1:
             raise ValueError("reference_order must have at least one entry")
             
@@ -106,6 +118,9 @@ class ReferenceConfig(ControlLowRankConfig):
             
         if len(self.clip_resolution) != 2:
             raise ValueError("clip_resolution must be [height, width]")
+            
+        if self.vae_combine not in ["before", "after"]:
+            raise ValueError(f"vae_combine must be 'before' or 'after', got '{self.vae_combine}'")
     
     def add_args(self, parser):
         """Add reference-specific arguments to the parser."""
