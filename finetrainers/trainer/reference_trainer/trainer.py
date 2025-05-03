@@ -288,33 +288,43 @@ class ReferenceTrainer(ControlTrainer):
         self.dataset = dataset
         self.dataloader = dataloader
     
-    def _create_validation_dataset(self) -> Optional[torch.utils.data.IterableDataset]:
-        """Create the validation dataset."""
-        if self.config.validation_filename is None:
-            return None
         
-        # For now, just use the same validation dataset from the parent class
-        # In the future, this could be extended to handle reference-specific validation
-        validation_dataset = super()._create_validation_dataset()
+    def create_validation_dataset(self, validation_file: str, local_rank: int, dp_world_size: int) -> torch.utils.data.IterableDataset:
+        """Create a validation dataset for the reference trainer.
         
-        if validation_dataset is not None:
-            reference_config = {
-                "vae_resolution": self.config.vae_resolution,
-                "clip_resolution": self.config.clip_resolution,
-                "reference_order": self.config.reference_order,
-                "repeat_frames": self.config.repeat_frames,
-                "reference_suffixes": self.config.reference_suffixes,
-                "vae_combine": self.config.vae_combine
-            }
+        This method is called by the parent ControlTrainer._validate method.
+        
+        Args:
+            validation_file: The path to the validation file
+            local_rank: The local rank for distributed training
+            dp_world_size: The world size for distributed training
             
-            return ValidationReferenceDataset(
-                validation_dataset,
-                self.config.control_type,
-                reference_config=reference_config,
-                device=self.device
-            )
+        Returns:
+            A validation dataset
+        """
+        logger.info(f"Creating custom ReferenceValidationDataset from {validation_file}")
         
-        return None
+        # Create the base validation dataset
+        base_dataset = data.ValidationDataset(validation_file)
+        base_dataset._data = datasets.distributed.split_dataset_by_node(base_dataset._data, local_rank, dp_world_size)
+        
+        # Create reference config 
+        reference_config = {
+            "vae_resolution": self.config.vae_resolution,
+            "clip_resolution": self.config.clip_resolution,
+            "reference_order": self.config.reference_order,
+            "repeat_frames": self.config.repeat_frames,
+            "reference_suffixes": self.config.reference_suffixes,
+            "vae_combine": self.config.vae_combine
+        }
+        
+        # Wrap in ValidationReferenceDataset
+        return ValidationReferenceDataset(
+            base_dataset,
+            self.config.control_type,
+            reference_config=reference_config,
+            device=self.state.parallel_backend.device
+        )
     
     def _encode_references(self, references):
         """Encode reference images with CLIP vision model."""

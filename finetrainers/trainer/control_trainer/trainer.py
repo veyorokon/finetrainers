@@ -669,9 +669,16 @@ class ControlTrainer:
         else:
             local_rank, dp_world_size = 0, 1
 
-        dataset = data.ValidationDataset(self.args.validation_dataset_file)
-        dataset._data = datasets.distributed.split_dataset_by_node(dataset._data, local_rank, dp_world_size)
-        dataset = ValidationControlDataset(dataset, self.args.control_type, parallel_backend.device)
+        # Check if a custom validation dataset creator is available
+        if hasattr(self, 'create_validation_dataset') and callable(self.create_validation_dataset):
+            # Use the custom validation dataset creator
+            logger.info("Using custom validation dataset creator")
+            dataset = self.create_validation_dataset(self.args.validation_dataset_file, local_rank, dp_world_size)
+        else:
+            # Fall back to standard dataset creation
+            dataset = data.ValidationDataset(self.args.validation_dataset_file)
+            dataset._data = datasets.distributed.split_dataset_by_node(dataset._data, local_rank, dp_world_size)
+            dataset = ValidationControlDataset(dataset, self.args.control_type, parallel_backend.device)
         validation_dataloader = data.DPDataLoader(
             local_rank,
             dataset,
