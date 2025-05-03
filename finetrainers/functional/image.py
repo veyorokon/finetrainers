@@ -2,6 +2,16 @@ from typing import List, Literal, Tuple
 
 import torch
 import torch.nn.functional as F
+import torchvision.transforms as transforms
+
+
+def _pil_to_tensor(image):
+    """Convert PIL image to normalized tensor in range [-1, 1]."""
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+    return transform(image)
 
 
 def center_crop_image(image: torch.Tensor, size: Tuple[int, int]) -> torch.Tensor:
@@ -263,7 +273,7 @@ def trim_transparency(
 
 
 def letterbox_image(
-    image: torch.Tensor, 
+    image, 
     size: Tuple[int, int], 
     padding_color: float = 1.0,
     trim_alpha: bool = True,
@@ -273,7 +283,7 @@ def letterbox_image(
     """Letterbox an image to fit target size while maintaining aspect ratio.
     
     Args:
-        image: Input tensor [C, H, W] or [B, C, H, W]
+        image: Input PIL Image or tensor [C, H, W] or [B, C, H, W]
         size: Target (height, width)
         padding_color: Value to use for padding (default: 0.0 for black)
         trim_alpha: Whether to trim transparent pixels before resizing
@@ -283,6 +293,13 @@ def letterbox_image(
     Returns:
         Letterboxed tensor of shape [C, target_h, target_w] or [B, C, target_h, target_w]
     """
+    from PIL import Image
+    
+    # Check if input is a PIL Image and convert to tensor
+    if isinstance(image, Image.Image):
+        # Convert PIL Image to tensor
+        image = _pil_to_tensor(image)
+        
     # First trim transparency if requested
     if trim_alpha:
         has_alpha = (image.shape[1] == 4) if image.dim() == 4 else (image.shape[0] == 4)

@@ -7,57 +7,11 @@ import torchvision.transforms as transforms
 from diffusers.utils import load_image
 from PIL import Image
 
-from finetrainers.functional.image import letterbox_image
+from finetrainers.functional.image import letterbox_image, _pil_to_tensor
 from finetrainers.logging import get_logger
 from finetrainers.processors.base import ProcessorMixin
 
 logger = get_logger()
-
-
-def _crop_and_resize_pad(image, height, width, resize_mode="bicubic"):
-    """Center crop and resize image with padding to maintain aspect ratio.
-    Uses height, width order to match video_resolution_buckets convention.
-    """
-    if isinstance(image, torch.Tensor):
-        # Convert tensor to PIL for processing
-        if image.dim() == 3:  # [C, H, W]
-            image = image.permute(1, 2, 0).cpu().numpy()
-            image = Image.fromarray((image * 127.5 + 127.5).astype("uint8"))
-        else:
-            raise ValueError(f"Unsupported tensor shape: {image.shape}")
-    
-    # Get original dimensions
-    orig_width, orig_height = image.size
-    
-    # Determine aspect ratio
-    target_ratio = width / height
-    orig_ratio = orig_width / orig_height
-    
-    if orig_ratio > target_ratio:
-        # Image is wider than target ratio
-        new_width = int(orig_height * target_ratio)
-        new_height = orig_height
-        left = (orig_width - new_width) // 2
-        image = image.crop((left, 0, left + new_width, new_height))
-    else:
-        # Image is taller than target ratio
-        new_width = orig_width
-        new_height = int(orig_width / target_ratio)
-        top = (orig_height - new_height) // 2
-        image = image.crop((0, top, new_width, top + new_height))
-    
-    # Resize to target dimensions
-    image = image.resize((width, height), getattr(Image, resize_mode.upper()))
-    return image
-
-
-def _pil_to_tensor(image):
-    """Convert PIL image to normalized tensor in range [-1, 1]."""
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
-    return transform(image)
 
 
 class ReferenceToControlProcessor(ProcessorMixin):
@@ -114,11 +68,6 @@ class ReferenceToControlProcessor(ProcessorMixin):
                 repeat = repeat_frames[idx] if idx < len(repeat_frames) else 1
                 
                 # Process for VAE
-                # vae_image = _crop_and_resize_pad(
-                #     ref_image,
-                #     height=vae_resolution[0],  # [height, width] format
-                #     width=vae_resolution[1]
-                # )
                 vae_image = letterbox_image(
                     ref_image, vae_resolution
                 )
