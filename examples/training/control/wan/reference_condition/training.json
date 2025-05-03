@@ -6,7 +6,6 @@
       "reshape_mode": "bicubic",
       "reference_suffixes": [ "_object", "_background" ],
       "control_type": "reference",
-      "vae_combine": "after",
       "video_resolutions": [
         [ 480, 854 ]
       ],
@@ -14,7 +13,8 @@
         "vae_resolution": [ 480, 854 ],
         "clip_resolution": [ 512, 512 ],
         "reference_order": [ "object", "background" ],
-        "repeat_frames": [ 4, 4 ]
+        "repeat_frames": [ 4, 4 ],
+        "vae_combine": "after"
       }
     }
   ]
