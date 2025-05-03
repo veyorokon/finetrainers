@@ -16,137 +16,6 @@ from finetrainers.utils import get_non_null_items
 from .base_specification import WanLatentEncodeProcessor
 from .control_specification import WanControlModelSpecification
 
-
-def apply_reference_frame_conditioning(
-    latents: torch.Tensor,
-    expected_num_frames: int,
-    frame_conditioning_type: str,
-    frame_conditioning_index: Optional[int] = None,
-    channel_dim: int = 1,
-    frame_dim: int = 2,
-    concatenate_mask: bool = True,
-) -> torch.Tensor:
-    """
-    Apply frame conditioning for reference model with optional A2-style single-channel mask.
-    
-    This is a simplified implementation that doesn't rely on apply_frame_conditioning_on_latents.
-    It directly handles the frame conditioning and mask creation in a single function.
-    
-    Args:
-        latents: Control latents to condition
-        expected_num_frames: Number of frames to match (output frame count)
-        frame_conditioning_type: Type of conditioning ("index", "full", etc.)
-        frame_conditioning_index: Index for index-based conditioning
-        channel_dim: Dimension for channels
-        frame_dim: Dimension for frames
-        concatenate_mask: Whether to concatenate a single-channel mask
-        
-    Returns:
-        Conditioned latents, optionally with single-channel mask concatenated
-    """
-    # Get original frame count and create result tensor of expected size
-    original_frames = latents.size(frame_dim)
-    
-    # Log input and expected shapes
-    logger.info(f"Reference conditioning: input shape={latents.shape}, frames={original_frames}, " + 
-              f"expected_frames={expected_num_frames}")
-    
-    # Create result tensor with correct size (padded to expected_num_frames)
-    result_shape = list(latents.shape)
-    result_shape[frame_dim] = expected_num_frames
-    result = torch.zeros(result_shape, device=latents.device, dtype=latents.dtype)
-    
-    # Find frames to keep based on conditioning type
-    if frame_conditioning_type == "index":
-        # Only keep a single frame specified by index
-        frame_index = min(frame_conditioning_index or 0, original_frames - 1)
-        kept_indices = [frame_index]
-    elif frame_conditioning_type == "first_and_last":
-        # Keep first and last frames
-        kept_indices = [0, original_frames - 1]
-    elif frame_conditioning_type == "full":
-        # Keep all original frames
-        kept_indices = list(range(original_frames))
-    else:
-        # Default to keeping all frames
-        kept_indices = list(range(original_frames))
-    
-    # Log which frames we're keeping
-    logger.info(f"Keeping frames: {kept_indices}")
-    
-    # Create a mask to mark which frames have reference data
-    # This will be all zeros initially
-    mask_shape = list(result.shape)
-    mask_shape[channel_dim] = 1  # Single channel for mask
-    mask = torch.zeros(mask_shape, device=latents.device, dtype=latents.dtype)
-    
-    # Copy the kept frames to result and mark them in the mask
-    for result_idx, latent_idx in enumerate(kept_indices):
-        if result_idx >= expected_num_frames:
-            break  # Don't exceed expected frame count
-            
-        # Get source frame
-        source_slice = [slice(None)] * latents.ndim
-        source_slice[frame_dim] = latent_idx
-        
-        # Get target frame
-        target_slice = [slice(None)] * result.ndim
-        target_slice[frame_dim] = result_idx
-        
-        # Copy the frame data
-        result[tuple(target_slice)] = latents[tuple(source_slice)]
-        
-        # Mark this frame in the mask
-        mask[tuple(target_slice)] = 1
-        
-        logger.info(f"Copied frame {latent_idx} to result frame {result_idx} and marked in mask")
-    
-    # If mask is not needed, return result directly
-    if not concatenate_mask:
-        return result
-        
-    # Log mask statistics for debugging
-    mask_min = mask.min().item()
-    mask_max = mask.max().item()
-    mask_mean = mask.mean().item()
-    mask_nonzero = (mask > 0).float().sum().item()
-    logger.info(f"Mask stats: min={mask_min:.6f}, max={mask_max:.6f}, mean={mask_mean:.6f}, " +
-              f"non-zero={mask_nonzero} out of {mask.numel()}")
-    
-    # Concatenate mask with result (mask first, then latents)
-    # This matches the A2 inference code ordering
-    combined = torch.cat([mask, result], dim=channel_dim)
-    logger.info(f"Applied A2-style reference conditioning: {combined.shape}")
-    
-    # Calculate dynamic padding (needed to match expected channel count)
-    # - Each VAE latent has 16 channels
-    # - We have 1 channel for the mask and 16 for the reference
-    # - The transformer expects 36 channels total
-    # - So we need 36 - (16 + 1 + 16) = 3 additional padding channels
-    
-    # Get the current channel count
-    vae_channels = 16  # Standard VAE latent channels 
-    total_expected = 36  # Transformer input channels
-    current_control_channels = combined.shape[channel_dim]
-    
-    # Calculate how many channels we'll have after concatenating with noisy_latents
-    total_after_concat = vae_channels + current_control_channels
-    
-    # Calculate how many padding channels we need
-    if total_after_concat < total_expected:
-        padding_channels = total_expected - total_after_concat
-        padding_shape = list(combined.shape)
-        padding_shape[channel_dim] = padding_channels
-        
-        logger.info(f"Dynamically adding {padding_channels} padding channels (current: {current_control_channels}, " +
-                  f"total after concat: {total_after_concat}, target: {total_expected})")
-        channel_padding = torch.zeros(padding_shape, device=combined.device, dtype=combined.dtype, requires_grad=True)
-        combined = torch.cat([combined, channel_padding], dim=channel_dim)
-    elif total_after_concat > total_expected:
-        logger.warning(f"Control latents will have too many channels after concat: {total_after_concat} > {total_expected}")
-    
-    return combined
-
 logger = get_logger()
 
 
@@ -315,8 +184,8 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             condition_model_conditions["encoder_hidden_states"] = combined_embeds
         
         # Copy the relevant code from the parent class to handle latents
-        from finetrainers.trainer.control_trainer.data import \
-            apply_frame_conditioning_on_latents
+        from finetrainers.trainer.reference_trainer.data import \
+            apply_reference_frame_conditioning
 
         compute_posterior = False  # See explanation in prepare_latents
         if compute_posterior:
@@ -448,8 +317,8 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         """
         from finetrainers.processors.reference import \
             ReferenceToControlProcessor
-        from finetrainers.trainer.control_trainer.data import \
-            apply_frame_conditioning_on_latents
+        from finetrainers.trainer.reference_trainer.data import \
+            apply_reference_frame_conditioning
 
         with torch.no_grad():
             dtype = pipeline.vae.dtype

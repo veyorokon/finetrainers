@@ -33,3 +33,6 @@ Understanding current scenario: Explain what I want clearly in 1 - 2 sentences.
 
 Mode requirements:
 - For logging: no new if / else statements OR loops are allowed . if youre unsure about the fields - print the dir()
+
+
+read the reference_trainer code and the batch tool for the 5 most important files no more
