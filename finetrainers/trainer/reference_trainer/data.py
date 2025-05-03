@@ -34,13 +34,9 @@ class IterableReferenceDataset(IterableControlDataset):
     ):
         super().__init__(dataset, control_type, device)
         
-        self.reference_config = reference_config or {
-            "vae_resolution": [480, 854],  # [height, width] to match video_resolution_buckets
-            "clip_resolution": [512, 512], # [height, width]
-            "reference_order": ["object", "background"],
-            "repeat_frames": [1, 4],
-            "vae_combine": "before"  # Default to original behavior
-        }
+        if reference_config is None:
+            raise ValueError("IterableReferenceDataset requires reference_config")
+        self.reference_config = reference_config
 
         logger.info("Initialized IterableReferenceDataset with config:")
         logger.info(f"  VAE Resolution: {self.reference_config['vae_resolution']}")
@@ -178,13 +174,9 @@ class ValidationReferenceDataset(torch.utils.data.IterableDataset):
         self.device = device
         self._video_processor = VideoProcessor()
         
-        self.reference_config = reference_config or {
-            "vae_resolution": [480, 854],  # [height, width] to match video_resolution_buckets
-            "clip_resolution": [512, 512], # [height, width]
-            "reference_order": ["object", "background"],
-            "repeat_frames": [1, 4],
-            "vae_combine": "before"  # Default to original behavior
-        }
+        if reference_config is None:
+            raise ValueError("ValidationReferenceDataset requires reference_config")
+        self.reference_config = reference_config
         
         self.control_processors = []
         if control_type == ControlType.CANNY:

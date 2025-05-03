@@ -47,15 +47,10 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         reference_config: Dict[str, Any] = None,
         **kwargs,
     ) -> None:
-        # Initialize reference config with reasonable defaults if not provided
-        self.reference_config = reference_config or {
-            "vae_resolution": [480, 854],  # [height, width] to match video_resolution_buckets
-            "clip_resolution": [512, 512], # [height, width]
-            "reference_order": ["object", "background"],
-            "repeat_frames": [4, 1],
-            "reference_suffixes": ["_object", "_background"],
-            "vae_combine": "before"  # Default to original behavior
-        }
+        # Require reference_config to be provided
+        if reference_config is None:
+            raise ValueError("WanReferenceModelSpecification requires reference_config")
+        self.reference_config = reference_config
         logger.info(f"Initialized WanReferenceModelSpecification with reference_config: {self.reference_config}")
         
         # Create reference-to-control processor if not provided

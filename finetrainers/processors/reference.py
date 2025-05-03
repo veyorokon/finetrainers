@@ -151,8 +151,8 @@ class ReferenceToControlProcessor(ProcessorMixin):
         has_control = "control_image" in kwargs or "control_video" in kwargs
         logger.info(f"Has existing control inputs: {has_control}")
         
-        # Get vae_combine setting from reference_config
-        vae_combine = self.reference_config.get("vae_combine", "before")
+        # Get vae_combine setting from reference_config without fallback
+        vae_combine = self.reference_config["vae_combine"]
         logger.info(f"Using vae_combine method: {vae_combine} from reference_config: {self.reference_config}")
         
         # Log all available kwargs 
