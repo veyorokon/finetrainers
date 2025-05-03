@@ -121,8 +121,11 @@ class ReferenceTrainer(ControlTrainer):
             "clip_resolution": self.config.clip_resolution,
             "reference_order": self.config.reference_order,
             "repeat_frames": self.config.repeat_frames,
-            "reference_suffixes": self.config.reference_suffixes
+            "reference_suffixes": self.config.reference_suffixes,
+            "vae_combine": self.config.vae_combine
         }
+        
+        logger.info(f"Using vae_combine method: {self.config.vae_combine}")
         
         # Also pass same reference config to the model specification
         if isinstance(self.model_specification, WanReferenceModelSpecification):
@@ -152,6 +155,12 @@ class ReferenceTrainer(ControlTrainer):
             reference_suffixes = config.pop("reference_suffixes", ["_object", "_background"])
             reference_config = config.pop("reference_config", {})
             
+            # Get vae_combine setting from dataset config if present
+            vae_combine = config.pop("vae_combine", None)
+            if vae_combine is not None:
+                logger.info(f"Found vae_combine in dataset config: {vae_combine}")
+                self.config.vae_combine = vae_combine
+            
             # Update the trainer config with values from the dataset config
             if reference_config:
                 logger.info(f"Found reference_config in dataset: {reference_config}")
@@ -164,6 +173,9 @@ class ReferenceTrainer(ControlTrainer):
                     self.config.clip_resolution = reference_config["clip_resolution"]
                 if "reference_order" in reference_config:
                     self.config.reference_order = reference_config["reference_order"]
+                if "vae_combine" in reference_config:
+                    self.config.vae_combine = reference_config["vae_combine"]
+                    logger.info(f"Updated vae_combine from reference_config: {self.config.vae_combine}")
             
             # Handle auto-generating video_resolution_buckets if needed
             if "video_resolutions" in config and "video_resolution_buckets" not in config and data_root:
@@ -216,8 +228,11 @@ class ReferenceTrainer(ControlTrainer):
             "clip_resolution": self.config.clip_resolution,
             "reference_order": self.config.reference_order, 
             "repeat_frames": self.config.repeat_frames,
-            "reference_suffixes": self.config.reference_suffixes
+            "reference_suffixes": self.config.reference_suffixes,
+            "vae_combine": self.config.vae_combine
         }
+        
+        logger.info(f"Using vae_combine method: {self.config.vae_combine}")
         
         logger.info(f"Creating IterableReferenceDataset with config: {reference_config}")
         dataset = IterableReferenceDataset(
@@ -290,7 +305,8 @@ class ReferenceTrainer(ControlTrainer):
                 "clip_resolution": self.config.clip_resolution,
                 "reference_order": self.config.reference_order,
                 "repeat_frames": self.config.repeat_frames,
-                "reference_suffixes": self.config.reference_suffixes
+                "reference_suffixes": self.config.reference_suffixes,
+                "vae_combine": self.config.vae_combine
             }
             
             return ValidationReferenceDataset(

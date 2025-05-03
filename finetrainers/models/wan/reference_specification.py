@@ -52,22 +52,26 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         
         # Create reference-to-control processor if not provided
         if control_model_processors is None:
-            # First, create the standard control processor
-            standard_control_processor = WanLatentEncodeProcessor(["control_latents", "__drop__", "__drop__"])
+            # Import the reference-specific encoder processor
+            from finetrainers.processors.reference import WanReferenceLatentEncodeProcessor
             
-            # Create a reference processor that runs before it
+            # Create a reference processor and specialized latent processor
             reference_processor = ReferenceToControlProcessor(
                 ["image", "video"], 
                 reference_config=self.reference_config
             )
             
+            reference_latent_processor = WanReferenceLatentEncodeProcessor(
+                ["control_latents", "__drop__", "__drop__"]
+            )
+            
             # Add logging to debug more easily
-            logger.info("Initializing control processors:")
+            logger.info("Initializing reference control processors:")
             logger.info(f"  Reference processor output names: {reference_processor.output_names}")
-            logger.info(f"  Control processor output names: {standard_control_processor.output_names}")
+            logger.info(f"  Reference latent processor output names: {reference_latent_processor.output_names}")
             
             # Use both processors in sequence
-            control_model_processors = [reference_processor, standard_control_processor]
+            control_model_processors = [reference_processor, reference_latent_processor]
         
         # Initialize parent with our processors
         super().__init__(

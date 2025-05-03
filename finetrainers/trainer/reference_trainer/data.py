@@ -38,7 +38,8 @@ class IterableReferenceDataset(IterableControlDataset):
             "vae_resolution": [480, 854],  # [height, width] to match video_resolution_buckets
             "clip_resolution": [512, 512], # [height, width]
             "reference_order": ["object", "background"],
-            "repeat_frames": [1, 4]
+            "repeat_frames": [1, 4],
+            "vae_combine": "before"  # Default to original behavior
         }
 
         logger.info("Initialized IterableReferenceDataset with config:")
@@ -181,7 +182,8 @@ class ValidationReferenceDataset(torch.utils.data.IterableDataset):
             "vae_resolution": [480, 854],  # [height, width] to match video_resolution_buckets
             "clip_resolution": [512, 512], # [height, width]
             "reference_order": ["object", "background"],
-            "repeat_frames": [1, 4]
+            "repeat_frames": [1, 4],
+            "vae_combine": "before"  # Default to original behavior
         }
         
         self.control_processors = []

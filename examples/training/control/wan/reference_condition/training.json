@@ -6,6 +6,7 @@
       "reshape_mode": "bicubic",
       "reference_suffixes": [ "_object", "_background" ],
       "control_type": "reference",
+      "vae_combine": "after",
       "video_resolutions": [
         [ 480, 854 ]
       ],

@@ -39,6 +39,11 @@ class ReferenceConfig(ControlLowRankConfig):
     reference_order: List[str] = field(default_factory=lambda: ["object", "background"])
     repeat_frames: List[int] = field(default_factory=lambda: [4, 1])  # This will be overridden by JSON values
     
+    # VAE combination method ('before' or 'after')
+    # 'before': combine reference images before VAE encoding (current behavior)
+    # 'after': encode each reference image separately and combine in latent space
+    vae_combine: str = "before"
+    
     # Reference patterns for finding reference images
     reference_suffixes: List[str] = field(default_factory=lambda: ["_object", "_background"])
     
@@ -76,6 +81,9 @@ class ReferenceConfig(ControlLowRankConfig):
                 config.reference_order = reference_config["reference_order"]
             if "reference_suffixes" in reference_config:
                 config.reference_suffixes = reference_config["reference_suffixes"]
+            if "vae_combine" in reference_config:
+                config.vae_combine = reference_config["vae_combine"]
+                logger.info(f"Loaded vae_combine from JSON: {config.vae_combine}")
                 
             return config
         except Exception as e:
@@ -178,6 +186,13 @@ class ReferenceConfig(ControlLowRankConfig):
             nargs="+", 
             default=json_defaults.get("reference_suffixes", ["_object", "_background"])
         )
+        parser.add_argument(
+            "--vae_combine",
+            type=str,
+            choices=["before", "after"],
+            default=json_defaults.get("vae_combine", "before"),
+            help="Method for combining references: 'before' (combine images then VAE) or 'after' (VAE encode individually)"
+        )
     
     def map_args(self, argparse_args, mapped_args):
         """Map arguments from argparse to the config."""
@@ -191,6 +206,7 @@ class ReferenceConfig(ControlLowRankConfig):
         mapped_args.reference_order = argparse_args.reference_order
         mapped_args.repeat_frames = argparse_args.repeat_frames
         mapped_args.reference_suffixes = argparse_args.reference_suffixes
+        mapped_args.vae_combine = argparse_args.vae_combine
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert the config to a dictionary."""
@@ -204,7 +220,8 @@ class ReferenceConfig(ControlLowRankConfig):
             "clip_resolution": self.clip_resolution,
             "reference_order": self.reference_order,
             "repeat_frames": self.repeat_frames,
-            "reference_suffixes": self.reference_suffixes
+            "reference_suffixes": self.reference_suffixes,
+            "vae_combine": self.vae_combine
         })
         
         return result
