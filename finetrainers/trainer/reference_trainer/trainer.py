@@ -19,8 +19,8 @@ from finetrainers.models.wan.reference_specification import \
 from finetrainers.trainer.control_trainer.trainer import ControlTrainer
 from finetrainers.utils import get_non_null_items
 
-from .config import ReferenceConfig, ReferenceType
-from .data import IterableReferenceDataset, ValidationReferenceDataset
+from .config import ReferenceConfig
+from .data import IterableReferenceDataset
 
 logger = get_logger()
 
@@ -302,11 +302,13 @@ class ReferenceTrainer(ControlTrainer):
         Returns:
             A validation dataset
         """
-        logger.info(f"Creating custom ReferenceValidationDataset from {validation_file}")
+        logger.info(f"Creating dataset from {validation_file} using IterableReferenceDataset")
         
-        # Create the base validation dataset
-        base_dataset = data.ValidationDataset(validation_file)
-        base_dataset._data = datasets.distributed.split_dataset_by_node(base_dataset._data, local_rank, dp_world_size)
+        # Load JSON data directly without field="data" parameter
+        filename = pathlib.Path(validation_file)
+        raw_data = datasets.load_dataset("json", data_files=filename.as_posix(), split="train")
+        iterable_data = raw_data.to_iterable_dataset()
+        split_data = datasets.distributed.split_dataset_by_node(iterable_data, local_rank, dp_world_size)
         
         # Create reference config 
         reference_config = {
@@ -318,9 +320,9 @@ class ReferenceTrainer(ControlTrainer):
             "vae_combine": self.config.vae_combine
         }
         
-        # Wrap in ValidationReferenceDataset
-        return ValidationReferenceDataset(
-            base_dataset,
+        # Use the same IterableReferenceDataset for validation
+        return IterableReferenceDataset(
+            split_data,
             self.config.control_type,
             reference_config=reference_config,
             device=self.state.parallel_backend.device
