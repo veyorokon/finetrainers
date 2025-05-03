@@ -92,7 +92,7 @@ training_cmd=(
   --training_type reference-lora
   --seed 42
   --batch_size 1
-  --train_steps 1
+  --train_steps 10
   --gradient_accumulation_steps 1
   --gradient_checkpointing
   --checkpointing_steps 1000
