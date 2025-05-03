@@ -72,26 +72,51 @@ def main():
         args = args.parse_args()
 
         model_specification_cls = _get_model_specifiction_cls(args.model_name, args.training_type)
-        model_specification = model_specification_cls(
-            pretrained_model_name_or_path=args.pretrained_model_name_or_path,
-            tokenizer_id=args.tokenizer_id,
-            tokenizer_2_id=args.tokenizer_2_id,
-            tokenizer_3_id=args.tokenizer_3_id,
-            text_encoder_id=args.text_encoder_id,
-            text_encoder_2_id=args.text_encoder_2_id,
-            text_encoder_3_id=args.text_encoder_3_id,
-            transformer_id=args.transformer_id,
-            vae_id=args.vae_id,
-            image_encoder_id=getattr(args, 'image_encoder_id', None),
-            image_processor_id=getattr(args, 'image_processor_id', None),
-            text_encoder_dtype=args.text_encoder_dtype,
-            text_encoder_2_dtype=args.text_encoder_2_dtype,
-            text_encoder_3_dtype=args.text_encoder_3_dtype,
-            transformer_dtype=args.transformer_dtype,
-            vae_dtype=args.vae_dtype,
-            revision=args.revision,
-            cache_dir=args.cache_dir,
-        )
+        
+        # For reference models, extract reference_config from JSON if available
+        reference_config = None
+        if args.training_type in [TrainingType.REFERENCE_LORA, TrainingType.REFERENCE_FULL_FINETUNE] and dataset_config:
+            try:
+                import json
+                with open(dataset_config, "r") as file:
+                    dataset_configs = json.load(file)["datasets"]
+                
+                # Extract reference config from first dataset with it
+                for config in dataset_configs:
+                    if "reference_config" in config:
+                        reference_config = config.get("reference_config", {})
+                        logger.info(f"Extracted reference_config for model specification: {reference_config}")
+                        break
+            except Exception as e:
+                logger.warning(f"Error extracting reference_config from JSON for model specification: {e}")
+        
+        # Create model specification with reference_config if available
+        spec_kwargs = {
+            "pretrained_model_name_or_path": args.pretrained_model_name_or_path,
+            "tokenizer_id": args.tokenizer_id,
+            "tokenizer_2_id": args.tokenizer_2_id,
+            "tokenizer_3_id": args.tokenizer_3_id,
+            "text_encoder_id": args.text_encoder_id,
+            "text_encoder_2_id": args.text_encoder_2_id,
+            "text_encoder_3_id": args.text_encoder_3_id,
+            "transformer_id": args.transformer_id,
+            "vae_id": args.vae_id,
+            "image_encoder_id": getattr(args, 'image_encoder_id', None),
+            "image_processor_id": getattr(args, 'image_processor_id', None),
+            "text_encoder_dtype": args.text_encoder_dtype,
+            "text_encoder_2_dtype": args.text_encoder_2_dtype,
+            "text_encoder_3_dtype": args.text_encoder_3_dtype,
+            "transformer_dtype": args.transformer_dtype,
+            "vae_dtype": args.vae_dtype,
+            "revision": args.revision,
+            "cache_dir": args.cache_dir,
+        }
+        
+        # Add reference_config if available
+        if reference_config is not None:
+            spec_kwargs["reference_config"] = reference_config
+            
+        model_specification = model_specification_cls(**spec_kwargs)
 
         if args.training_type in [TrainingType.LORA, TrainingType.FULL_FINETUNE]:
             trainer = SFTTrainer(args, model_specification)
