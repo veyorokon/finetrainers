@@ -35,4 +35,22 @@ Mode requirements:
 - For logging: no new if / else statements OR loops are allowed . if youre unsure about the fields - print the dir()
 
 
-read the reference_trainer code and the batch tool for the 5 most important files no more
+read the reference_trainer code and the batch tool for the 5 most important files no more.
+
+
+UNDER NO CIRCUMSTANCES EVER WILL YOU EVER BE ALLOWED TO ADD SILENT FALL BACKS. EXPLICIT FAILURE IS PREFERRED. THIS IS COMPLEX PRODUCTION CODE FOR MACHINE LEARNING AND SILENT FALL BACKS AND WIDE SPREAD IF/ELSE CATCH ALL LOGIC LIKE THE FOLLOWING ONLY ADD CONFUSION AND NOISE TO DEBUGGING. EXPLICIT FAILURE IS INFINITELY MORE PREFERRABLE THAN TRASH LIKE THIS:
+# Get vae_combine setting from either reference_config or kwargs
+     155          if hasattr(self, 'reference_config') and self.reference_config is not None:
+     156              # Get from processor instance attribute (set during initialization)
+     157              vae_combine = self.reference_config.get("vae_combine", "before")
+     158              logger.info(f"Using vae_combine method: {vae_combine} from processor reference_config")
+     159          elif "vae_combine" in kwargs:
+     160              # Get directly from kwargs (passed during processing)
+     161              vae_combine = kwargs.pop("vae_combine") 
+     162              logger.info(f"Using vae_combine method: {vae_combine} from kwargs")
+     163          else:
+     164              # Default
+     165              vae_combine = "before"
+     166              logger.info(f"Using default vae_combine method: {vae_combine} (no source available)")
+     167          
+-- NEVER EVER ADD LOGIC LIKE THIS

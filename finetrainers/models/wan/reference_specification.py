@@ -47,8 +47,16 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         reference_config: Dict[str, Any] = None,
         **kwargs,
     ) -> None:
-        # Initialize reference config
-        self.reference_config = reference_config 
+        # Initialize reference config with reasonable defaults if not provided
+        self.reference_config = reference_config or {
+            "vae_resolution": [480, 854],  # [height, width] to match video_resolution_buckets
+            "clip_resolution": [512, 512], # [height, width]
+            "reference_order": ["object", "background"],
+            "repeat_frames": [4, 1],
+            "reference_suffixes": ["_object", "_background"],
+            "vae_combine": "before"  # Default to original behavior
+        }
+        logger.info(f"Initialized WanReferenceModelSpecification with reference_config: {self.reference_config}")
         
         # Create reference-to-control processor if not provided
         if control_model_processors is None:
@@ -69,6 +77,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             logger.info("Initializing reference control processors:")
             logger.info(f"  Reference processor output names: {reference_processor.output_names}")
             logger.info(f"  Reference latent processor output names: {reference_latent_processor.output_names}")
+            logger.info(f"  Reference processor reference_config: {reference_processor.reference_config}")
             
             # Use both processors in sequence
             control_model_processors = [reference_processor, reference_latent_processor]

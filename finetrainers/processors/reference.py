@@ -67,13 +67,21 @@ class ReferenceToControlProcessor(ProcessorMixin):
     avoiding timing issues in the pipeline.
     """
     
-    def __init__(self, output_names: List[str], reference_config: Dict[str, Any] = None, 
+    def __init__(self, output_names: List[str], reference_config: Dict[str, Any], 
                  input_names: Optional[Dict[str, str]] = None):
         super().__init__()
         self.output_names = output_names
+        
+        # Require reference_config to be provided (removed default=None)
+        if reference_config is None:
+            raise ValueError("ReferenceToControlProcessor requires reference_config")
         self.reference_config = reference_config
+        
         # Default input names mapping
         self.input_names = input_names or {}
+        
+        # Log the configuration for debugging
+        logger.info(f"Initialized ReferenceToControlProcessor with config: {reference_config}")
         
     def _preprocess_references(self, references: Dict[str, str]) -> List[Dict[str, Any]]:
         """Convert raw references to pre-processed vae_references format.
@@ -145,7 +153,7 @@ class ReferenceToControlProcessor(ProcessorMixin):
         
         # Get vae_combine setting from reference_config
         vae_combine = self.reference_config.get("vae_combine", "before")
-        logger.info(f"Using vae_combine method: {vae_combine}")
+        logger.info(f"Using vae_combine method: {vae_combine} from reference_config: {self.reference_config}")
         
         # Log all available kwargs 
         logger.info(f"Available kwargs: {list(kwargs.keys())}")
