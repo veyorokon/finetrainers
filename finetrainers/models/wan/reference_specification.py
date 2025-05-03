@@ -251,15 +251,17 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         noisy_latents = torch.cat([noisy_latents, control_latents], dim=1)
         logger.info(f"Final concatenated latents shape for transformer: {noisy_latents.shape}")
         
-        # Diagnostic logging - check the mask channel in final concatenated tensor
-        # Mask should be at channel 16 (after the content channels)
-        mask_channel = noisy_latents[:, 16]
-        mask_min = mask_channel.min().item()
-        mask_max = mask_channel.max().item()
-        mask_mean = mask_channel.mean().item()
-        mask_nonzero = (mask_channel > 0.5).float().sum().item()
-        logger.info(f"Final mask channel stats: min={mask_min:.6f}, max={mask_max:.6f}, mean={mask_mean:.6f}, " +
-                  f"non-zero={mask_nonzero} out of {mask_channel.numel()}")
+        # Diagnostic logging - check the mask channels in final concatenated tensor
+        # Mask channels are now at positions 0-3 (before the content channels)
+        logger.info(f"Checking mask channels (first 4 channels) in concatenated tensor:")
+        for i in range(4):
+            mask_channel = noisy_latents[:, i]
+            mask_min = mask_channel.min().item()
+            mask_max = mask_channel.max().item()
+            mask_mean = mask_channel.mean().item()
+            mask_nonzero = (mask_channel > 0.5).float().sum().item()
+            logger.info(f"Mask channel {i} stats: min={mask_min:.6f}, max={mask_max:.6f}, mean={mask_mean:.6f}, " +
+                      f"non-zero={mask_nonzero} out of {mask_channel.numel()}")
         import os
 
         # Debug visualization of latent channels - only in the first few steps
@@ -273,17 +275,17 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             # Save to debug directory
             output_dir = os.path.join("debug_latents", f"step_{step_id}")
             
-            # Save individual channels for quick reference
-            # Mask channel (should be at index 16 in final tensor)
-            save_latent_channels(noisy_latents, output_dir, "mask", [16])
+            # Save individual mask channels for quick reference
+            # Mask channels are now at indices 0-3 in final tensor
+            save_latent_channels(noisy_latents, output_dir, "mask", [0, 1, 2, 3])
             
             # Create channel×frame grid visualization
-            # Group sizes now match A2 inference order: content (16), mask (1), conditioning (16), padding (3)
+            # Group sizes now match revised A2 inference order: mask/padding (4), content (16), conditioning (16)
             create_channel_frame_grid(
                 noisy_latents,
                 output_dir,
                 filename=f"latent_grid_{step_id}.png",
-                group_sizes=[16, 1, 16, 3]
+                group_sizes=[4, 16, 16]
             )
             
             # Increment step counter

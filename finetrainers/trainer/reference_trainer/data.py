@@ -390,36 +390,21 @@ def apply_reference_frame_conditioning(
     logger.info(f"Mask stats: min={mask_min:.6f}, max={mask_max:.6f}, mean={mask_mean:.6f}, " +
               f"non-zero={mask_nonzero} out of {mask.numel()}")
     
-    # Concatenate mask with result (mask first, then latents)
-    # This matches the A2 inference code ordering
-    combined = torch.cat([mask, result], dim=channel_dim)
-    logger.info(f"Applied A2-style reference conditioning: {combined.shape}")
+    # Create 4 mask channels (A2 model expects 4 mask + 16 content + 16 conditioning = 36 channels)
+    num_mask_channels = 4
+    all_mask_channels = []
     
-    # Calculate dynamic padding (needed to match expected channel count)
-    # - Each VAE latent has 16 channels
-    # - We have 1 channel for the mask and 16 for the reference
-    # - The transformer expects 36 channels total
-    # - So we need 36 - (16 + 1 + 16) = 3 additional padding channels
+    # Add 4 copies of the same mask
+    for _ in range(num_mask_channels):
+        all_mask_channels.append(mask.clone())
     
-    # Get the current channel count
-    vae_channels = 16  # Standard VAE latent channels 
-    total_expected = 36  # Transformer input channels
-    current_control_channels = combined.shape[channel_dim]
+    # Combine all mask channels
+    masks = torch.cat(all_mask_channels, dim=channel_dim)
     
-    # Calculate how many channels we'll have after concatenating with noisy_latents
-    total_after_concat = vae_channels + current_control_channels
+    # Concatenate masks with result (masks first, then content)
+    combined = torch.cat([masks, result], dim=channel_dim)
     
-    # Calculate how many padding channels we need
-    if total_after_concat < total_expected:
-        padding_channels = total_expected - total_after_concat
-        padding_shape = list(combined.shape)
-        padding_shape[channel_dim] = padding_channels
-        
-        logger.info(f"Dynamically adding {padding_channels} padding channels (current: {current_control_channels}, " +
-                  f"total after concat: {total_after_concat}, target: {total_expected})")
-        channel_padding = torch.zeros(padding_shape, device=combined.device, dtype=combined.dtype, requires_grad=True)
-        combined = torch.cat([combined, channel_padding], dim=channel_dim)
-    elif total_after_concat > total_expected:
-        logger.warning(f"Control latents will have too many channels after concat: {total_after_concat} > {total_expected}")
+    logger.info(f"Applied A2-style reference conditioning: masks shape={masks.shape}, " +
+               f"combined shape={combined.shape}")
     
     return combined
