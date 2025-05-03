@@ -12,7 +12,6 @@ import finetrainers.functional as FF
 from finetrainers.functional.image import letterbox_image
 from finetrainers.logging import get_logger
 from finetrainers.processors import CannyProcessor, CopyProcessor
-from finetrainers.processors.reference import _crop_and_resize_pad
 from finetrainers.trainer.control_trainer.data import (ControlType,
                                                        FrameConditioningType,
                                                        IterableControlDataset)
