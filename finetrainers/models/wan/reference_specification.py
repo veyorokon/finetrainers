@@ -304,4 +304,202 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         target = FF.flow_match_target(noise, latents)
 
         return pred, target, sigmas
-    
+        
+    def validation(
+        self,
+        pipeline: WanPipeline,
+        generator: Optional[torch.Generator] = None,
+        prompt: Optional[str] = None,
+        caption: Optional[str] = None,
+        vae_references: Optional[List[Dict[str, Any]]] = None,
+        clip_references: Optional[List[torch.Tensor]] = None,
+        references: Optional[Dict[str, str]] = None,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
+        num_frames: Optional[int] = None,
+        num_inference_steps: int = 50,
+        **kwargs,
+    ) -> List[ArtifactType]:
+        """
+        Run validation using our unified format.
+        
+        This method takes data in our unified dataset format (same as training) and
+        performs generation using the pipeline.
+        
+        Args:
+            pipeline: The WanPipeline instance for generation
+            generator: Random number generator
+            prompt/caption: Text prompt for generation (caption is alias for prompt)
+            vae_references: Processed reference images with repeat counts
+            clip_references: Reference images for CLIP embedding
+            references: Dictionary mapping reference types to file paths
+            height, width, num_frames: Output dimensions
+            num_inference_steps: Number of denoising steps
+            
+        Returns:
+            List of artifacts (typically a single VideoArtifact)
+        """
+        from finetrainers.data import VideoArtifact
+        from finetrainers.processors.reference import ReferenceToControlProcessor
+        from finetrainers.trainer.reference_trainer.data import apply_reference_frame_conditioning
+        from finetrainers.patches.dependencies.diffusers.control import control_channel_concat
+
+        logger.info(f"=== Starting validation with unified format ===")
+        
+        with torch.no_grad():
+            # Use text prompt (try both prompt and caption fields)
+            text_prompt = prompt if prompt is not None else caption
+            if text_prompt is None:
+                text_prompt = ""
+                logger.warning("No prompt or caption provided for validation")
+            
+            logger.info(f"Using text prompt: '{text_prompt}'")
+                
+            # Process device and dtype
+            device = pipeline._execution_device
+            dtype = pipeline.vae.dtype
+            
+            # Prepare initial latents for video generation
+            in_channels = self.transformer_config.in_channels  # Original in_channels (not doubled)
+            latents = pipeline.prepare_latents(1, in_channels, height, width, num_frames, dtype, device, generator)
+            
+            # Prepare VAE scaling factors
+            latents_mean = (
+                torch.tensor(self.vae_config.latents_mean)
+                .view(1, self.vae_config.z_dim, 1, 1, 1)
+                .to(device, dtype)
+            )
+            latents_std = 1.0 / torch.tensor(self.vae_config.latents_std).view(1, self.vae_config.z_dim, 1, 1, 1).to(
+                device, dtype
+            )
+            
+            # Process control inputs - try all possible sources
+            control_video = None
+            
+            # If we have reference data, process it using same processors as training
+            if (vae_references and len(vae_references) > 0) or (references and len(references) > 0):
+                logger.info("Processing references for control conditioning")
+                
+                # Use same processor as training to maintain consistency
+                reference_processor = ReferenceToControlProcessor(
+                    ["image", "video"], 
+                    reference_config=self.reference_config
+                )
+                
+                # Process references to get control video
+                result = reference_processor(
+                    references=references,
+                    vae_references=vae_references
+                )
+                
+                # Get control video from processor result
+                video_list = result.get("video")
+                if video_list and len(video_list) > 0:
+                    # Take first video for now (same as training)
+                    control_video = video_list[0]
+                    logger.info(f"Created control video with shape {control_video.shape}")
+            
+            # If we don't have control input yet, check if it was provided directly
+            if control_video is None and "control_video" in kwargs:
+                control_video = kwargs["control_video"]
+                logger.info(f"Using provided control_video with shape {control_video.shape}")
+            elif control_video is None and "control_image" in kwargs:
+                # Convert control image to video format
+                control_image = kwargs["control_image"]
+                logger.info(f"Converting control_image to video format")
+                control_video = pipeline.video_processor.preprocess(
+                    control_image, height=height, width=width
+                ).unsqueeze(2)
+            
+            # If we still don't have control input, we can't continue
+            if control_video is None:
+                raise ValueError("No control inputs available for validation. Provide references, control_video, or control_image.")
+                
+            # Convert to latents
+            control_video = control_video.to(device=device, dtype=dtype)
+            control_latents = pipeline.vae.encode(control_video).latent_dist.mode()
+            control_latents = self._normalize_latents(control_latents, latents_mean, latents_std)
+            
+            # Apply reference frame conditioning (same as in training)
+            control_latents = apply_reference_frame_conditioning(
+                control_latents,
+                latents.shape[2],
+                frame_conditioning_type=self.frame_conditioning_type or "full",
+                frame_conditioning_index=self.frame_conditioning_index or 0,
+                channel_dim=1,
+                frame_dim=2,
+                concatenate_mask=self.frame_conditioning_concatenate_mask,
+            )
+            
+            # Process CLIP reference images for embedding
+            clip_embeddings = None
+            if clip_references and len(clip_references) > 0 and hasattr(pipeline, 'image_encoder'):
+                logger.info(f"Processing {len(clip_references)} reference images for CLIP embedding")
+                
+                image_embeds_list = []
+                for image in clip_references:
+                    # Process image with CLIP processor
+                    if hasattr(pipeline, 'image_processor'):
+                        image = pipeline.image_processor(images=image, return_tensors="pt").to(device)
+                    
+                    # Get embedding from CLIP vision model
+                    with torch.no_grad():
+                        image_embeds = pipeline.image_encoder(image, output_hidden_states=True).hidden_states[-2]
+                    
+                    image_embeds_list.append(image_embeds)
+                
+                # Concatenate all reference embeddings
+                if image_embeds_list:
+                    clip_embeddings = torch.cat(image_embeds_list, dim=1)
+                    logger.info(f"Created CLIP embeddings with shape {clip_embeddings.shape}")
+            
+            # Create function to patch pipeline's _encode_prompt
+            original_func = None
+            if clip_embeddings is not None:
+                logger.info("Patching pipeline's _encode_prompt to include CLIP embeddings")
+                
+                def _patched_encode_prompt(*args, **kwargs):
+                    # Call original function
+                    original_output = original_func(*args, **kwargs)
+                    
+                    # Add reference image embeddings to encoder_hidden_states
+                    encoder_hidden_states = original_output[1]  # encoder_hidden_states is the second return
+                    encoder_hidden_states = torch.cat([clip_embeddings, encoder_hidden_states], dim=1)
+                    
+                    # Replace in the output
+                    outputs = list(original_output)
+                    outputs[1] = encoder_hidden_states
+                    return tuple(outputs)
+                
+                # Store original method for later restoration
+                original_func = pipeline._encode_prompt
+                pipeline._encode_prompt = _patched_encode_prompt
+            
+            # Prepare generation parameters
+            generation_kwargs = {
+                "prompt": text_prompt,
+                "height": height,
+                "width": width,
+                "num_frames": num_frames,
+                "num_inference_steps": num_inference_steps,
+                "generator": generator,
+                "return_dict": True,
+                "output_type": "pt",  # Return raw tensors for better control
+            }
+            
+            # Remove None values
+            generation_kwargs = get_non_null_items(generation_kwargs)
+            
+            try:
+                # Generate with patched pipeline and control latents
+                with control_channel_concat(pipeline.transformer, ["hidden_states"], [control_latents], dims=[1]):
+                    logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
+                    result = pipeline(**generation_kwargs)
+                    video = result.frames[0]
+            finally:
+                # Restore original method if we patched it
+                if original_func is not None:
+                    pipeline._encode_prompt = original_func
+            
+            # Return as VideoArtifact (same as parent class)
+            return [VideoArtifact(value=video)]
