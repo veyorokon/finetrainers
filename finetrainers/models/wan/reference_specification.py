@@ -497,13 +497,10 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                     original_func = pipeline._encode_prompt
                     pipeline._encode_prompt = _patched_encode_prompt
             
-            # Combine content and control latents here since we're skipping the hook
-            # This follows the A2 inference pattern
-            combined_latents = torch.cat([latents, control_latents], dim=1)
-            logger.info(f"Combined latents shape for generation: {combined_latents.shape}")
-            
+            # Follow the same pattern as WanControlModelSpecification's validation method
+            # Pass original content latents (16 channels) to generation_kwargs
             generation_kwargs = {
-                "latents": combined_latents,  # Pass the pre-combined latents
+                "latents": latents,  # Pass uncombined content latents
                 "prompt": text_prompt,
                 "height": height,
                 "width": width,
@@ -518,11 +515,11 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             generation_kwargs = get_non_null_items(generation_kwargs)
             
             try:
-                # We'll skip the control_channel_concat hook since we're already passing
-                # appropriately combined latents to the pipeline
-                logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
-                result = pipeline(**generation_kwargs)
-                video = result.frames[0]
+                # Use control_channel_concat hook just like the parent class
+                with control_channel_concat(pipeline.transformer, ["hidden_states"], [control_latents], dims=[1]):
+                    logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
+                    result = pipeline(**generation_kwargs)
+                    video = result.frames[0]
             finally:
                 # Restore original method if we patched it
                 if original_func is not None:
