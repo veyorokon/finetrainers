@@ -376,13 +376,29 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 device, dtype
             )
             
-            # Process references using the exact same processors as training
-            logger.info("Processing references using training processors")
+            # Process references using training processors, but with adjusted resolution
+            logger.info("Processing references using training processors with validation dimensions")
+            
+            # Create a modified reference_config using vae_resolution from validation data if available
+            validation_reference_config = dict(self.reference_config)
+            
+            # Check if vae_resolution is provided in the validation data
+            if "vae_resolution" in kwargs:
+                validation_reference_config["vae_resolution"] = kwargs["vae_resolution"]
+                logger.info(f"Using vae_resolution from validation data: {kwargs['vae_resolution']}")
+            else:
+                # If not provided, ensure current width is divisible by 16
+                current_vae_width = validation_reference_config["vae_resolution"][1]
+                if current_vae_width % 16 != 0:
+                    # Round to nearest multiple of 16
+                    new_width = ((current_vae_width // 16) * 16)
+                    validation_reference_config["vae_resolution"][1] = new_width
+                    logger.info(f"Adjusted VAE width from {current_vae_width} to {new_width} for validation")
             
             # Step 1: Process references with ReferenceToControlProcessor
             reference_processor = ReferenceToControlProcessor(
                 ["image", "video"], 
-                reference_config=self.reference_config
+                reference_config=validation_reference_config
             )
             
             # Process any reference inputs we have
