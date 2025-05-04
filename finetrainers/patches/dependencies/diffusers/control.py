@@ -13,11 +13,33 @@ class ControlChannelConcatenateHook(ModelHook):
         self.input_names = input_names
         self.inputs = inputs
         self.dims = dims
+        
+        # Import logging here to avoid circular imports
+        from finetrainers.logging import get_logger
+        self.logger = get_logger()
 
     def pre_forward(self, module: torch.nn.Module, *args, **kwargs):
         for input_name, input_tensor, dim in zip(self.input_names, self.inputs, self.dims):
             original_tensor = args[input_name] if isinstance(input_name, int) else kwargs[input_name]
+            
+            # Log tensor shapes for debugging
+            self.logger.info(f"== Control Concatenation Hook ==")
+            self.logger.info(f"Original tensor shape: {original_tensor.shape}")
+            self.logger.info(f"Input tensor shape: {input_tensor.shape}")
+            self.logger.info(f"Concatenation dimension: {dim}")
+            
+            # Check if tensor shapes match except in the concat dimension
+            if original_tensor.ndim != input_tensor.ndim:
+                self.logger.error(f"Tensor dimensions don't match: {original_tensor.ndim} vs {input_tensor.ndim}")
+            
+            for i in range(original_tensor.ndim):
+                if i != dim and original_tensor.shape[i] != input_tensor.shape[i]:
+                    self.logger.error(f"Mismatch in dimension {i}: {original_tensor.shape[i]} vs {input_tensor.shape[i]}")
+            
+            # Proceed with concatenation
             control_tensor = torch.cat([original_tensor, input_tensor], dim=dim)
+            self.logger.info(f"Result tensor shape: {control_tensor.shape}")
+            
             if isinstance(input_name, int):
                 args[input_name] = control_tensor
             else:
