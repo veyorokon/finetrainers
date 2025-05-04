@@ -321,10 +321,12 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         **kwargs,
     ) -> List[ArtifactType]:
         """
-        Run validation using our unified format.
+        Run validation using our unified format, following the control trainer pattern.
         
-        This method takes data in our unified dataset format (same as training) and
-        performs generation using the pipeline.
+        This method:
+        1. Processes references into control latents
+        2. Uses the control_channel_concat hook only on the transformer
+        3. Keeps content and control latents separate
         
         Args:
             pipeline: The WanPipeline instance for generation
@@ -362,76 +364,58 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             device = pipeline._execution_device
             dtype = pipeline.vae.dtype
             
-            # Prepare initial latents for video generation
-            in_channels = self.transformer_config.in_channels  # Original in_channels (not doubled)
+            # ----- CRUCIAL: Use original in_channels for latents just like control trainer -----
+            in_channels = self.transformer_config.in_channels  # Original in_channels (16 for content only)
+            logger.info(f"Using in_channels={in_channels} for content latents")
+            
+            # Create initial latents for video generation - these will be the content latents
             latents = pipeline.prepare_latents(1, in_channels, height, width, num_frames, dtype, device, generator)
+            logger.info(f"Created content latents with shape: {latents.shape}")
             
-            # Prepare VAE scaling factors
-            latents_mean = (
-                torch.tensor(self.vae_config.latents_mean)
-                .view(1, self.vae_config.z_dim, 1, 1, 1)
-                .to(device, dtype)
-            )
-            latents_std = 1.0 / torch.tensor(self.vae_config.latents_std).view(1, self.vae_config.z_dim, 1, 1, 1).to(
-                device, dtype
-            )
-            
-            # Process references using training processors, but with adjusted resolution
-            logger.info("Processing references using training processors with validation dimensions")
-            
-            # Create a modified reference_config using vae_resolution from validation data if available
+            # Process references using training processors with our reference config
             validation_reference_config = dict(self.reference_config)
             
-            # Check if vae_resolution is provided in the validation data
+            # Ensure dimensions are properly divisible by 16
             if "vae_resolution" in kwargs:
                 validation_reference_config["vae_resolution"] = kwargs["vae_resolution"]
                 logger.info(f"Using vae_resolution from validation data: {kwargs['vae_resolution']}")
             else:
-                # If not provided, ensure current width is divisible by 16
-                current_vae_width = validation_reference_config["vae_resolution"][1]
-                if current_vae_width % 16 != 0:
-                    # Round to nearest multiple of 16
-                    new_width = ((current_vae_width // 16) * 16)
-                    validation_reference_config["vae_resolution"][1] = new_width
-                    logger.info(f"Adjusted VAE width from {current_vae_width} to {new_width} for validation")
+                # Adjust width if needed to be divisible by 16
+                if hasattr(validation_reference_config, "vae_resolution"):
+                    current_width = validation_reference_config["vae_resolution"][1]
+                    if current_width % 16 != 0:
+                        new_width = ((current_width // 16) * 16)
+                        validation_reference_config["vae_resolution"][1] = new_width
+                        logger.info(f"Adjusted VAE width from {current_width} to {new_width}")
             
-            # Step 1: Process references with ReferenceToControlProcessor
+            # Create reference processor
             reference_processor = ReferenceToControlProcessor(
                 ["image", "video"], 
                 reference_config=validation_reference_config
             )
             
-            # Process any reference inputs we have
-            processor_inputs = {
-                "references": references,
-                "vae_references": vae_references
-            }
-            
-            # Add control_video/control_image if directly provided
+            # Process reference inputs
+            processor_inputs = {"references": references, "vae_references": vae_references}
             if "control_video" in kwargs:
                 processor_inputs["control_video"] = kwargs["control_video"]
             if "control_image" in kwargs:
                 processor_inputs["control_image"] = kwargs["control_image"]
                 
-            # Process to get control videos
+            # Get control videos
             ref_result = reference_processor(**processor_inputs)
-            
-            # Get video list from processor
             video_list = ref_result.get("video")
             if not video_list or len(video_list) == 0:
                 raise ValueError("No control videos generated from references")
                 
             logger.info(f"Created {len(video_list)} control videos from references")
             
-            # Step 2: Process videos through latent encoder
-            from finetrainers.processors.reference import \
-                WanReferenceLatentEncodeProcessor
-            
+            # Process videos through latent encoder
+            from finetrainers.processors.reference import WanReferenceLatentEncodeProcessor
             reference_latent_processor = WanReferenceLatentEncodeProcessor(
                 ["control_latents", "latents_mean", "latents_std"]
             )
             
-            # Run videos through encoder processor
+            # Encode control latents
             latent_result = reference_latent_processor(
                 vae=pipeline.vae,
                 video=video_list,
@@ -439,16 +423,11 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 compute_posterior=True
             )
             
-            # Get control latents from processor
+            # Get control latents and apply frame conditioning
             control_latents = latent_result["control_latents"]
             logger.info(f"Encoded control latents with shape: {control_latents.shape}")
             
-            # Add detailed logging of dimensions
-            logger.info("=== DIMENSION LOGGING ===")
-            logger.info(f"Initial latents shape: {latents.shape}")
-            logger.info(f"Control latents before conditioning: {control_latents.shape}")
-            
-            # Apply reference frame conditioning (same as in training)
+            # Apply reference frame conditioning
             control_latents = apply_reference_frame_conditioning(
                 control_latents,
                 latents.shape[2],
@@ -461,17 +440,14 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             
             logger.info(f"Control latents after conditioning: {control_latents.shape}")
             
-            # Resize width dimension to match pipeline's expected width
-            expected_width = latents.shape[4]  # Get width from pipeline latents
+            # Ensure control latents have matching width
+            expected_width = latents.shape[4]
             current_width = control_latents.shape[4]
-            
             if current_width != expected_width:
-                logger.info(f"Resizing control latents width from {current_width} to {expected_width}")
-                
-                # Resize using interpolate
+                logger.info(f"Resizing control latents width: {current_width} → {expected_width}")
                 import torch.nn.functional as F
                 
-                # Reshape for interpolation (combine batch, channels, frames dimensions)
+                # Reshape for interpolation
                 b, c, f, h, w = control_latents.shape
                 reshaped = control_latents.view(b * c * f, 1, h, w)
                 
@@ -487,8 +463,8 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 control_latents = resized.view(b, c, f, h, expected_width)
                 logger.info(f"Resized control latents shape: {control_latents.shape}")
             
-            # Process CLIP reference images for embedding
-            clip_embeddings = None
+            # Process CLIP embeddings if provided
+            original_func = None
             if clip_references and len(clip_references) > 0 and hasattr(pipeline, 'image_encoder'):
                 logger.info(f"Processing {len(clip_references)} reference images for CLIP embedding")
                 
@@ -507,48 +483,39 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 # Concatenate all reference embeddings
                 if image_embeds_list:
                     clip_embeddings = torch.cat(image_embeds_list, dim=1)
-                    logger.info(f"Created CLIP embeddings with shape {clip_embeddings.shape}")
-            
-            # Create function to patch pipeline's _encode_prompt
-            original_func = None
-            if clip_embeddings is not None:
-                logger.info("Patching pipeline's _encode_prompt to include CLIP embeddings")
-                
-                def _patched_encode_prompt(*args, **kwargs):
-                    # Call original function
-                    original_output = original_func(*args, **kwargs)
                     
-                    # Add reference image embeddings to encoder_hidden_states
-                    encoder_hidden_states = original_output[1]  # encoder_hidden_states is the second return
-                    encoder_hidden_states = torch.cat([clip_embeddings, encoder_hidden_states], dim=1)
+                    # Patch pipeline's _encode_prompt to include CLIP embeddings
+                    def _patched_encode_prompt(*args, **kwargs):
+                        original_output = original_func(*args, **kwargs)
+                        encoder_hidden_states = original_output[1]
+                        encoder_hidden_states = torch.cat([clip_embeddings, encoder_hidden_states], dim=1)
+                        outputs = list(original_output)
+                        outputs[1] = encoder_hidden_states
+                        return tuple(outputs)
                     
-                    # Replace in the output
-                    outputs = list(original_output)
-                    outputs[1] = encoder_hidden_states
-                    return tuple(outputs)
-                
-                # Store original method for later restoration
-                original_func = pipeline._encode_prompt
-                pipeline._encode_prompt = _patched_encode_prompt
+                    # Store original method for later restoration
+                    original_func = pipeline._encode_prompt
+                    pipeline._encode_prompt = _patched_encode_prompt
             
-            # Prepare generation parameters
+            # ----- CRUCIAL: Use the separate content latents in generation kwargs -----
             generation_kwargs = {
+                "latents": latents,  # Explicitly pass content latents
                 "prompt": text_prompt,
                 "height": height,
                 "width": width,
-                "num_frames": num_frames,
+                "num_frames": num_frames, 
                 "num_inference_steps": num_inference_steps,
                 "generator": generator,
                 "return_dict": True,
-                "output_type": "pt",  # Return raw tensors for better control
+                "output_type": "pt",
             }
             
             # Remove None values
             generation_kwargs = get_non_null_items(generation_kwargs)
             
             try:
-                # Generate with modified control channel concatenation hook
-                # Our hook will enforce the correct channel structure (16 content + 20 control)
+                # ----- CRUCIAL: Use exactly the same hook pattern as control trainer -----
+                # This ensures the transformer gets the combined tensor but scheduler uses original latents
                 with control_channel_concat(pipeline.transformer, ["hidden_states"], [control_latents], dims=[1]):
                     logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
                     result = pipeline(**generation_kwargs)
@@ -558,5 +525,5 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 if original_func is not None:
                     pipeline._encode_prompt = original_func
             
-            # Return as VideoArtifact (same as parent class)
+            # Return as VideoArtifact
             return [VideoArtifact(value=video)]
