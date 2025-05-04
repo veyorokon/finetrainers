@@ -495,7 +495,6 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 "generator": generator,
                 "return_dict": True,
                 "output_type": "np",
-                "device": device
             }
             
             # Remove None values
