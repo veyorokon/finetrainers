@@ -340,9 +340,12 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             List of artifacts (typically a single VideoArtifact)
         """
         from finetrainers.data import VideoArtifact
-        from finetrainers.processors.reference import ReferenceToControlProcessor
-        from finetrainers.trainer.reference_trainer.data import apply_reference_frame_conditioning
-        from finetrainers.patches.dependencies.diffusers.control import control_channel_concat
+        from finetrainers.patches.dependencies.diffusers.control import \
+            control_channel_concat
+        from finetrainers.processors.reference import \
+            ReferenceToControlProcessor
+        from finetrainers.trainer.reference_trainer.data import \
+            apply_reference_frame_conditioning
 
         logger.info(f"=== Starting validation with unified format ===")
         
@@ -373,52 +376,56 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 device, dtype
             )
             
-            # Process control inputs - try all possible sources
-            control_video = None
+            # Process references using the exact same processors as training
+            logger.info("Processing references using training processors")
             
-            # If we have reference data, process it using same processors as training
-            if (vae_references and len(vae_references) > 0) or (references and len(references) > 0):
-                logger.info("Processing references for control conditioning")
-                
-                # Use same processor as training to maintain consistency
-                reference_processor = ReferenceToControlProcessor(
-                    ["image", "video"], 
-                    reference_config=self.reference_config
-                )
-                
-                # Process references to get control video
-                result = reference_processor(
-                    references=references,
-                    vae_references=vae_references
-                )
-                
-                # Get control video from processor result
-                video_list = result.get("video")
-                if video_list and len(video_list) > 0:
-                    # Take first video for now (same as training)
-                    control_video = video_list[0]
-                    logger.info(f"Created control video with shape {control_video.shape}")
+            # Step 1: Process references with ReferenceToControlProcessor
+            reference_processor = ReferenceToControlProcessor(
+                ["image", "video"], 
+                reference_config=self.reference_config
+            )
             
-            # If we don't have control input yet, check if it was provided directly
-            if control_video is None and "control_video" in kwargs:
-                control_video = kwargs["control_video"]
-                logger.info(f"Using provided control_video with shape {control_video.shape}")
-            elif control_video is None and "control_image" in kwargs:
-                # Convert control image to video format
-                control_image = kwargs["control_image"]
-                logger.info(f"Converting control_image to video format")
-                control_video = pipeline.video_processor.preprocess(
-                    control_image, height=height, width=width
-                ).unsqueeze(2)
+            # Process any reference inputs we have
+            processor_inputs = {
+                "references": references,
+                "vae_references": vae_references
+            }
             
-            # If we still don't have control input, we can't continue
-            if control_video is None:
-                raise ValueError("No control inputs available for validation. Provide references, control_video, or control_image.")
+            # Add control_video/control_image if directly provided
+            if "control_video" in kwargs:
+                processor_inputs["control_video"] = kwargs["control_video"]
+            if "control_image" in kwargs:
+                processor_inputs["control_image"] = kwargs["control_image"]
                 
-            # Convert to latents
-            control_video = control_video.to(device=device, dtype=dtype)
-            control_latents = pipeline.vae.encode(control_video).latent_dist.mode()
-            control_latents = self._normalize_latents(control_latents, latents_mean, latents_std)
+            # Process to get control videos
+            ref_result = reference_processor(**processor_inputs)
+            
+            # Get video list from processor
+            video_list = ref_result.get("video")
+            if not video_list or len(video_list) == 0:
+                raise ValueError("No control videos generated from references")
+                
+            logger.info(f"Created {len(video_list)} control videos from references")
+            
+            # Step 2: Process videos through latent encoder
+            from finetrainers.processors.reference import \
+                WanReferenceLatentEncodeProcessor
+            
+            reference_latent_processor = WanReferenceLatentEncodeProcessor(
+                ["control_latents", "latents_mean", "latents_std"]
+            )
+            
+            # Run videos through encoder processor
+            latent_result = reference_latent_processor(
+                vae=pipeline.vae,
+                video=video_list,
+                generator=generator,
+                compute_posterior=True
+            )
+            
+            # Get control latents from processor
+            control_latents = latent_result["control_latents"]
+            logger.info(f"Encoded control latents with shape: {control_latents.shape}")
             
             # Apply reference frame conditioning (same as in training)
             control_latents = apply_reference_frame_conditioning(
