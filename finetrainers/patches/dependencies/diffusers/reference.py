@@ -71,19 +71,21 @@ class SchedulerStepPatch(ModelHook):
 
 
 @contextmanager
-def scheduler_step_patch(scheduler, content_latents):
+def scheduler_step_patch(scheduler, latents):
     """
-    Patch the scheduler step method to use the content latents instead of combined latents.
+    Patch the scheduler step method to use only the first 16 channels of latents.
     
     Args:
         scheduler: The scheduler instance to patch
-        content_latents: The 16-channel content latents to use
+        latents: The 36-channel latents (we'll extract first 16 channels)
     """
     original_step = scheduler.step
     
     @wraps(original_step)
     def patched_step(model_output, timestep, sample, *args, **kwargs):
-        logger.info(f"Scheduler patch: replacing latents shape {sample.shape} with content latents shape {content_latents.shape}")
+        # Extract just the first 16 channels from the 36-channel latents
+        content_latents = sample.narrow(1, 0, 16)
+        logger.info(f"Scheduler patch: using first 16 channels from latents shape {sample.shape} → {content_latents.shape}")
         return original_step(model_output, timestep, content_latents, *args, **kwargs)
     
     try:
