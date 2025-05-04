@@ -427,6 +427,11 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             control_latents = latent_result["control_latents"]
             logger.info(f"Encoded control latents with shape: {control_latents.shape}")
             
+            # Add detailed logging of dimensions
+            logger.info("=== DIMENSION LOGGING ===")
+            logger.info(f"Initial latents shape: {latents.shape}")
+            logger.info(f"Control latents before conditioning: {control_latents.shape}")
+            
             # Apply reference frame conditioning (same as in training)
             control_latents = apply_reference_frame_conditioning(
                 control_latents,
@@ -437,6 +442,8 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 frame_dim=2,
                 concatenate_mask=self.frame_conditioning_concatenate_mask,
             )
+            
+            logger.info(f"Control latents after conditioning: {control_latents.shape}")
             
             # Process CLIP reference images for embedding
             clip_embeddings = None
