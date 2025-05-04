@@ -547,7 +547,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             generation_kwargs = get_non_null_items(generation_kwargs)
             
             try:
-                # Generate with patched pipeline and control latents
+                # Generate with patched pipeline and control latents (20 channels)
                 with control_channel_concat(pipeline.transformer, ["hidden_states"], [control_latents], dims=[1]):
                     logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
                     result = pipeline(**generation_kwargs)

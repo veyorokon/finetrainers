@@ -26,15 +26,14 @@ class ControlChannelConcatenateHook(ModelHook):
             self.logger.info(f"Original tensor shape: {original_tensor.shape}")
             self.logger.info(f"Input tensor shape: {input_tensor.shape}")
             
-            # Replace the last 20 channels (4 mask + 16 conditioning) with our input tensor
-            # For A2 model, we expect original to have 36 channels and input to have 20 channels
-            # Keep first 16 channels (content) and replace last 20 (mask + conditioning)
-            result_tensor = original_tensor.clone()
-            # Replace the last 20 channels with our input tensor
-            result_tensor[:, 16:, ...] = input_tensor
+            # Keep only the first 16 channels (content) from the original tensor
+            # This ensures we don't mix content and control channels
+            content_tensor = original_tensor[:, :16].clone()
             
-            self.logger.info(f"Replaced last 20 channels, result shape: {result_tensor.shape}")
-        
+            # Replace content tensor (should be 16 channels) with our input tensor
+            result_tensor = torch.cat([content_tensor, input_tensor], dim=1)
+            
+            self.logger.info(f"Combined content with control, result shape: {result_tensor.shape}")
             
             if isinstance(input_name, int):
                 args[input_name] = result_tensor
