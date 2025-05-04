@@ -342,9 +342,12 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             List of artifacts (typically a single VideoArtifact)
         """
         from finetrainers.data import VideoArtifact
-        from finetrainers.patches.dependencies.diffusers.reference import reference_channel_concat
-        from finetrainers.processors.reference import ReferenceToControlProcessor
-        from finetrainers.trainer.reference_trainer.data import apply_reference_frame_conditioning
+        from finetrainers.patches.dependencies.diffusers.reference import \
+            reference_channel_concat
+        from finetrainers.processors.reference import \
+            ReferenceToControlProcessor
+        from finetrainers.trainer.reference_trainer.data import \
+            apply_reference_frame_conditioning
 
         logger.info(f"=== Starting validation with unified format ===")
         
@@ -393,7 +396,8 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 raise ValueError("No control videos generated from references")
                 
             # Process through latent encoder
-            from finetrainers.processors.reference import WanReferenceLatentEncodeProcessor
+            from finetrainers.processors.reference import \
+                WanReferenceLatentEncodeProcessor
             latent_processor = WanReferenceLatentEncodeProcessor(
                 ["control_latents", "latents_mean", "latents_std"]
             )
@@ -429,7 +433,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             if current_width != expected_width:
                 logger.info(f"Resizing control latents width: {current_width} → {expected_width}")
                 import torch.nn.functional as F
-                
+
                 # Reshape for interpolation
                 b, c, f, h, w = control_latents.shape
                 reshaped = control_latents.view(b * c * f, 1, h, w)
@@ -499,8 +503,9 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             try:
                 # Use our specialized reference_channel_concat hook instead of control_channel_concat
                 # This hook will combine just the first 16 channels with the 20 control channels
-                from finetrainers.patches.dependencies.diffusers.reference import reference_channel_concat, scheduler_step_patch
-                
+                from finetrainers.patches.dependencies.diffusers.reference import (
+                    reference_channel_concat, scheduler_step_patch)
+
                 # We need to access the original latents directly since they're already in our scope
                 # The content_tensor from the hook won't be available until after the first forward pass,
                 # which is too late for the scheduler patch
@@ -519,8 +524,9 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                         video = result.frames[0]
             finally:
                 # Restore original method if we patched it
+                logger.info("restoring original method")
                 if original_func is not None:
                     pipeline._encode_prompt = original_func
-            
+            logger.info(f"Type of video is: {type(video)}")
             # Return as VideoArtifact
             return [VideoArtifact(value=video)]
