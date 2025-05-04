@@ -427,6 +427,33 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             
             logger.info(f"Control latents after conditioning: {control_latents.shape}")
             
+            # Debug visualization of latent channels - only if enabled
+            import os
+            if os.environ.get("REFERENCE_DEBUG_LATENTS") == "1":
+                from finetrainers.utils import (create_channel_frame_grid,
+                                              save_latent_channels)
+
+                # Create a unique identifier for this validation
+                val_id = os.environ.get("REFERENCE_DEBUG_VAL_ID", "0")
+                
+                # Save to debug directory
+                output_dir = os.path.join("debug_latents", f"validation_{val_id}")
+                
+                # Visualize the control latents 
+                save_latent_channels(control_latents, output_dir, "control", list(range(4)))
+                
+                # Create channel×frame grid visualization
+                create_channel_frame_grid(
+                    control_latents,
+                    output_dir,
+                    filename=f"validation_latent_grid_{val_id}.png",
+                    group_sizes=[4, 16]
+                )
+                
+                # Increment counter
+                next_val = int(val_id) + 1
+                os.environ["REFERENCE_DEBUG_VAL_ID"] = str(next_val)
+            
             # Fix width dimension if needed
             expected_width = latents.shape[4]
             current_width = control_latents.shape[4]
