@@ -1,5 +1,6 @@
 from contextlib import contextmanager
-from typing import List, Union
+from functools import wraps
+from typing import List, Union, Any
 
 import torch
 from diffusers.hooks import HookRegistry, ModelHook
@@ -8,6 +9,7 @@ from finetrainers.logging import get_logger
 logger = get_logger()
 
 _REFERENCE_CHANNEL_CONCATENATE_HOOK = "FINETRAINERS_REFERENCE_CHANNEL_CONCATENATE_HOOK"
+_SCHEDULER_STEP_PATCH_HOOK = "FINETRAINERS_SCHEDULER_STEP_PATCH_HOOK"
 
 
 class ReferenceChannelConcatenateHook(ModelHook):
@@ -16,6 +18,7 @@ class ReferenceChannelConcatenateHook(ModelHook):
         self.inputs = inputs
         self.dims = dims
         self.content_channels = content_channels
+        self.content_tensor = None
 
     def pre_forward(self, module: torch.nn.Module, *args, **kwargs):
         for input_name, control_tensor, dim in zip(self.input_names, self.inputs, self.dims):
@@ -23,6 +26,9 @@ class ReferenceChannelConcatenateHook(ModelHook):
             
             # Extract just the first 16 content channels
             content_channels = original_tensor.narrow(dim, 0, self.content_channels)
+            
+            # Store content tensor for the scheduler patch
+            self.content_tensor = content_channels.clone()
             
             # Concatenate content with control channels for proper 36-channel format
             combined_tensor = torch.cat([content_channels, control_tensor], dim=dim)
@@ -49,5 +55,39 @@ def reference_channel_concat(
     registry = HookRegistry.check_if_exists_or_initialize(module)
     hook = ReferenceChannelConcatenateHook(input_names, inputs, dims, content_channels)
     registry.register_hook(hook, _REFERENCE_CHANNEL_CONCATENATE_HOOK)
-    yield
+    yield hook.content_tensor
     registry.remove_hook(_REFERENCE_CHANNEL_CONCATENATE_HOOK, recurse=False)
+
+
+class SchedulerStepPatch(ModelHook):
+    def __init__(self, scheduler, content_latents):
+        self.scheduler = scheduler
+        self.content_latents = content_latents
+        self.original_step = scheduler.step
+        
+    def pre_forward(self, module, *args, **kwargs):
+        # This won't be used, we're patching the step method directly
+        return args, kwargs
+
+
+@contextmanager
+def scheduler_step_patch(scheduler, content_latents):
+    """
+    Patch the scheduler step method to use the content latents instead of combined latents.
+    
+    Args:
+        scheduler: The scheduler instance to patch
+        content_latents: The 16-channel content latents to use
+    """
+    original_step = scheduler.step
+    
+    @wraps(original_step)
+    def patched_step(model_output, timestep, sample, *args, **kwargs):
+        logger.info(f"Scheduler patch: replacing latents shape {sample.shape} with content latents shape {content_latents.shape}")
+        return original_step(model_output, timestep, content_latents, *args, **kwargs)
+    
+    try:
+        scheduler.step = patched_step
+        yield
+    finally:
+        scheduler.step = original_step

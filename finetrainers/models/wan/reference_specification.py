@@ -499,16 +499,20 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             try:
                 # Use our specialized reference_channel_concat hook instead of control_channel_concat
                 # This hook will combine just the first 16 channels with the 20 control channels
+                from finetrainers.patches.dependencies.diffusers.reference import reference_channel_concat, scheduler_step_patch
+                
                 with reference_channel_concat(
                     pipeline.transformer, 
                     ["hidden_states"], 
                     [control_latents], 
                     dims=[1],
                     content_channels=16
-                ):
-                    logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
-                    result = pipeline(**generation_kwargs)
-                    video = result.frames[0]
+                ) as content_tensor:
+                    # Also patch the scheduler step method to use the content latents
+                    with scheduler_step_patch(pipeline.scheduler, content_tensor):
+                        logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
+                        result = pipeline(**generation_kwargs)
+                        video = result.frames[0]
             finally:
                 # Restore original method if we patched it
                 if original_func is not None:
