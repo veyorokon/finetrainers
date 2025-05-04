@@ -304,9 +304,9 @@ class ReferenceTrainer(ControlTrainer):
         """
         logger.info(f"Creating dataset from {validation_file} using IterableReferenceDataset")
         
-        # Load JSON data directly without field="data" parameter
+        # Load JSON data with field="data" parameter to extract examples directly
         filename = pathlib.Path(validation_file)
-        raw_data = datasets.load_dataset("json", data_files=filename.as_posix(), split="train")
+        raw_data = datasets.load_dataset("json", data_files=filename.as_posix(), field="data", split="train")
         iterable_data = raw_data.to_iterable_dataset()
         split_data = datasets.distributed.split_dataset_by_node(iterable_data, local_rank, dp_world_size)
         
@@ -320,7 +320,7 @@ class ReferenceTrainer(ControlTrainer):
             "vae_combine": self.config.vae_combine
         }
         
-        # Use the same IterableReferenceDataset for validation
+        # Use the same IterableReferenceDataset as training, for consistent processing
         return IterableReferenceDataset(
             split_data,
             self.config.control_type,
