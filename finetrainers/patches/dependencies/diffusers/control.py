@@ -4,7 +4,6 @@ from typing import List, Union
 import torch
 from diffusers.hooks import HookRegistry, ModelHook
 
-
 _CONTROL_CHANNEL_CONCATENATE_HOOK = "FINETRAINERS_CONTROL_CHANNEL_CONCATENATE_HOOK"
 
 
@@ -23,27 +22,25 @@ class ControlChannelConcatenateHook(ModelHook):
             original_tensor = args[input_name] if isinstance(input_name, int) else kwargs[input_name]
             
             # Log tensor shapes for debugging
-            self.logger.info(f"== Control Concatenation Hook ==")
+            self.logger.info(f"== Control Replacement Hook ==")
             self.logger.info(f"Original tensor shape: {original_tensor.shape}")
             self.logger.info(f"Input tensor shape: {input_tensor.shape}")
-            self.logger.info(f"Concatenation dimension: {dim}")
             
-            # Check if tensor shapes match except in the concat dimension
-            if original_tensor.ndim != input_tensor.ndim:
-                self.logger.error(f"Tensor dimensions don't match: {original_tensor.ndim} vs {input_tensor.ndim}")
+            # Replace the last 20 channels (4 mask + 16 conditioning) with our input tensor
+            # For A2 model, we expect original to have 36 channels and input to have 20 channels
+            # Keep first 16 channels (content) and replace last 20 (mask + conditioning)
+            result_tensor = original_tensor.clone()
+            # Replace the last 20 channels with our input tensor
+            result_tensor[:, 16:, ...] = input_tensor
             
-            for i in range(original_tensor.ndim):
-                if i != dim and original_tensor.shape[i] != input_tensor.shape[i]:
-                    self.logger.error(f"Mismatch in dimension {i}: {original_tensor.shape[i]} vs {input_tensor.shape[i]}")
-            
-            # Proceed with concatenation
-            control_tensor = torch.cat([original_tensor, input_tensor], dim=dim)
-            self.logger.info(f"Result tensor shape: {control_tensor.shape}")
+            self.logger.info(f"Replaced last 20 channels, result shape: {result_tensor.shape}")
+        
             
             if isinstance(input_name, int):
-                args[input_name] = control_tensor
+                args[input_name] = result_tensor
             else:
-                kwargs[input_name] = control_tensor
+                kwargs[input_name] = result_tensor
+                
         return args, kwargs
 
 
