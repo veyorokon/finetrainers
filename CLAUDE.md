@@ -54,3 +54,7 @@ read the reference_trainer code and the batch tool for the 5 most important file
      166              logger.info(f"Using default vae_combine method: {vae_combine} (no source available)")
      167          
 -- NEVER EVER ADD LOGIC LIKE THIS
+
+When we're brainstorming solutions DO NOT CODE AND THEN SEND A BLOCK OF CODE> JUST STFU AND COMMUNICATE IN ENGLISH WIHTOUT CODE
+
+heres the situation. A2 is based on Wan. The root directory already had working Wan training code. so we adapted it with our new Reference trainer to handle training in the format that A2 required so we can fine tune A2. We reverse engineered the training code for A2. The closest pre-existing trainer in the finetrainers original code base was control trainer which is what we based a lot of Reference Trainer on. We can now successfully process data and make a complete forward pass with training and loss calculation. Ive also verified that the latent representation for the control perfectly matches the latent of control in A2/infer.py. The A2 directory btw has working INFERENCE code and is included as a reference. 
