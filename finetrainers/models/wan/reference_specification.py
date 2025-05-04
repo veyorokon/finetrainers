@@ -547,15 +547,60 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             generation_kwargs = get_non_null_items(generation_kwargs)
             
             try:
-                # Generate with patched pipeline and control latents (20 channels)
+                # Save the original __call__ method
+                original_call = pipeline.__call__
+                
+                # Create a patched __call__ method that only updates content latents during steps
+                def patched_call(self, *args, **kwargs):
+                    # Get the original pipeline class __call__ method
+                    from diffusers.pipelines.wan.pipeline_wan import WanPipeline
+                    original_pipeline_call = WanPipeline.__call__.__wrapped__
+                    
+                    # Get kwargs from the call
+                    batch_size = 1  # Default for validation
+                    height = kwargs.get("height", 480)
+                    width = kwargs.get("width", 832)
+                    num_frames = kwargs.get("num_frames", 16)
+                    generator = kwargs.get("generator", None)
+                    
+                    # Extract and prepare latents
+                    in_channels = 16  # Content channels only
+                    latent_height = height // self.vae_scale_factor_spatial
+                    latent_width = width // self.vae_scale_factor_spatial
+                    num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
+                    
+                    # Prepare separate content and condition latents 
+                    # (like A2's prepare_latents method)
+                    if "latents" in kwargs:
+                        logger.info("Using provided latents")
+                        content_latents = kwargs.pop("latents")
+                    else:
+                        logger.info("Generating new random latents")
+                        shape = (batch_size, in_channels, num_latent_frames, latent_height, latent_width)
+                        content_latents = torch.randn(shape, generator=generator, device=self.device, dtype=self.dtype)
+                    
+                    # Store the original latents for the scheduler
+                    # This modifies the closure to use our content latents
+                    kwargs["latents"] = content_latents
+                    
+                    # Run the original pipeline call
+                    return original_pipeline_call(self, *args, **kwargs)
+                
+                # Apply method patching (bind to instance)
+                import types
+                pipeline.__call__ = types.MethodType(patched_call, pipeline)
+                
+                # Generate with control channel concatenation
                 with control_channel_concat(pipeline.transformer, ["hidden_states"], [control_latents], dims=[1]):
                     logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
                     result = pipeline(**generation_kwargs)
                     video = result.frames[0]
             finally:
-                # Restore original method if we patched it
+                # Restore original methods
                 if original_func is not None:
                     pipeline._encode_prompt = original_func
+                if 'original_call' in locals():
+                    pipeline.__call__ = original_call
             
             # Return as VideoArtifact (same as parent class)
             return [VideoArtifact(value=video)]
