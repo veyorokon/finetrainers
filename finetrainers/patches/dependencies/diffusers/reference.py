@@ -55,7 +55,7 @@ def reference_channel_concat(
     registry = HookRegistry.check_if_exists_or_initialize(module)
     hook = ReferenceChannelConcatenateHook(input_names, inputs, dims, content_channels)
     registry.register_hook(hook, _REFERENCE_CHANNEL_CONCATENATE_HOOK)
-    yield hook.content_tensor
+    yield
     registry.remove_hook(_REFERENCE_CHANNEL_CONCATENATE_HOOK, recurse=False)
 
 

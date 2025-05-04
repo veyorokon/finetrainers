@@ -501,15 +501,19 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 # This hook will combine just the first 16 channels with the 20 control channels
                 from finetrainers.patches.dependencies.diffusers.reference import reference_channel_concat, scheduler_step_patch
                 
+                # We need to access the original latents directly since they're already in our scope
+                # The content_tensor from the hook won't be available until after the first forward pass,
+                # which is too late for the scheduler patch
+                
                 with reference_channel_concat(
                     pipeline.transformer, 
                     ["hidden_states"], 
                     [control_latents], 
                     dims=[1],
                     content_channels=16
-                ) as content_tensor:
-                    # Also patch the scheduler step method to use the content latents
-                    with scheduler_step_patch(pipeline.scheduler, content_tensor):
+                ):
+                    # Patch the scheduler to use the original latents (16 channels)
+                    with scheduler_step_patch(pipeline.scheduler, latents):
                         logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
                         result = pipeline(**generation_kwargs)
                         video = result.frames[0]
