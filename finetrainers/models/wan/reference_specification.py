@@ -497,9 +497,13 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                     original_func = pipeline._encode_prompt
                     pipeline._encode_prompt = _patched_encode_prompt
             
-            # ----- CRUCIAL: Use the separate content latents in generation kwargs -----
+            # Combine content and control latents here since we're skipping the hook
+            # This follows the A2 inference pattern
+            combined_latents = torch.cat([latents, control_latents], dim=1)
+            logger.info(f"Combined latents shape for generation: {combined_latents.shape}")
+            
             generation_kwargs = {
-                "latents": latents,  # Explicitly pass content latents
+                "latents": combined_latents,  # Pass the pre-combined latents
                 "prompt": text_prompt,
                 "height": height,
                 "width": width,
@@ -514,12 +518,11 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             generation_kwargs = get_non_null_items(generation_kwargs)
             
             try:
-                # ----- CRUCIAL: Use exactly the same hook pattern as control trainer -----
-                # This ensures the transformer gets the combined tensor but scheduler uses original latents
-                with control_channel_concat(pipeline.transformer, ["hidden_states"], [control_latents], dims=[1]):
-                    logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
-                    result = pipeline(**generation_kwargs)
-                    video = result.frames[0]
+                # We'll skip the control_channel_concat hook since we're already passing
+                # appropriately combined latents to the pipeline
+                logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
+                result = pipeline(**generation_kwargs)
+                video = result.frames[0]
             finally:
                 # Restore original method if we patched it
                 if original_func is not None:
