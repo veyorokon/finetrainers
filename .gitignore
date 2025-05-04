@@ -175,3 +175,5 @@ outputs*
 validation_dataset/
 
 !requirements.txt
+
+**/CLAUDE.local.md
