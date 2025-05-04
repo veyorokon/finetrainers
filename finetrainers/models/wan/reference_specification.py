@@ -323,11 +323,10 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         """
         Run validation using our unified format.
         
-        This method EXACTLY reproduces the WanControlModelSpecification.validation approach:
-        1. Create content latents (16 channels)
-        2. Create control latents (20 channels)
-        3. Pass content latents to generation_kwargs
-        4. Use control_channel_concat hook to combine them during transformer call
+        This method uses the reference_channel_concat hook to properly combine:
+        1. Content latents (first 16 channels)
+        2. Control latents (20 channels = 4 mask + 16 content)
+        For a total of exactly 36 channels as expected by the model.
         
         Args:
             pipeline: The WanPipeline instance for generation
@@ -343,7 +342,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             List of artifacts (typically a single VideoArtifact)
         """
         from finetrainers.data import VideoArtifact
-        from finetrainers.patches.dependencies.diffusers.control import control_channel_concat
+        from finetrainers.patches.dependencies.diffusers.reference import reference_channel_concat
         from finetrainers.processors.reference import ReferenceToControlProcessor
         from finetrainers.trainer.reference_trainer.data import apply_reference_frame_conditioning
 
@@ -481,7 +480,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                     original_func = pipeline._encode_prompt
                     pipeline._encode_prompt = _patched_encode_prompt
             
-            # EXACTLY match parent class - pass content latents only
+            # Pass content latents only
             generation_kwargs = {
                 "latents": latents,  # Content latents (16 channels)
                 "prompt": text_prompt,
@@ -498,8 +497,15 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             generation_kwargs = get_non_null_items(generation_kwargs)
             
             try:
-                # EXACTLY match parent class - use control_channel_concat hook
-                with control_channel_concat(pipeline.transformer, ["hidden_states"], [control_latents], dims=[1]):
+                # Use our specialized reference_channel_concat hook instead of control_channel_concat
+                # This hook will combine just the first 16 channels with the 20 control channels
+                with reference_channel_concat(
+                    pipeline.transformer, 
+                    ["hidden_states"], 
+                    [control_latents], 
+                    dims=[1],
+                    content_channels=16
+                ):
                     logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
                     result = pipeline(**generation_kwargs)
                     video = result.frames[0]
