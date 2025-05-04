@@ -321,12 +321,13 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
         **kwargs,
     ) -> List[ArtifactType]:
         """
-        Run validation using our unified format, following the control trainer pattern.
+        Run validation using our unified format.
         
-        This method:
-        1. Processes references into control latents
-        2. Uses the control_channel_concat hook only on the transformer
-        3. Keeps content and control latents separate
+        This method EXACTLY reproduces the WanControlModelSpecification.validation approach:
+        1. Create content latents (16 channels)
+        2. Create control latents (20 channels)
+        3. Pass content latents to generation_kwargs
+        4. Use control_channel_concat hook to combine them during transformer call
         
         Args:
             pipeline: The WanPipeline instance for generation
@@ -342,16 +343,14 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             List of artifacts (typically a single VideoArtifact)
         """
         from finetrainers.data import VideoArtifact
-        from diffusers.hooks import ModelHook, HookRegistry
-        from finetrainers.processors.reference import \
-            ReferenceToControlProcessor
-        from finetrainers.trainer.reference_trainer.data import \
-            apply_reference_frame_conditioning
+        from finetrainers.patches.dependencies.diffusers.control import control_channel_concat
+        from finetrainers.processors.reference import ReferenceToControlProcessor
+        from finetrainers.trainer.reference_trainer.data import apply_reference_frame_conditioning
 
         logger.info(f"=== Starting validation with unified format ===")
         
         with torch.no_grad():
-            # Use text prompt (try both prompt and caption fields)
+            # Parse prompt
             text_prompt = prompt if prompt is not None else caption
             if text_prompt is None:
                 text_prompt = ""
@@ -359,41 +358,29 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             
             logger.info(f"Using text prompt: '{text_prompt}'")
                 
-            # Process device and dtype
+            # Get device and dtype
             device = pipeline._execution_device
             dtype = pipeline.vae.dtype
             
-            # ----- CRUCIAL: Use original in_channels for latents just like control trainer -----
-            in_channels = self.transformer_config.in_channels  # Original in_channels (16 for content only)
-            logger.info(f"Using in_channels={in_channels} for content latents")
-            
-            # Create initial latents for video generation - these will be the content latents
+            # Create content latents (16 channels)
+            in_channels = self.transformer_config.in_channels  # Should be 16
             latents = pipeline.prepare_latents(1, in_channels, height, width, num_frames, dtype, device, generator)
             logger.info(f"Created content latents with shape: {latents.shape}")
             
-            # Process references using training processors with our reference config
+            # Process references using our reference processor
             validation_reference_config = dict(self.reference_config)
             
-            # Ensure dimensions are properly divisible by 16
+            # Ensure divisible by 16
             if "vae_resolution" in kwargs:
                 validation_reference_config["vae_resolution"] = kwargs["vae_resolution"]
-                logger.info(f"Using vae_resolution from validation data: {kwargs['vae_resolution']}")
-            else:
-                # Adjust width if needed to be divisible by 16
-                if hasattr(validation_reference_config, "vae_resolution"):
-                    current_width = validation_reference_config["vae_resolution"][1]
-                    if current_width % 16 != 0:
-                        new_width = ((current_width // 16) * 16)
-                        validation_reference_config["vae_resolution"][1] = new_width
-                        logger.info(f"Adjusted VAE width from {current_width} to {new_width}")
             
-            # Create reference processor
-            reference_processor = ReferenceToControlProcessor(
+            # Process references to get control videos
+            ref_processor = ReferenceToControlProcessor(
                 ["image", "video"], 
                 reference_config=validation_reference_config
             )
             
-            # Process reference inputs
+            # Process inputs
             processor_inputs = {"references": references, "vae_references": vae_references}
             if "control_video" in kwargs:
                 processor_inputs["control_video"] = kwargs["control_video"]
@@ -401,32 +388,30 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 processor_inputs["control_image"] = kwargs["control_image"]
                 
             # Get control videos
-            ref_result = reference_processor(**processor_inputs)
+            ref_result = ref_processor(**processor_inputs)
             video_list = ref_result.get("video")
             if not video_list or len(video_list) == 0:
                 raise ValueError("No control videos generated from references")
                 
-            logger.info(f"Created {len(video_list)} control videos from references")
-            
-            # Process videos through latent encoder
+            # Process through latent encoder
             from finetrainers.processors.reference import WanReferenceLatentEncodeProcessor
-            reference_latent_processor = WanReferenceLatentEncodeProcessor(
+            latent_processor = WanReferenceLatentEncodeProcessor(
                 ["control_latents", "latents_mean", "latents_std"]
             )
             
             # Encode control latents
-            latent_result = reference_latent_processor(
+            latent_result = latent_processor(
                 vae=pipeline.vae,
                 video=video_list,
                 generator=generator,
                 compute_posterior=True
             )
             
-            # Get control latents and apply frame conditioning
+            # Get control latents
             control_latents = latent_result["control_latents"]
             logger.info(f"Encoded control latents with shape: {control_latents.shape}")
             
-            # Apply reference frame conditioning
+            # Apply frame conditioning
             control_latents = apply_reference_frame_conditioning(
                 control_latents,
                 latents.shape[2],
@@ -439,7 +424,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             
             logger.info(f"Control latents after conditioning: {control_latents.shape}")
             
-            # Ensure control latents have matching width
+            # Fix width dimension if needed
             expected_width = latents.shape[4]
             current_width = control_latents.shape[4]
             if current_width != expected_width:
@@ -496,10 +481,9 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                     original_func = pipeline._encode_prompt
                     pipeline._encode_prompt = _patched_encode_prompt
             
-            # Follow the same pattern as WanControlModelSpecification's validation method
-            # Pass original content latents (16 channels) to generation_kwargs
+            # EXACTLY match parent class - pass content latents only
             generation_kwargs = {
-                "latents": latents,  # Pass uncombined content latents
+                "latents": latents,  # Content latents (16 channels)
                 "prompt": text_prompt,
                 "height": height,
                 "width": width,
@@ -514,40 +498,11 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             generation_kwargs = get_non_null_items(generation_kwargs)
             
             try:
-                # Custom hook that REPLACES instead of concatenates
-                class ReplaceHook(ModelHook):
-                    def __init__(self, control_latents):
-                        self.control_latents = control_latents
-                    
-                    def pre_forward(self, module, *args, **kwargs):
-                        if "hidden_states" in kwargs:
-                            hidden_states = kwargs["hidden_states"]
-                            logger.info(f"Original hidden_states: {hidden_states.shape}")
-                            
-                            # Create a completely fresh tensor combining content + control
-                            # Extract content from original latents (should be 16 channels)
-                            content = hidden_states[:, :16].clone()
-                            
-                            # Create new combined tensor
-                            combined = torch.cat([content, self.control_latents], dim=1)
-                            logger.info(f"New combined tensor: {combined.shape}")
-                            
-                            # Replace in kwargs
-                            kwargs["hidden_states"] = combined
-                        return args, kwargs
-                
-                # Register our hook
-                hook_registry = HookRegistry.check_if_exists_or_initialize(pipeline.transformer)
-                hook = ReplaceHook(control_latents)
-                hook_registry.register_hook(hook, "REFERENCE_REPLACE_HOOK")
-                
-                try:
+                # EXACTLY match parent class - use control_channel_concat hook
+                with control_channel_concat(pipeline.transformer, ["hidden_states"], [control_latents], dims=[1]):
                     logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
                     result = pipeline(**generation_kwargs)
                     video = result.frames[0]
-                finally:
-                    # Remove our hook
-                    hook_registry.remove_hook("REFERENCE_REPLACE_HOOK", recurse=False)
             finally:
                 # Restore original method if we patched it
                 if original_func is not None:
