@@ -1,21 +1,15 @@
 {
-  "datasets": [
+  "data": [
     {
-      "data_root": "/workspace/finetrainers/assets/tests/dataset",
-      "dataset_type": "video_references",
-      "reshape_mode": "bicubic",
-      "reference_suffixes": [ "_object", "_background" ],
-      "control_type": "reference",
-      "video_resolutions": [
-        [ 480, 854 ]
-      ],
-      "reference_config": {
-        "vae_resolution": [ 480, 854 ],
-        "clip_resolution": [ 512, 512 ],
-        "reference_order": [ "object", "background" ],
-        "repeat_frames": [ 4, 4 ],
-        "vae_combine": "after"
-      }
+      "prompt": "This is an advertisement showcasing a green juice bottle. The glass bottle is filled with green juice and features a clear lid with a label displaying the 'pure green' logo, condensation is visible on the bottle surface. The bottle is centered in the frame and the scene consists of green juice being poured into the bottle and overflowing. It is a studio set with a two-toned green background split vertically. The left side of the background is a darker green, and the right side is a lighter green. The lighting is bright and even. The camera is positioned at eye level in a close-up shot, with a static camera and a reveal opening. It showcases the splash effect of the juice in slow motion. The style is commercial and vibrant.",
+      "references": {
+        "object": "/workspace/finetrainers/assets/tests/dataset/083_object.png",
+        "background": "/workspace/finetrainers/assets/tests/dataset/083_background.png"
+      },
+      "height": 480,
+      "width": 854,
+      "num_frames": 30,
+      "num_inference_steps": 30
     }
   ]
 }
