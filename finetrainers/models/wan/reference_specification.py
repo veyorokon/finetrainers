@@ -439,12 +439,15 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 # Save to debug directory
                 output_dir = os.path.join("debug_latents", f"validation_{val_id}")
                 
+                # Convert to float32 before visualization to avoid bfloat16 issues
+                control_latents_float = control_latents.to(torch.float32)
+                
                 # Visualize the control latents 
-                save_latent_channels(control_latents, output_dir, "control", list(range(4)))
+                save_latent_channels(control_latents_float, output_dir, "control", list(range(4)))
                 
                 # Create channel×frame grid visualization
                 create_channel_frame_grid(
-                    control_latents,
+                    control_latents_float,
                     output_dir,
                     filename=f"validation_latent_grid_{val_id}.png",
                     group_sizes=[4, 16]
