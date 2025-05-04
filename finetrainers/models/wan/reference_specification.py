@@ -529,5 +529,5 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                     pipeline._encode_prompt = original_func
             logger.info(f"Type of video is: {type(video)}")
             # Return as VideoArtifact
-            video_np = video.detach().cpu().numpy() if isinstance(video, torch.Tensor) else video
+            video_np = video.to(torch.float32).detach().cpu().numpy() if isinstance(video, torch.Tensor) else video
             return [VideoArtifact(value=video_np)]
