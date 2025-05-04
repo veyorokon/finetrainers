@@ -494,7 +494,8 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 "num_inference_steps": num_inference_steps,
                 "generator": generator,
                 "return_dict": True,
-                "output_type": "pt",
+                "output_type": "np",
+                "device": device
             }
             
             # Remove None values
@@ -527,7 +528,5 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                 logger.info("restoring original method")
                 if original_func is not None:
                     pipeline._encode_prompt = original_func
-            logger.info(f"Type of video is: {type(video)}")
             # Return as VideoArtifact
-            video_np = video.to(torch.float32).detach().cpu().numpy() if isinstance(video, torch.Tensor) else video
-            return [VideoArtifact(value=video_np)]
+            return [VideoArtifact(value=video)]
