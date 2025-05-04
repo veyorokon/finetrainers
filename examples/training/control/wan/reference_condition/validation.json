@@ -7,7 +7,7 @@
         "background": "/workspace/finetrainers/assets/tests/dataset/083_background.png"
       },
       "height": 480,
-      "width": 854,
+      "width": 832,
       "num_frames": 30,
       "num_inference_steps": 30
     }
