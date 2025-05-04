@@ -342,8 +342,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             List of artifacts (typically a single VideoArtifact)
         """
         from finetrainers.data import VideoArtifact
-        from finetrainers.patches.dependencies.diffusers.control import \
-            control_channel_concat
+        from diffusers.hooks import ModelHook, HookRegistry
         from finetrainers.processors.reference import \
             ReferenceToControlProcessor
         from finetrainers.trainer.reference_trainer.data import \
@@ -515,11 +514,40 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             generation_kwargs = get_non_null_items(generation_kwargs)
             
             try:
-                # Use control_channel_concat hook just like the parent class
-                with control_channel_concat(pipeline.transformer, ["hidden_states"], [control_latents], dims=[1]):
+                # Custom hook that REPLACES instead of concatenates
+                class ReplaceHook(ModelHook):
+                    def __init__(self, control_latents):
+                        self.control_latents = control_latents
+                    
+                    def pre_forward(self, module, *args, **kwargs):
+                        if "hidden_states" in kwargs:
+                            hidden_states = kwargs["hidden_states"]
+                            logger.info(f"Original hidden_states: {hidden_states.shape}")
+                            
+                            # Create a completely fresh tensor combining content + control
+                            # Extract content from original latents (should be 16 channels)
+                            content = hidden_states[:, :16].clone()
+                            
+                            # Create new combined tensor
+                            combined = torch.cat([content, self.control_latents], dim=1)
+                            logger.info(f"New combined tensor: {combined.shape}")
+                            
+                            # Replace in kwargs
+                            kwargs["hidden_states"] = combined
+                        return args, kwargs
+                
+                # Register our hook
+                hook_registry = HookRegistry.check_if_exists_or_initialize(pipeline.transformer)
+                hook = ReplaceHook(control_latents)
+                hook_registry.register_hook(hook, "REFERENCE_REPLACE_HOOK")
+                
+                try:
                     logger.info(f"Running pipeline generation with parameters: {generation_kwargs.keys()}")
                     result = pipeline(**generation_kwargs)
                     video = result.frames[0]
+                finally:
+                    # Remove our hook
+                    hook_registry.remove_hook("REFERENCE_REPLACE_HOOK", recurse=False)
             finally:
                 # Restore original method if we patched it
                 if original_func is not None:
