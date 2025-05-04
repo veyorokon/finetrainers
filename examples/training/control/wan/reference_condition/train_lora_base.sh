@@ -83,6 +83,7 @@ dataloader_cmd=(
 # Diffusion arguments
 diffusion_cmd=(
   --flow_weighting_scheme "logit_normal"
+  --flow_shift 8
 )
 
 # Training arguments
