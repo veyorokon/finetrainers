@@ -461,6 +461,32 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             
             logger.info(f"Control latents after conditioning: {control_latents.shape}")
             
+            # Resize width dimension to match pipeline's expected width
+            expected_width = latents.shape[4]  # Get width from pipeline latents
+            current_width = control_latents.shape[4]
+            
+            if current_width != expected_width:
+                logger.info(f"Resizing control latents width from {current_width} to {expected_width}")
+                
+                # Resize using interpolate
+                import torch.nn.functional as F
+                
+                # Reshape for interpolation (combine batch, channels, frames dimensions)
+                b, c, f, h, w = control_latents.shape
+                reshaped = control_latents.view(b * c * f, 1, h, w)
+                
+                # Apply resize
+                resized = F.interpolate(
+                    reshaped,
+                    size=(h, expected_width),
+                    mode='bilinear',
+                    align_corners=False
+                )
+                
+                # Reshape back
+                control_latents = resized.view(b, c, f, h, expected_width)
+                logger.info(f"Resized control latents shape: {control_latents.shape}")
+            
             # Process CLIP reference images for embedding
             clip_embeddings = None
             if clip_references and len(clip_references) > 0 and hasattr(pipeline, 'image_encoder'):
