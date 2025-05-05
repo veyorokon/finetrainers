@@ -7,8 +7,10 @@ import datasets.distributed
 import torch
 import torch.nn.functional as F
 from accelerate.utils import extract_model_from_parallel
+from diffusers.hooks import apply_layerwise_casting
+from diffusers.training_utils import cast_training_params
 from diffusers.utils import load_image
-from peft import get_peft_model_state_dict
+from peft import LoraConfig, get_peft_model_state_dict
 from transformers import CLIPImageProcessor, CLIPVisionModel
 
 from finetrainers import data, utils
@@ -166,6 +168,75 @@ class ReferenceTrainer(ControlTrainer):
             resume_from_checkpoint = -1
         if resume_from_checkpoint is not None:
             self.checkpointer.load(resume_from_checkpoint)
+
+    def _prepare_trainable_parameters(self) -> None:
+        logger.info("Initializing trainable parameters")
+
+        parallel_backend = self.state.parallel_backend
+        model_spec = self.model_specification
+
+        if self.args.training_type == TrainingType.REFERENCE_FULL_FINETUNE:
+            logger.info("Finetuning transformer with no additional parameters")
+            utils.set_requires_grad([self.transformer], True)
+        else:
+            logger.info("Finetuning transformer with PEFT parameters")
+            utils.set_requires_grad([self.transformer], False)
+
+        # Layerwise upcasting must be applied before adding the LoRA adapter.
+        # If we don't perform this before moving to device, we might OOM on the GPU. So, best to do it on
+        # CPU for now, before support is added in Diffusers for loading and enabling layerwise upcasting directly.
+        if (
+            self.args.training_type == TrainingType.REFERENCE_LORA
+            and "transformer" in self.args.layerwise_upcasting_modules
+        ):
+            apply_layerwise_casting(
+                self.transformer,
+                storage_dtype=self.args.layerwise_upcasting_storage_dtype,
+                compute_dtype=self.args.transformer_dtype,
+                skip_modules_pattern=self.args.layerwise_upcasting_skip_modules_pattern,
+                non_blocking=True,
+            )
+
+        transformer_lora_config = None
+        if self.args.training_type == TrainingType.REFERENCE_LORA:
+            transformer_lora_config = LoraConfig(
+                r=self.args.rank,
+                lora_alpha=self.args.lora_alpha,
+                init_lora_weights=True,
+                target_modules=self._get_lora_target_modules(),
+                rank_pattern={
+                    model_spec.control_injection_layer_name: model_spec._original_control_layer_out_features
+                },
+                alpha_pattern={
+                    model_spec.control_injection_layer_name: model_spec._original_control_layer_out_features
+                },
+            )
+            self.transformer.add_adapter(transformer_lora_config)
+
+        if self.args.train_qk_norm:
+            qk_norm_identifiers = model_spec._qk_norm_identifiers
+            qk_norm_module_names, qk_norm_modules = [], []
+
+            for name, module in self.transformer.named_modules():
+                regex_match = any(re.search(identifier, name) is not None for identifier in qk_norm_identifiers)
+                is_parameteric = len(list(module.parameters())) > 0
+                if regex_match and is_parameteric:
+                    qk_norm_module_names.append(name)
+                    qk_norm_modules.append(module)
+
+            if len(qk_norm_modules) > 0:
+                logger.info(f"Training QK norms for modules: {qk_norm_module_names}")
+                utils.set_requires_grad(qk_norm_modules, True)
+            else:
+                logger.warning(f"No QK norm modules found with identifiers: {qk_norm_identifiers}")
+
+        # Make sure the trainable params are in float32 if data sharding is not enabled. For FSDP, we need all
+        # parameters to be of the same dtype.
+        if parallel_backend.data_sharding_enabled:
+            self.transformer.to(dtype=self.args.transformer_dtype)
+        else:
+            if self.args.training_type == TrainingType.REFERENCE_LORA:
+                cast_training_params([self.transformer], dtype=torch.float32)
     
     def _create_dataset(self) -> torch.utils.data.IterableDataset:
         """Create the dataset for training."""
