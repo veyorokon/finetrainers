@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#REFERENCE_DEBUG_LATENTS=1 tmux new-session -d -s e2v_train 'bash /workspace/finetrainers/examples/training/control/wan/reference_condition/train_lora_base.sh > /workspace/e2v_log.txt 2>&1' 
+#REFERENCE_DEBUG_LATENTS=1 tmux new-session -d -s e2v_train 'bash /workspace/finetrainers/examples/training/control/wan/reference_condition/train_lora_test.sh > /workspace/e2v_log.txt 2>&1' 
 
-#git fetch && git stash && git pull && REFERENCE_DEBUG_LATENTS=1 tmux new-session -d -s e2v_train 'bash /workspace/finetrainers/examples/training/control/wan/reference_condition/train_lora_base.sh > /workspace/e2v_log.txt 2>&1'  
+#git fetch && git stash && git pull && REFERENCE_DEBUG_LATENTS=1 tmux new-session -d -s e2v_train 'bash /workspace/finetrainers/examples/training/control/wan/reference_condition/train_lora_test.sh > /workspace/e2v_log.txt 2>&1'  
 
 
 set -e -x
@@ -32,8 +32,8 @@ NUM_GPUS=1
 CUDA_VISIBLE_DEVICES="0"
 
 # Check the JSON files for the expected JSON format
-TRAINING_DATASET_CONFIG="examples/training/control/wan/reference_condition/training.json"
-VALIDATION_DATASET_FILE="examples/training/control/wan/reference_condition/validation.json"
+TRAINING_DATASET_CONFIG="examples/training/control/wan/reference_condition/training_test.json"
+VALIDATION_DATASET_FILE="examples/training/control/wan/reference_condition/validation_test.json"
 
 # Depending on how many GPUs you have available, choose your degree of parallelism and technique!
 DDP_1="--parallel_backend $BACKEND --pp_degree 1 --dp_degree 1 --dp_shards 1 --cp_degree 1 --tp_degree 1"
@@ -72,7 +72,7 @@ control_cmd=(
 dataset_cmd=(
   --dataset_config $TRAINING_DATASET_CONFIG
   --dataset_shuffle_buffer_size 1 #32
-  --cache_dir "/workspace/wan-ref-control/cache/"
+  --cache_dir "/workspace/wan-reference-test/cache/"
 )
 
 # Dataloader arguments
@@ -126,7 +126,7 @@ validation_cmd=(
 # Miscellaneous arguments
 miscellaneous_cmd=(
   --tracker_name "finetrainers-reference-control"
-  --output_dir "/workspace/wan-ref-control/"
+  --output_dir "/workspace/wan-reference-test/"
   --init_timeout 600
   --nccl_timeout 600
   --report_to "wandb"
