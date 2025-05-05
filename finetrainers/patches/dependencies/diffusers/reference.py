@@ -109,6 +109,23 @@ def scheduler_step_patch(scheduler, latents):
     def patched_step(model_output, timestep, sample, *args, **kwargs):
         # Extract just the first 16 channels from the 36-channel latents
         content_latents = sample.narrow(1, 0, 16)
+        import os
+        if os.environ.get("REFERENCE_DEBUG_LATENTS") == "1":
+            from finetrainers.utils import create_channel_frame_grid
+
+            # Create a unique identifier for this validation
+            val_id = os.environ.get("REFERENCE_DEBUG_VAL_ID", "0")
+            # Save to debug directory
+            output_dir = os.path.join("debug_latents", f"scheduler_{val_id}")
+            # Convert to float32 before visualization to avoid bfloat16 issues
+            control_latents_float = content_latents.to(torch.float32)
+            # Create channel×frame grid visualization only
+            create_channel_frame_grid(
+                control_latents_float,
+                output_dir,
+                filename=f"scheduler_latent_grid_{val_id}.png",
+                group_sizes=[4, 16]
+            )
         logger.info(f"Scheduler patch: using first 16 channels from latents shape {sample.shape} → {content_latents.shape}")
         return original_step(model_output, timestep, content_latents, *args, **kwargs)
     
