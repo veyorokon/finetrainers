@@ -9,7 +9,7 @@
       "height": 480,
       "width": 832,
       "num_frames": 30,
-      "num_inference_steps": 2,
+      "num_inference_steps": 3,
       "vae_resolution": [ 480, 832 ]
     }
   ]

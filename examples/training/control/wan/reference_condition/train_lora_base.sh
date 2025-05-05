@@ -60,8 +60,8 @@ model_cmd=(
 # Control arguments
 control_cmd=(
   --control_type custom
-  --rank 16
-  --lora_alpha 16
+  --rank 64
+  --lora_alpha 64
   --target_modules "blocks.*(to_q|to_k|to_v|to_out.0)"
   --frame_conditioning_type full
   --frame_conditioning_index 0
@@ -93,10 +93,10 @@ training_cmd=(
   --training_type reference-lora
   --seed 42
   --batch_size 1
-  --train_steps 10
-  --gradient_accumulation_steps 1
+  --train_steps 1 #550
+  --gradient_accumulation_steps 1 #8
   --gradient_checkpointing
-  --checkpointing_steps 1000
+  --checkpointing_steps 1 #50
   --checkpointing_limit 2
   # --resume_from_checkpoint 3000
   --enable_slicing
@@ -120,7 +120,7 @@ optimizer_cmd=(
 # Validation arguments
 validation_cmd=(
   --validation_dataset_file "$VALIDATION_DATASET_FILE"
-  --validation_steps 1
+  --validation_steps 1 #50
 )
 
 # Miscellaneous arguments
