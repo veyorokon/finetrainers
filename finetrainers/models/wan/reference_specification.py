@@ -1,15 +1,13 @@
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-from diffusers import (UniPCMultistepScheduler, WanPipeline,
-                       WanTransformer3DModel)
+from diffusers import WanPipeline, WanTransformer3DModel
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 from transformers import CLIPImageProcessor, CLIPVisionModel
 
 import finetrainers.functional as FF
 from finetrainers.data import VideoArtifact
 from finetrainers.logging import get_logger
-from finetrainers.models.utils import _expand_conv3d_with_zeroed_weights
 from finetrainers.processors import (ProcessorMixin, ReferenceClipProcessor,
                                      ReferenceToControlProcessor)
 from finetrainers.typing import ArtifactType
@@ -108,32 +106,6 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
             
         self.embedding_model_processors = embedding_model_processors
     
-    def load_diffusion_models(self, new_in_features: int) -> Dict[str, torch.nn.Module]:
-        common_kwargs = {"revision": self.revision, "cache_dir": self.cache_dir}
-
-        if self.transformer_id is not None:
-            transformer = WanTransformer3DModel.from_pretrained(
-                self.transformer_id, torch_dtype=self.transformer_dtype, **common_kwargs
-            )
-        else:
-            transformer = WanTransformer3DModel.from_pretrained(
-                self.pretrained_model_name_or_path,
-                subfolder="transformer",
-                torch_dtype=self.transformer_dtype,
-                **common_kwargs,
-            )
-
-        transformer.patch_embedding = _expand_conv3d_with_zeroed_weights(
-            transformer.patch_embedding, new_in_channels=new_in_features
-        )
-        transformer.register_to_config(in_channels=new_in_features)
-
-        scheduler = UniPCMultistepScheduler.from_pretrained(
-            self.pretrained_model_name_or_path,
-                subfolder="scheduler",
-        )
-
-        return {"transformer": transformer, "scheduler": scheduler}
 
     def load_embedding_models(self) -> Dict[str, torch.nn.Module]:
         """Load CLIP vision model and processor for reference-based conditioning"""
