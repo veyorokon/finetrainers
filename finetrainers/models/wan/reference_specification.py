@@ -524,9 +524,4 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
                     pipeline._encode_prompt = original_func
             # Return as VideoArtifact
             return [VideoArtifact(value=video)]
-    
-    def _validate(self, step=None, final_validation=False):
-      if final_validation:
-          logger.info("Skipping final validation")
-          return
-      super()._validate(step, final_validation)
+   

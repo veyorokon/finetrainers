@@ -1,5 +1,6 @@
 import json
 import pathlib
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
 import datasets.distributed
@@ -7,17 +8,17 @@ import torch
 import torch.nn.functional as F
 from accelerate.utils import extract_model_from_parallel
 from diffusers.utils import load_image
+from peft import get_peft_model_state_dict
 from transformers import CLIPImageProcessor, CLIPVisionModel
 
-from finetrainers import data
-from finetrainers.data import PatternReferenceDataset, VideoArtifact
+from finetrainers import data, utils
+from finetrainers.config import TrainingType
 from finetrainers.data.reference import (generate_video_resolution_buckets,
                                          initialize_reference_dataset)
 from finetrainers.logging import get_logger
 from finetrainers.models.wan.reference_specification import \
     WanReferenceModelSpecification
 from finetrainers.trainer.control_trainer.trainer import ControlTrainer
-from finetrainers.utils import get_non_null_items
 
 from .config import ReferenceConfig
 from .data import IterableReferenceDataset
@@ -104,6 +105,67 @@ class ReferenceTrainer(ControlTrainer):
                 f"Model specification {type(self.model_specification).__name__} is not a "
                 f"WanReferenceModelSpecification. CLIP vision models not loaded."
             )
+    
+    def _prepare_checkpointing(self) -> None:
+        parallel_backend = self.state.parallel_backend
+
+        def save_model_hook(state_dict: Dict[str, Any]) -> None:
+            state_dict = utils.get_unwrapped_model_state_dict(state_dict)
+            if parallel_backend.is_main_process:
+                if self.args.training_type == TrainingType.REFERENCE_LORA:
+                    state_dict = get_peft_model_state_dict(self.transformer, state_dict)
+                    qk_norm_state_dict = None
+                    if self.args.train_qk_norm:
+                        qk_norm_state_dict = {
+                            name: parameter
+                            for name, parameter in state_dict.items()
+                            if any(
+                                re.search(identifier, name) is not None
+                                for identifier in self.model_specification._qk_norm_identifiers
+                            )
+                            and parameter.numel() > 0
+                        }
+                        if len(qk_norm_state_dict) == 0:
+                            qk_norm_state_dict = None
+                    # fmt: off
+                    metadata = {
+                        "r": self.args.rank,
+                        "lora_alpha": self.args.lora_alpha,
+                        "init_lora_weights": True,
+                        "target_modules": self._get_lora_target_modules(),
+                        "rank_pattern": {self.model_specification.control_injection_layer_name: self.model_specification._original_control_layer_out_features},
+                        "alpha_pattern": {self.model_specification.control_injection_layer_name: self.model_specification._original_control_layer_out_features},
+                    }
+                    metadata = {"lora_config": json.dumps(metadata, indent=4)}
+                    # fmt: on
+                    self.model_specification._save_lora_weights(
+                        self.args.output_dir, state_dict, qk_norm_state_dict, self.scheduler, metadata
+                    )
+                elif self.args.training_type == TrainingType.REFERENCE_FULL_FINETUNE:
+                    self.model_specification._save_model(
+                        self.args.output_dir, self.transformer, state_dict, self.scheduler
+                    )
+            parallel_backend.wait_for_everyone()
+
+        enable_state_checkpointing = self.args.checkpointing_steps > 0
+        self.checkpointer = parallel_backend.get_checkpointer(
+            dataloader=self.dataloader,
+            model_parts=[self.transformer],
+            optimizers=self.optimizer,
+            schedulers=self.lr_scheduler,
+            states={"train_state": self.state.train_state},
+            checkpointing_steps=self.args.checkpointing_steps,
+            checkpointing_limit=self.args.checkpointing_limit,
+            output_dir=self.args.output_dir,
+            enable=enable_state_checkpointing,
+            _callback_fn=save_model_hook,
+        )
+
+        resume_from_checkpoint = self.args.resume_from_checkpoint
+        if resume_from_checkpoint == "latest":
+            resume_from_checkpoint = -1
+        if resume_from_checkpoint is not None:
+            self.checkpointer.load(resume_from_checkpoint)
     
     def _create_dataset(self) -> torch.utils.data.IterableDataset:
         """Create the dataset for training."""
@@ -287,7 +349,6 @@ class ReferenceTrainer(ControlTrainer):
 
         self.dataset = dataset
         self.dataloader = dataloader
-    
         
     def create_validation_dataset(self, validation_file: str, local_rank: int, dp_world_size: int) -> torch.utils.data.IterableDataset:
         """Create a validation dataset for the reference trainer.
@@ -348,147 +409,6 @@ class ReferenceTrainer(ControlTrainer):
             return embedding_conditions
         
         return None
-    
-    def _training_step(self, batch):
-        """Perform a single training step."""
-        latent_model_conditions = {}
-        condition_model_conditions = {}
-        embedding_model_conditions = {}
-        
-        # Convert 'images' key to 'references' for our processor
-        if "images" in batch and "references" not in batch:
-            logger.info(f"Converting 'images' key to 'references' for processor compatibility")
-            # Check if images is a list of paths or already a dictionary
-            if isinstance(batch["images"], list):
-                # Convert list of paths to dictionary with object/background keys
-                # based on filenames
-                reference_dict = {}
-                for image_path in batch["images"]:
-                    # Try to extract reference type from the filename
-                    path = pathlib.Path(image_path)
-                    filename = path.name
-                    for suffix in self.config.reference_suffixes:
-                        if suffix in filename:
-                            # Strip leading underscore if present
-                            ref_type = suffix[1:] if suffix.startswith("_") else suffix
-                            reference_dict[ref_type] = image_path
-                            break
-                
-                logger.info(f"Converted image paths to reference dictionary: {list(reference_dict.keys())}")
-                batch["references"] = reference_dict
-            else:
-                logger.info("References are in the batch")
-                # Images is already in the right format
-                batch["references"] = batch["images"]
-            
-            # Keep images for other processing if needed
-            
-        # Extract conditions as in parent class
-        if "caption" in batch:
-            condition_model_conditions = self.model_specification.prepare_conditions(
-                self.tokenizer, self.text_encoder, batch["caption"]
-            )
-        
-        # Handle control images/videos for VAE encoding
-        has_control_image = "control_image" in batch
-        has_control_video = "control_video" in batch
-        has_references = "vae_references" in batch and len(batch["vae_references"]) > 0
-        has_refs = "references" in batch
-        
-        # Add detailed logging about what's in the batch
-        logger.info(f"===== TRAINING STEP =====")
-        logger.info(f"Training batch contains keys: {list(batch.keys())}")
-        
-        # Log vae references if present
-        if has_references:
-            logger.info(f"Found vae_references with {len(batch['vae_references'])} items")
-            for i, ref in enumerate(batch["vae_references"]):
-                img_type = type(ref["image"]).__name__
-                repeat = ref["repeat"]
-                img_info = f"size={ref['image'].size}" if hasattr(ref["image"], "size") else "no size"
-                logger.info(f"  vae_reference {i}: type={img_type}, repeat={repeat}, {img_info}")
-        else:
-            logger.info("No vae_references found in batch")
-            
-        # Log raw references if present
-        if has_refs:
-            logger.info(f"Found references with keys: {list(batch['references'].keys()) if isinstance(batch['references'], dict) else 'list'}")
-            if "images" in batch:
-                logger.info(f"Converted from 'images' with {len(batch['images']) if isinstance(batch['images'], list) else 'unknown'} items")
-        else:
-            logger.info("No references found in batch")
-            
-        # Log control inputs
-        if has_control_image:
-            control_img = batch["control_image"]
-            logger.info(f"Control image present: {type(control_img).__name__}, shape={control_img.shape if hasattr(control_img, 'shape') else 'no shape'}")
-        
-        if has_control_video:
-            control_vid = batch["control_video"]
-            logger.info(f"Control video present: {type(control_vid).__name__}, shape={control_vid.shape if hasattr(control_vid, 'shape') else 'no shape'}")
-            
-        # Log whether we have normal inputs
-        if "image" in batch and batch["image"] is not None:
-            logger.info(f"Image present with shape {batch['image'].shape}")
-            
-        if "video" in batch and batch["video"] is not None:
-            logger.info(f"Video present with shape {batch['video'].shape}")
-            
-        # Pass everything in batch to prepare_latents when we have control inputs
-        if has_control_image or has_control_video:
-            logger.info("Calling prepare_latents with control inputs")
-            latent_model_conditions = self.model_specification.prepare_latents(
-                self.vae,
-                image=batch.get("image"),
-                video=batch.get("video"),
-                control_image=batch.get("control_image"),
-                control_video=batch.get("control_video"),
-                generator=self.generator,
-                # We're not adding vae_references here yet, just keeping the original flow
-            )
-            
-        # Add logic for handling references - temporarily commented out
-        # elif has_references:
-        #    logger.info("Calling prepare_latents with references")
-        #    latent_model_conditions = self.model_specification.prepare_latents(
-        #        self.vae,
-        #        image=batch.get("image"),
-        #        video=batch.get("video"), 
-        #        generator=self.generator,
-        #        vae_references=batch["vae_references"]
-        #    )
-        
-        # Handle reference images for CLIP encoding if available
-        if "clip_references" in batch and len(batch["clip_references"]) > 0:
-            ref_encoding = self._encode_references(batch["clip_references"])
-            if ref_encoding is not None:
-                embedding_model_conditions = ref_encoding
-        
-        # Sample random sigmas for flow matching
-        batch_size = condition_model_conditions["encoder_hidden_states"].shape[0]
-        sigmas = self._get_sigmas(batch_size)
-        
-        # Forward pass through the model
-        pred, target, sigmas = self.model_specification.forward(
-            self.transformer,
-            condition_model_conditions,
-            latent_model_conditions,
-            sigmas,
-            embedding_model_conditions=embedding_model_conditions,
-            generator=self.generator,
-        )
-        
-        # Compute loss
-        flow_matching_loss = F.mse_loss(pred, target, reduction="none")
-        flow_matching_loss = flow_matching_loss.mean(dim=[1, 2, 3, 4])
-        flow_matching_loss = (flow_matching_loss * sigmas).mean()
-        
-        return flow_matching_loss
-    
-    # Since we now use a proper processor for reference-to-control conversion,
-    # we don't need to override the _prepare_data method anymore.
-    # The parent ControlTrainer's _prepare_data method works fine with our setup.
-    # All reference processing happens in our ReferenceToControlProcessor during preprocessing
         
     def validation(self):
         """Run validation."""
