@@ -1,9 +1,10 @@
 from contextlib import contextmanager
 from functools import wraps
-from typing import List, Union, Any
+from typing import Any, List, Union
 
 import torch
 from diffusers.hooks import HookRegistry, ModelHook
+
 from finetrainers.logging import get_logger
 
 logger = get_logger()
@@ -32,6 +33,29 @@ class ReferenceChannelConcatenateHook(ModelHook):
             
             # Concatenate content with control channels for proper 36-channel format
             combined_tensor = torch.cat([content_channels, control_tensor], dim=dim)
+
+            # Debug visualization of latent channels - only if enabled
+            import os
+            if os.environ.get("REFERENCE_DEBUG_LATENTS") == "1":
+                from finetrainers.utils import create_channel_frame_grid
+
+                # Create a unique identifier for this validation
+                val_id = os.environ.get("REFERENCE_DEBUG_VAL_ID", "0")
+                # Save to debug directory
+                output_dir = os.path.join("debug_latents", f"validation_{val_id}")
+                # Convert to float32 before visualization to avoid bfloat16 issues
+                control_latents_float = combined_tensor.to(torch.float32)
+                # Create channel×frame grid visualization only
+                create_channel_frame_grid(
+                    control_latents_float,
+                    output_dir,
+                    filename=f"validation_latent_grid_{val_id}.png",
+                    group_sizes=[4, 16]
+                )
+                
+                # Increment counter
+                next_val = int(val_id) + 1
+                os.environ["REFERENCE_DEBUG_VAL_ID"] = str(next_val)
             
             # Log the shapes for debugging
             logger.info(f"Reference hook: original={original_tensor.shape}, " +
