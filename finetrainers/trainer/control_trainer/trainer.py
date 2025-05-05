@@ -28,7 +28,6 @@ from finetrainers.state import State, TrainState
 from .config import ControlFullRankConfig, ControlLowRankConfig
 from .data import IterableControlDataset, ValidationControlDataset
 
-
 if TYPE_CHECKING:
     from finetrainers.args import BaseArgs
     from finetrainers.models import ControlModelSpecification
@@ -634,7 +633,7 @@ class ControlTrainer:
             train_state.step, force=True, _device=device, _is_main_process=parallel_backend.is_main_process
         )
         parallel_backend.wait_for_everyone()
-        self._validate(step=train_state.step, final_validation=True)
+        self._validate(step=train_state.step, final_validation=False) #previously True
 
         self._delete_components()
         memory_statistics = utils.get_memory_statistics()
