@@ -132,6 +132,7 @@ class WanReferenceModelSpecification(WanControlModelSpecification):
           "shift": 8.0,  # Set your desired flow_shift value
           "prediction_type": "flow_prediction",
           "use_flow_sigmas": True,
+          "flow_weighting_scheme": "logit_normal"
         })
 
         return {"transformer": transformer, "scheduler": scheduler}

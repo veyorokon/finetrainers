@@ -1,24 +1,24 @@
-from typing import Any, Dict, Optional, Tuple, Union, List, Type
-
-import os 
-import math 
-import json 
 import glob
-from typing import Any, Dict, Optional, Tuple, Union
+import json
+import math
+import os
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from diffusers.configuration_utils import ConfigMixin, register_to_config 
-from diffusers.loaders import PeftAdapterMixin, FromOriginalModelMixin
-from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
+from diffusers.configuration_utils import ConfigMixin, register_to_config
+from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin
 from diffusers.models.attention import FeedForward
 from diffusers.models.attention_processor import Attention
-from diffusers.models.embeddings import PixArtAlphaTextProjection, TimestepEmbedding, Timesteps, get_1d_rotary_pos_embed
+from diffusers.models.embeddings import (PixArtAlphaTextProjection,
+                                         TimestepEmbedding, Timesteps,
+                                         get_1d_rotary_pos_embed)
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
-from diffusers.models.normalization import FP32LayerNorm 
+from diffusers.models.normalization import FP32LayerNorm
+from diffusers.utils import (USE_PEFT_BACKEND, logging, scale_lora_layers,
+                             unscale_lora_layers)
 
 
 class WanAttnProcessor2_0:
@@ -632,6 +632,7 @@ class A2Model(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin)
         encoder_hidden_states_image: Optional[torch.Tensor] = None,
         return_dict: bool = True,
         attention_kwargs: Optional[Dict[str, Any]] = None,
+        tea_cache = None,
     ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
         if attention_kwargs is not None:
             attention_kwargs = attention_kwargs.copy()
@@ -662,21 +663,33 @@ class A2Model(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin)
         temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(
             timestep, encoder_hidden_states, encoder_hidden_states_image
         )
-        timestep_proj = timestep_proj.unflatten(1, (6, -1))
+        timestep_proj = timestep_proj.unflatten(1, (6, -1)) 
+
+        # TeaCache
+        if tea_cache is not None:
+            tea_cache_update = tea_cache.check(hidden_states, timestep_proj)
+        else:
+            tea_cache_update = False
 
         if encoder_hidden_states_image is not None: 
             # print(encoder_hidden_states_image.size(), encoder_hidden_states.size()) (bsz, 514, 5120) (bsz. 512, 5120)
             encoder_hidden_states = torch.concat([encoder_hidden_states_image, encoder_hidden_states], dim=1)
 
-        # 4. Transformer blocks
-        if torch.is_grad_enabled() and self.gradient_checkpointing:
-            for block in self.blocks:
-                hidden_states = self._gradient_checkpointing_func(
-                    block, hidden_states, encoder_hidden_states, timestep_proj, rotary_emb
-                )
+        if tea_cache_update:
+            hidden_states = tea_cache.update(hidden_states) 
         else:
-            for block in self.blocks:
-                hidden_states = block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
+            # 4. Transformer blocks
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                for block in self.blocks:
+                    hidden_states = self._gradient_checkpointing_func(
+                        block, hidden_states, encoder_hidden_states, timestep_proj, rotary_emb
+                    )
+            else:
+                for block in self.blocks:
+                    hidden_states = block(hidden_states, encoder_hidden_states, timestep_proj, rotary_emb)
+            
+            if tea_cache is not None:
+                tea_cache.store(hidden_states)
 
         # 5. Output norm, projection & unpatchify
         shift, scale = (self.scale_shift_table + temb.unsqueeze(1)).chunk(2, dim=1)

@@ -9,27 +9,32 @@ from diffusers.video_processor import VideoProcessor
 from huggingface_hub import snapshot_download
 from models.pipeline_a2 import A2Pipeline
 from models.transformer_a2 import A2Model
-from models.utils import _crop_and_resize, _crop_and_resize_pad, write_mp4
+from models.utils import (_crop_and_resize, _crop_and_resize_pad,
+                          _scale_height_and_pad, write_mp4)
 from PIL import Image
 from transformers import CLIPVisionModel
 
-#  DEBUG_A2_STRUCTURE=1 python /Users/veyorokon/Projects/ai/mine/finetrainers/A2/infer.py
-
-
-prompt = "This is an advertisement showcasing a green juice bottle. The glass bottle is filled with green juice and features a clear lid with a label displaying the 'pure green' logo, condensation is visible on the bottle surface. The bottle is centered in the frame and the scene consists of green juice being poured into the bottle and overflowing. It is a studio set with a two-toned green background split vertically. The left side of the background is a darker green, and the right side is a lighter green. The lighting is bright and even. The camera is positioned at eye level in a close-up shot, with a static camera and a reveal opening. It showcases the splash effect of the juice in slow motion. The style is commercial and vibrant." 
+prompt = "This is an TikTok style influencer video. the woman upper body is visible as she is standing behind the counter. She picks up the blue pink purple Yerba Magic Product bag in her hands. She is talking excitedly and happy. she points and gestures. facing the camera" 
 negative_prompt = "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
 
-refer_images = ['/workspace/finetrainers/assets/tests/dataset/083_object.png', '/workspace/finetrainers/assets/tests/dataset/083_background.png'] 
+refer_images = [ '/workspace/finetrainers/A2/assets/woman2.jpeg', '/workspace/finetrainers/A2/assets/object.jpeg', '/workspace/finetrainers/A2/assets/background.jpeg'] 
 width = 832
 height = 480 
-seed = 42 
-
+seed = 42
 
 # model parameters 
 device = "cuda"
 video_path = "output.mp4"
 pipeline_path = "/dev/shm/models"
 dtype = torch.bfloat16
+
+use_teacache = True 
+if use_teacache:
+    tea_cache_l1_thresh = 0.3
+    tea_cache_model_id = "Wan2.1-I2V-14B-480P"
+else:
+    tea_cache_l1_thresh = None
+    tea_cache_model_id = ""
 
 # download models
 #snapshot_download(repo_id="Skywork/SkyReels-A2", local_dir="Skywork/SkyReels-A2")
@@ -64,8 +69,14 @@ for image_id, image_path in enumerate(refer_images):
     clip_image_list.append(image_clip)
     
     # for vae 
-    if image_id == 0 or image_id == 1: 
+    if image_id == 0: 
         image_vae = _crop_and_resize_pad(image, height=height, width=width) # ref image
+    elif image_id == 1: 
+        image_vae = _scale_height_and_pad(image, height=height, width=width) # object image
+        # Save the scaled object image
+        scaled_image_path = os.path.join(os.path.dirname(video_path), f"scaled_object.png")
+        image_vae.save(scaled_image_path)
+        print(f"Saved scaled object image to {scaled_image_path}")
     else:
         image_vae = _crop_and_resize(image, height=height, width=width) # background image
     
@@ -82,12 +93,14 @@ video_pt = pipe(
     negative_prompt=negative_prompt, 
     height=480, 
     width=width, 
-    num_frames=30, 
+    num_frames=81, 
     guidance_scale=5.0,
     generator=generator,
     output_type="pt",
-    num_inference_steps=50,
+    num_inference_steps=30,
     vae_combine="before",
+    tea_cache_l1_thresh=tea_cache_l1_thresh,
+    tea_cache_model_id=tea_cache_model_id,
 ).frames
 
 
@@ -116,4 +129,15 @@ for q in range(len(video_generate)):
     result.paste(frame4, (width*3, 0)) 
     final_images.append(np.array(result))
 
-write_mp4(video_path, final_images, fps=15) 
+write_mp4(video_path, final_images, fps=16) 
+
+
+
+# Simply convert each frame to numpy array without creating side-by-side comparison
+final_images = []
+for frame in video_generate:
+    # Convert PIL Image to numpy array
+    frame_np = np.array(frame)
+    final_images.append(frame_np)
+# Write the video directly with just the generated frames
+write_mp4("simple.mp4", final_images, fps=16)

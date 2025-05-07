@@ -2,6 +2,7 @@ import html
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import ftfy
+import numpy as np
 import PIL
 import regex as re
 import torch
@@ -56,6 +57,61 @@ def retrieve_latents(
         return encoder_output.latents
     else:
         raise AttributeError("Could not access latents of provided encoder_output")
+
+
+
+class TeaCache:
+    def __init__(self, num_inference_steps, rel_l1_thresh, model_id):
+        self.num_inference_steps = num_inference_steps
+        self.step = 0
+        self.accumulated_rel_l1_distance = 0
+        self.previous_modulated_input = None
+        self.rel_l1_thresh = rel_l1_thresh
+        self.previous_residual = None
+        self.previous_hidden_states = None
+        
+        self.coefficients_dict = {
+            "Wan2.1-T2V-1.3B": [-5.21862437e+04, 9.23041404e+03, -5.28275948e+02, 1.36987616e+01, -4.99875664e-02],
+            "Wan2.1-T2V-14B": [-3.03318725e+05, 4.90537029e+04, -2.65530556e+03, 5.87365115e+01, -3.15583525e-01],
+            "Wan2.1-I2V-14B-480P": [2.57151496e+05, -3.54229917e+04,  1.40286849e+03, -1.35890334e+01, 1.32517977e-01],
+            "Wan2.1-I2V-14B-720P": [ 8.10705460e+03,  2.13393892e+03, -3.72934672e+02,  1.66203073e+01, -4.17769401e-02],
+        }
+        if model_id not in self.coefficients_dict:
+            supported_model_ids = ", ".join([i for i in self.coefficients_dict])
+            raise ValueError(f"{model_id} is not a supported TeaCache model id. Please choose a valid model id in ({supported_model_ids}).")
+        self.coefficients = self.coefficients_dict[model_id]
+
+    def check(self, x, t_mod):
+        modulated_inp = t_mod.clone()
+        if self.step == 0 or self.step == self.num_inference_steps - 1:
+            should_calc = True
+            self.accumulated_rel_l1_distance = 0
+        else:
+            coefficients = self.coefficients
+            rescale_func = np.poly1d(coefficients)
+            self.accumulated_rel_l1_distance += rescale_func(((modulated_inp-self.previous_modulated_input).abs().mean() / self.previous_modulated_input.abs().mean()).cpu().item())
+            if self.accumulated_rel_l1_distance < self.rel_l1_thresh:
+                should_calc = False
+            else:
+                should_calc = True
+                self.accumulated_rel_l1_distance = 0
+        self.previous_modulated_input = modulated_inp
+        self.step += 1
+        if self.step == self.num_inference_steps:
+            self.step = 0
+        if should_calc:
+            self.previous_hidden_states = x.clone()
+        return not should_calc
+
+    def store(self, hidden_states):
+        self.previous_residual = hidden_states - self.previous_hidden_states
+        self.previous_hidden_states = None
+
+    def update(self, hidden_states):
+        hidden_states = hidden_states + self.previous_residual
+        return hidden_states
+
+
 
 
 class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
@@ -390,207 +446,7 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
         mask_lat_size = mask_lat_size.transpose(1, 2)
         mask_lat_size = mask_lat_size.to(latent_condition.device)
 
-        # Create the combined tensor that will be returned
-        combined_tensor = torch.concat([mask_lat_size, latent_condition], dim=1)
-
-        # ===== START DEBUG VISUALIZATION (Can be easily removed) =====
-        try:
-            # Only run visualization if the DEBUG_A2_STRUCTURE env var is set
-            if os.environ.get("DEBUG_A2_STRUCTURE") == "1":
-                import os
-                import pathlib
-                import numpy as np
-                from matplotlib import cm
-                from PIL import Image
-                
-                # Create debug directory
-                debug_dir = "infer_debug"
-                os.makedirs(debug_dir, exist_ok=True)
-                print(f"[DEBUG] Saving A2 structure visualization to {debug_dir}/")
-                
-                # Print tensor shapes for reference
-                print(f"[DEBUG] Latents shape: {latents.shape}")
-                print(f"[DEBUG] Mask shape: {mask_lat_size.shape}")
-                print(f"[DEBUG] Latent condition shape: {latent_condition.shape}")
-                print(f"[DEBUG] Combined tensor shape: {combined_tensor.shape}")
-                
-                # Save structure information to a text file
-                with open(f"{debug_dir}/tensor_structure.txt", "w") as f:
-                    f.write(f"Latents shape: {latents.shape}\n")
-                    f.write(f"Mask shape: {mask_lat_size.shape}\n")
-                    f.write(f"Latent condition shape: {latent_condition.shape}\n")
-                    f.write(f"Combined shape: {combined_tensor.shape}\n\n")
-                    
-                    # Analyze mask values
-                    mask_min = mask_lat_size.min().item()
-                    mask_max = mask_lat_size.max().item()
-                    mask_mean = mask_lat_size.mean().item()
-                    mask_nonzero = (mask_lat_size > 0.5).float().sum().item()
-                    f.write(f"Mask values - min: {mask_min:.6f}, max: {mask_max:.6f}, mean: {mask_mean:.6f}\n")
-                    f.write(f"Mask non-zero values: {mask_nonzero} out of {mask_lat_size.numel()}\n\n")
-                    
-                    # Analyze content values
-                    content_min = latent_condition.min().item()
-                    content_max = latent_condition.max().item()
-                    content_mean = latent_condition.mean().item()
-                    f.write(f"Content values - min: {content_min:.6f}, max: {content_max:.6f}, mean: {content_mean:.6f}\n")
-                
-                # Save individual mask channels for verification
-                def save_latent_channels(latents, output_dir, prefix, channel_indices=None, frame_idx=0):
-                    """Matches finetrainers.utils.debug.save_latent_channels for consistent visualization"""
-                    output_path = pathlib.Path(output_dir)
-                    output_path.mkdir(parents=True, exist_ok=True)
-                    
-                    # Move to CPU
-                    latents = latents.detach().cpu()
-                    
-                    # Extract appropriate data
-                    if latents.dim() == 5:  # [B, C, T, H, W]
-                        lat = latents[0, :, frame_idx].numpy()
-                    else:  # [B, C, H, W]
-                        lat = latents[0].numpy()
-                    
-                    # Select channels to visualize
-                    if channel_indices is None:
-                        channel_indices = list(range(lat.shape[0]))
-                    
-                    saved_paths = []
-                    
-                    # Save each selected channel
-                    for channel_idx in channel_indices:
-                        # Extract channel data
-                        channel_data = lat[channel_idx]
-                        
-                        # Direct normalization like in training code
-                        norm_data = (channel_data + 1.0) * 0.5
-                        norm_data = np.clip(norm_data, 0, 1)
-                        
-                        # Convert to grayscale image
-                        grayscale = (norm_data * 255).astype(np.uint8)
-                        colored_data = np.zeros((channel_data.shape[0], channel_data.shape[1], 4), dtype=np.uint8)
-                        colored_data[..., 0] = grayscale  # R
-                        colored_data[..., 1] = grayscale  # G
-                        colored_data[..., 2] = grayscale  # B
-                        colored_data[..., 3] = 255        # A
-                        
-                        img = Image.fromarray(colored_data)
-                        
-                        # Save the image
-                        filename = f"{prefix}_ch{channel_idx}.png"
-                        output_file = output_path / filename
-                        img.save(output_file)
-                        saved_paths.append(str(output_file))
-                        
-                        print(f"[DEBUG] Saved channel {channel_idx} to {output_file}")
-                    
-                    return saved_paths
-                
-                # Save mask channel visualization
-                save_latent_channels(mask_lat_size, debug_dir, "mask", [0])
-                
-                # Save a few content channels
-                save_latent_channels(latent_condition, debug_dir, "content", [0, 1, 2])
-                
-                # THIS FUNCTION MATCHES finetrainers.utils.debug.create_channel_frame_grid EXACTLY
-                def create_channel_frame_grid(latents, output_dir, filename="latent_grid.png", spacing=2, group_sizes=None):
-                    """Matches finetrainers.utils.debug.create_channel_frame_grid for consistent visualization"""
-                    # Create output directory
-                    output_path = pathlib.Path(output_dir)
-                    output_path.mkdir(parents=True, exist_ok=True)
-                    
-                    # Move to CPU
-                    latents = latents.detach().cpu()
-                    
-                    # Only support video latents (5D) with this visualization
-                    if latents.dim() != 5:
-                        raise ValueError("Channel-frame grid only supports 5D latents [B, C, T, H, W]")
-                    
-                    # Extract dimensions - taking only first batch
-                    batch_size, num_channels, num_frames, height, width = latents.shape
-                    latent_data = latents[0]  # [C, T, H, W]
-                    
-                    print(f"[DEBUG] Grid with {num_channels} channels x {num_frames} frames")
-                    
-                    # Get colormap
-                    cmap = cm.get_cmap('viridis')
-                    
-                    # Calculate total size
-                    grid_width = num_channels * width + (num_channels - 1) * spacing
-                    grid_height = num_frames * height + (num_frames - 1) * spacing
-                    
-                    # Create empty grid
-                    grid_img = Image.new('RGB', (grid_width, grid_height), color='black')
-                    
-                    # Generate one column per channel, with frames as rows
-                    for c in range(num_channels):
-                        # Create a column for this channel
-                        col_width = width
-                        col_height = num_frames * height + (num_frames - 1) * spacing
-                        col_img = Image.new('RGB', (col_width, col_height), color='black')
-                        
-                        # Process each frame for this channel
-                        for t in range(num_frames):
-                            # Get frame data
-                            data = latent_data[c, t].numpy()
-                            
-                            # Direct raw value visualization with grayscale
-                            # Shift from [-1,1] to [0,1] range for visualization
-                            norm_data = (data + 1.0) * 0.5
-                            norm_data = np.clip(norm_data, 0, 1)
-                            
-                            # Convert to grayscale (0 = black, 1 = white)
-                            grayscale = (norm_data * 255).astype(np.uint8)
-                            colored_data = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
-                            colored_data[..., 0] = grayscale  # R
-                            colored_data[..., 1] = grayscale  # G
-                            colored_data[..., 2] = grayscale  # B
-                            colored_data[..., 3] = 255        # A (fully opaque)
-                            
-                            # Add debugging info
-                            if t == 0 and c == 0:  # Log only for first frame of first channel
-                                print(f"[DEBUG] Raw value range: min={data.min():.4f}, max={data.max():.4f}")
-                                print(f"[DEBUG] Normalized range: min={norm_data.min():.4f}, max={norm_data.max():.4f}")
-                            
-                            # Create image
-                            frame_img = Image.fromarray(colored_data)
-                            
-                            # Paste into column
-                            y_pos = t * (height + spacing)
-                            col_img.paste(frame_img, (0, y_pos))
-                        
-                        # Paste column into grid
-                        x_pos = c * (width + spacing)
-                        grid_img.paste(col_img, (x_pos, 0))
-                    
-                    # Save the grid
-                    file_path = output_path / filename
-                    grid_img.save(file_path)
-                    
-                    print(f"[DEBUG] Saved grid to {file_path}")
-                    
-                    return str(file_path)
-                
-                # Create group sizes array based on tensor structure
-                # For A2: Mask(1) + Content(16)
-                group_sizes = [1, latent_condition.shape[1]]
-                print(f"[DEBUG] Using group sizes: {group_sizes}")
-                
-                # Create the channel-frame grid of the combined tensor
-                # Using the exact same visualization function as in training
-                grid_file = create_channel_frame_grid(
-                    combined_tensor,
-                    debug_dir,
-                    filename="infer_latent_grid.png",
-                    spacing=2,
-                    group_sizes=group_sizes
-                )
-                
-                print(f"[DEBUG] Visualization complete! Check {debug_dir}/ for results")
-        except Exception as e:
-            print(f"[DEBUG] Visualization failed: {e}")
-        # ===== END DEBUG VISUALIZATION =====
-
-        return latents, combined_tensor
+        return latents, torch.concat([mask_lat_size, latent_condition], dim=1)
 
     @property
     def guidance_scale(self):
@@ -643,6 +499,8 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
         max_sequence_length: int = 512,
         vae_combine: str = "before",
         vae_repeat: bool = True,
+        tea_cache_l1_thresh=None,
+        tea_cache_model_id="",
     ):
         r"""
         The call function to the pipeline for generation.
@@ -796,6 +654,10 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
             vae_repeat,
         )
 
+        # TeaCache
+        tea_cache_posi = {"tea_cache": TeaCache(num_inference_steps, rel_l1_thresh=tea_cache_l1_thresh, model_id=tea_cache_model_id) if tea_cache_l1_thresh is not None else None}
+        tea_cache_nega = {"tea_cache": TeaCache(num_inference_steps, rel_l1_thresh=tea_cache_l1_thresh, model_id=tea_cache_model_id) if tea_cache_l1_thresh is not None else None}
+
         # 6. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
@@ -807,8 +669,7 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
                 self._current_timestep = t
                 latent_model_input = torch.cat([latents, condition], dim=1).to(transformer_dtype)
-                timestep = t.expand(latents.shape[0])
-
+                timestep = t.expand(latents.shape[0]) 
                 noise_pred = self.transformer(
                     hidden_states=latent_model_input,
                     timestep=timestep,
@@ -816,9 +677,10 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
                     encoder_hidden_states_image=image_embeds,
                     attention_kwargs=attention_kwargs,
                     return_dict=False,
+                    **tea_cache_posi,
                 )[0]
-
-                if self.do_classifier_free_guidance:
+                
+                if self.do_classifier_free_guidance: 
                     noise_uncond = self.transformer(
                         hidden_states=latent_model_input,
                         timestep=timestep,
@@ -826,7 +688,9 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
                         encoder_hidden_states_image=image_embeds,
                         attention_kwargs=attention_kwargs,
                         return_dict=False,
+                        **tea_cache_nega,
                     )[0]
+                    
                     noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
