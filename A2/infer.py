@@ -83,6 +83,7 @@ for image_id, image_path in enumerate(refer_images):
     image_vae = image_vae.unsqueeze(2).to(device, dtype=torch.float32)
     vae_image_list.append(image_vae) #.to(device, dtype=dtype))
 
+generator = torch.Generator(device).manual_seed(seed) 
 # Process last frame separately (will be added to control latents)
 if last_frame:
     # Load and preprocess the last frame
@@ -106,7 +107,6 @@ else:
     last_frame_latent = None
 
 # forward
-generator = torch.Generator(device).manual_seed(seed) 
 video_pt = pipe(
     image_clip=clip_image_list, 
     image_vae=vae_image_list,
