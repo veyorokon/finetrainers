@@ -419,10 +419,21 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 # Ensure normalization matches other latents
                 first_frame_latent = (first_frame_latent - latents_mean) * latents_std
                 
-                # Append to existing latent_condition (expanding channels)
-                latent_condition = torch.cat([latent_condition, first_frame_latent], dim=1)
+                # Instead of concatenating, we'll insert the first frame latent into 
+                # the existing control latents at the 3rd position
+                # Get the starting channel index for the 3rd control element (4 mask + 16 content = 20 channels total)
+                channel_start = 4  # Start after the mask channels
                 
-                print(f"Added separately encoded first frame to control latents, new shape: {latent_condition.shape}")
+                # Copy the content from first_frame_latent to latent_condition's last 16 channels
+                # Expand first_frame_latent to match frame count if needed
+                if first_frame_latent.size(2) == 1 and latent_condition.size(2) > 1:
+                    # Expand frames to match latent_condition
+                    first_frame_latent = first_frame_latent.expand(-1, -1, latent_condition.size(2), -1, -1)
+                
+                # Copy the latent into the control channels (last 16 channels)
+                latent_condition[:, channel_start:channel_start+16, :, :, :] = first_frame_latent
+                
+                print(f"Inserted first frame latent into control latents at channels {channel_start}-{channel_start+15}")
         else:
             image_vae[0] = retrieve_latents(self.vae.encode(image_vae[0].to(dtype)), generator)
             image_vae[1] = retrieve_latents(self.vae.encode(image_vae[1].to(dtype)), generator)
@@ -440,10 +451,21 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 # Ensure normalization matches other latents
                 first_frame_latent = (first_frame_latent - latents_mean) * latents_std
                 
-                # Append to existing latent_condition (expanding channels)
-                latent_condition = torch.cat([latent_condition, first_frame_latent], dim=1)
+                # Instead of concatenating, we'll insert the first frame latent into 
+                # the existing control latents at the 3rd position
+                # Get the starting channel index for the 3rd control element (4 mask + 16 content = 20 channels total)
+                channel_start = 4  # Start after the mask channels
                 
-                print(f"Added separately encoded first frame to control latents, new shape: {latent_condition.shape}")
+                # Copy the content from first_frame_latent to latent_condition's last 16 channels
+                # Expand first_frame_latent to match frame count if needed
+                if first_frame_latent.size(2) == 1 and latent_condition.size(2) > 1:
+                    # Expand frames to match latent_condition
+                    first_frame_latent = first_frame_latent.expand(-1, -1, latent_condition.size(2), -1, -1)
+                
+                # Copy the latent into the control channels (last 16 channels)
+                latent_condition[:, channel_start:channel_start+16, :, :, :] = first_frame_latent
+                
+                print(f"Inserted first frame latent into control latents at channels {channel_start}-{channel_start+15}")
 
         mask_lat_size = torch.ones(batch_size, 1, num_frames, latent_height, latent_width)
         mask_lat_size[:, :, list(range(1, num_frames))] = 0

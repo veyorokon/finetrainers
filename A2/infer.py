@@ -36,15 +36,6 @@ else:
     tea_cache_l1_thresh = None
     tea_cache_model_id = ""
 
-# model parameters 
-device = "cuda"
-video_path = "output.mp4"
-pipeline_path = "Skywork/SkyReels-A2"
-dtype = torch.bfloat16
-
-# download models
-snapshot_download(repo_id="Skywork/SkyReels-A2", local_dir="Skywork/SkyReels-A2")
-
 # load models 
 image_encoder = CLIPVisionModel.from_pretrained(pipeline_path, subfolder="image_encoder", torch_dtype=torch.float32) 
 vae = AutoencoderKLWan.from_pretrained(pipeline_path, subfolder="vae", torch_dtype=torch.float32)
@@ -88,14 +79,33 @@ generator = torch.Generator(device).manual_seed(seed)
 if last_frame:
     # Load and preprocess the last frame
     last_frame_image = load_image(image=last_frame).convert("RGB")
-    last_frame_image = _crop_and_resize_pad(last_frame_image, height=height, width=width)
+    #last_frame_image = _crop_and_resize(last_frame_image, height=height, width=width)
+    
+    # Print shape of the reference images for comparison
+    print(f"Shape of a reference vae image: {vae_image_list[0].shape}")
+    
     last_frame_image = video_processor.preprocess(last_frame_image, height=height, width=width).to(memory_format=torch.contiguous_format)
+    print(f"Shape after preprocess: {last_frame_image.shape}")
     
     # Add batch and frame dimensions
-    last_frame_image = last_frame_image.unsqueeze(0).unsqueeze(2)  # [1, 3, 1, height, width]
+    last_frame_image = last_frame_image.unsqueeze(2)
+    print(f"Shape after unsqueeze(2): {last_frame_image.shape}")
+    
+    # For a 4D tensor -> 5D, we need to use repeat with 5 dimensions
+    print(f"Number of dimensions: {last_frame_image.dim()}")
     
     # Create mini-video with repeated frames
-    last_frame_video = last_frame_image.repeat(1, 1, 4, 1, 1)  # Repeat 4 times along frame dimension
+    if last_frame_image.dim() == 5:
+        # Already has batch dimension
+        last_frame_video = torch.cat([last_frame_image] * 4, dim=2)
+        print(f"Used concat for 5D tensor, new shape: {last_frame_video.shape}")
+    else:
+        # Add batch dimension first, then concat
+        last_frame_image = last_frame_image.unsqueeze(0)
+        print(f"Added batch dim, shape: {last_frame_image.shape}")
+        last_frame_video = torch.cat([last_frame_image] * 4, dim=2)
+        print(f"Used concat for tensor, new shape: {last_frame_video.shape}")
+    
     last_frame_video = last_frame_video.to(device, dtype=torch.float32)
     
     # Encode with VAE (do separately from references)
