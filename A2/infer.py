@@ -9,8 +9,7 @@ from diffusers.video_processor import VideoProcessor
 from huggingface_hub import snapshot_download
 from models.pipeline_a2 import A2Pipeline
 from models.transformer_a2 import A2Model
-from models.utils import (_crop_and_resize, _crop_and_resize_pad,
-                          _scale_height_and_pad, write_mp4)
+from models.utils import _crop_and_resize, _crop_and_resize_pad, write_mp4
 from PIL import Image
 from transformers import CLIPVisionModel
 
@@ -18,7 +17,7 @@ prompt = "This is an TikTok style influencer video. the woman upper body is visi
 negative_prompt = "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
 
 refer_images = [ '/workspace/finetrainers/A2/assets/woman.jpeg', '/workspace/finetrainers/A2/assets/object.jpeg', '/workspace/finetrainers/A2/assets/background.jpeg'] 
-last_frame = "/workspace/finetrainers/A2/last_frame.jpg"
+last_frame = "/workspace/finetrainers/A2/assets/last_frame.jpg"
 width = 832
 height = 480 
 seed = 42
@@ -28,8 +27,8 @@ device = "cuda"
 video_path = "output.mp4"
 pipeline_path = "/dev/shm/models"
 dtype = torch.bfloat16
-
 use_teacache = True 
+
 if use_teacache:
     tea_cache_l1_thresh = 0.3
     tea_cache_model_id = "Wan2.1-I2V-14B-480P"
@@ -37,8 +36,14 @@ else:
     tea_cache_l1_thresh = None
     tea_cache_model_id = ""
 
+# model parameters 
+device = "cuda"
+video_path = "output.mp4"
+pipeline_path = "Skywork/SkyReels-A2"
+dtype = torch.bfloat16
+
 # download models
-#snapshot_download(repo_id="Skywork/SkyReels-A2", local_dir="Skywork/SkyReels-A2")
+snapshot_download(repo_id="Skywork/SkyReels-A2", local_dir="Skywork/SkyReels-A2")
 
 # load models 
 image_encoder = CLIPVisionModel.from_pretrained(pipeline_path, subfolder="image_encoder", torch_dtype=torch.float32) 
@@ -56,7 +61,6 @@ scheduler = UniPCMultistepScheduler(prediction_type='flow_prediction', use_flow_
 pipe.scheduler = scheduler 
 pipe.to(device)
 
-
 VAE_SCALE_FACTOR_SPATIAL = 8
 video_processor = VideoProcessor(vae_scale_factor=VAE_SCALE_FACTOR_SPATIAL)
 
@@ -70,20 +74,36 @@ for image_id, image_path in enumerate(refer_images):
     clip_image_list.append(image_clip)
     
     # for vae 
-    if image_id == 0: 
+    if image_id == 0 or image_id == 1: 
         image_vae = _crop_and_resize_pad(image, height=height, width=width) # ref image
-    elif image_id == 1: 
-        image_vae = _scale_height_and_pad(image, height=height, width=width) # object image
-        # Save the scaled object image
-        scaled_image_path = os.path.join(os.path.dirname(video_path), f"scaled_object.png")
-        image_vae.save(scaled_image_path)
-        print(f"Saved scaled object image to {scaled_image_path}")
     else:
         image_vae = _crop_and_resize(image, height=height, width=width) # background image
     
     image_vae = video_processor.preprocess(image_vae, height=height, width=width).to(memory_format=torch.contiguous_format) # (1, 3, 480, 320)
     image_vae = image_vae.unsqueeze(2).to(device, dtype=torch.float32)
     vae_image_list.append(image_vae) #.to(device, dtype=dtype))
+
+# Process last frame separately (will be added to control latents)
+if last_frame:
+    # Load and preprocess the last frame
+    last_frame_image = load_image(image=last_frame).convert("RGB")
+    last_frame_image = _crop_and_resize_pad(last_frame_image, height=height, width=width)
+    last_frame_image = video_processor.preprocess(last_frame_image, height=height, width=width).to(memory_format=torch.contiguous_format)
+    
+    # Add batch and frame dimensions
+    last_frame_image = last_frame_image.unsqueeze(0).unsqueeze(2)  # [1, 3, 1, height, width]
+    
+    # Create mini-video with repeated frames
+    last_frame_video = last_frame_image.repeat(1, 1, 4, 1, 1)  # Repeat 4 times along frame dimension
+    last_frame_video = last_frame_video.to(device, dtype=torch.float32)
+    
+    # Encode with VAE (do separately from references)
+    with torch.no_grad():
+        last_frame_latent = pipe.vae.encode(last_frame_video).latent_dist.sample(generator)
+        
+    print(f"Encoded last frame as separate latent with shape: {last_frame_latent.shape}")
+else:
+    last_frame_latent = None
 
 # forward
 generator = torch.Generator(device).manual_seed(seed) 
@@ -92,17 +112,17 @@ video_pt = pipe(
     image_vae=vae_image_list,
     prompt=prompt, 
     negative_prompt=negative_prompt, 
-    first_frame = last_frame,
     height=480, 
     width=width, 
     num_frames=81, 
     guidance_scale=5.0,
     generator=generator,
     output_type="pt",
-    num_inference_steps=30,
+    num_inference_steps=50,
     vae_combine="before",
     tea_cache_l1_thresh=tea_cache_l1_thresh,
     tea_cache_model_id=tea_cache_model_id,
+    first_frame_latent=last_frame_latent,  # Add first frame latent for separate conditioning
 ).frames
 
 
@@ -131,15 +151,4 @@ for q in range(len(video_generate)):
     result.paste(frame4, (width*3, 0)) 
     final_images.append(np.array(result))
 
-write_mp4(video_path, final_images, fps=16) 
-
-
-
-# Simply convert each frame to numpy array without creating side-by-side comparison
-final_images = []
-for frame in video_generate:
-    # Convert PIL Image to numpy array
-    frame_np = np.array(frame)
-    final_images.append(frame_np)
-# Write the video directly with just the generated frames
-write_mp4("simple.mp4", final_images, fps=16)
+write_mp4(video_path, final_images, fps=15) 
