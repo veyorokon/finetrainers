@@ -354,6 +354,7 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
         latents: Optional[torch.Tensor] = None,
         vae_combine: str = "before",
         vae_repeat: bool = True,
+        first_frame: Optional[torch.Tensor] = None,  # New parameter for first frame
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
         latent_height = height // self.vae_scale_factor_spatial
@@ -366,19 +367,49 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 f" size of {batch_size}. Make sure the batch size matches the length of the generators."
             )
 
+        # Prepare normalization parameters
+        latents_mean = (
+            torch.tensor(self.vae.config.latents_mean)
+            .view(1, self.vae.config.z_dim, 1, 1, 1)
+            .to(device, dtype)
+        )
+        latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, self.vae.config.z_dim, 1, 1, 1).to(
+            device, dtype
+        )
+
+        # Create noise latents
         if latents is None:
             latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
         else:
             latents = latents.to(device=device, dtype=dtype)
         
-        latents_mean = (
-            torch.tensor(self.vae.config.latents_mean)
-            .view(1, self.vae.config.z_dim, 1, 1, 1)
-            .to(latents.device, latents.dtype)
-        )
-        latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, self.vae.config.z_dim, 1, 1, 1).to(
-            latents.device, latents.dtype
-        )
+        # Process and inject first frame if provided (Wan-style conditioning)
+        if first_frame is not None:
+            # Process first_frame if it's not already in the right format
+            if first_frame.ndim in [3, 4]:  # [C, H, W] or [B, C, H, W]
+                # Ensure batch dimension
+                if first_frame.ndim == 3:
+                    first_frame = first_frame.unsqueeze(0)
+                
+                # Preprocess with video_processor
+                first_frame = self.video_processor.preprocess(
+                    first_frame, height=height, width=width
+                ).to(device=device, dtype=dtype)
+                
+                # Add frame dimension if needed
+                if first_frame.ndim == 4:  # [B, C, H, W]
+                    first_frame = first_frame.unsqueeze(2)  # [B, C, 1, H, W]
+            
+            # Encode first frame with VAE
+            first_frame_latent = retrieve_latents(self.vae.encode(first_frame), generator)
+            
+            # Normalize the latents
+            first_frame_latent = (first_frame_latent - latents_mean) * latents_std
+            
+            # Replace the first frame in latents
+            latents[:, :, 0, :, :] = first_frame_latent[:, :, 0, :, :]
+            
+            print(f"Using Wan-style first frame conditioning at index 0 (shape: {first_frame_latent.shape})")
         
         # image = image.unsqueeze(2) 
         print("vae combine: ", vae_combine, " vae repeat: ", vae_repeat)
@@ -479,6 +510,7 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
         image_vae,
         prompt: Union[str, List[str]] = None,
         negative_prompt: Union[str, List[str]] = None,
+        first_frame: Optional[torch.Tensor] = None,  # New parameter for Wan-style first frame conditioning
         height: int = 480,
         width: int = 832,
         num_frames: int = 81,
@@ -515,6 +547,10 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 The prompt or prompts not to guide the image generation. If not defined, one has to pass
                 `negative_prompt_embeds` instead. Ignored when not using guidance (i.e., ignored if `guidance_scale` is
                 less than `1`).
+            first_frame (`torch.Tensor` or `PIL.Image.Image`, *optional*):
+                Optional first frame to use for Wan-style first frame conditioning. If provided, this frame will be
+                encoded and used to replace the first frame in the generated video, and it will be protected
+                from noise during denoising.
             height (`int`, defaults to `480`):
                 The height of the generated video.
             width (`int`, defaults to `832`):
@@ -652,6 +688,7 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
             latents,
             vae_combine,
             vae_repeat,
+            first_frame,  # Pass the first_frame parameter
         )
 
         # TeaCache
@@ -661,6 +698,15 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
         # 6. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
+        
+        # Create mask to protect first frame if first_frame was provided (Wan-style)
+        first_frame_mask = None
+        if first_frame is not None:
+            # Create a mask of ones with same shape as latents
+            first_frame_mask = torch.ones_like(latents)
+            # Zero out the first frame position to protect it from noise
+            first_frame_mask[:, :, 0, :, :] = 0
+            print("Created first frame protection mask for Wan-style conditioning")
 
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
@@ -692,7 +738,12 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
                     )[0]
                     
                     noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
-
+                
+                # Apply mask to protect first frame if it was provided
+                if first_frame is not None and first_frame_mask is not None:
+                    # Multiply noise prediction by mask (zeros out prediction at first frame)
+                    noise_pred = noise_pred * first_frame_mask
+                
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
