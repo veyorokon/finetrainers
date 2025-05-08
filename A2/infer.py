@@ -17,7 +17,8 @@ from transformers import CLIPVisionModel
 prompt = "This is an TikTok style influencer video. the woman upper body is visible as she is standing behind the counter. She picks up the blue pink purple Yerba Magic Product bag in her hands. She is talking excitedly and happy. she points and gestures. facing the camera" 
 negative_prompt = "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
 
-refer_images = [ '/workspace/finetrainers/A2/assets/woman2.jpeg', '/workspace/finetrainers/A2/assets/object.jpeg', '/workspace/finetrainers/A2/assets/background.jpeg'] 
+refer_images = [ '/workspace/finetrainers/A2/assets/woman.jpeg', '/workspace/finetrainers/A2/assets/object.jpeg', '/workspace/finetrainers/A2/assets/background.jpeg'] 
+last_frame = "/workspace/finetrainers/A2/last_frame.jpg"
 width = 832
 height = 480 
 seed = 42
@@ -91,6 +92,7 @@ video_pt = pipe(
     image_vae=vae_image_list,
     prompt=prompt, 
     negative_prompt=negative_prompt, 
+    first_frame = last_frame,
     height=480, 
     width=width, 
     num_frames=81, 
