@@ -1,6 +1,10 @@
 import numpy as np
+import os
+import pathlib
+from typing import List, Optional, Tuple
 from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
 from PIL import Image
+import torch
 
 
 def _crop_and_resize_pad(image, height=480, width=720):
@@ -98,3 +102,101 @@ def write_mp4(video_path, samples, fps=14, audio_bitrate="192k"):
     clip = ImageSequenceClip(samples, fps=fps)
     clip.write_videofile(video_path, audio_codec="aac", audio_bitrate=audio_bitrate, 
                          ffmpeg_params=["-crf", "18", "-preset", "slow"])
+
+
+def create_channel_frame_grid(
+    latents: torch.Tensor,
+    output_dir: str,
+    filename: str = "latent_grid.png",
+    spacing: int = 2,
+    group_sizes: Optional[List[int]] = None,
+) -> str:
+    """
+    Creates a visualization grid of latent space with channels as columns and frames as rows.
+    
+    Args:
+        latents: Tensor of shape [B, C, T, H, W] (batch, channels, frames, height, width)
+        output_dir: Directory to save the output image
+        filename: Name of the output file
+        spacing: Spacing between cells in the grid
+        group_sizes: Optional list of channel group sizes to visually separate in the output
+                    (e.g. [4, 16, 16] for mask(4), content(16), control(16))
+    
+    Returns:
+        Path to the saved image file
+    """
+    # Create output directory
+    output_path = pathlib.Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Move to CPU
+    latents = latents.detach().cpu()
+    
+    # Only support video latents (5D) with this visualization
+    if latents.dim() != 5:
+        raise ValueError("Channel-frame grid only supports 5D latents [B, C, T, H, W]")
+    
+    # Extract dimensions - taking only first batch
+    batch_size, num_channels, num_frames, height, width = latents.shape
+    latent_data = latents[0]  # [C, T, H, W]
+    
+    print(f"Creating grid with {num_channels} channels x {num_frames} frames")
+    
+    # Calculate total size
+    grid_width = num_channels * width + (num_channels - 1) * spacing
+    grid_height = num_frames * height + (num_frames - 1) * spacing
+    
+    # Create empty grid
+    grid_img = Image.new('RGB', (grid_width, grid_height), color='black')
+    
+    # Generate one column per channel, with frames as rows
+    for c in range(num_channels):
+        # Create a column for this channel
+        col_width = width
+        col_height = num_frames * height + (num_frames - 1) * spacing
+        col_img = Image.new('RGB', (col_width, col_height), color='black')
+        
+        # Process each frame for this channel
+        for t in range(num_frames):
+            # Get frame data and convert to float32 before numpy conversion
+            data = latent_data[c, t].to(torch.float32).numpy()
+            
+            # Direct raw value visualization with grayscale for clearer interpretation
+            # Shift from [-1,1] to [0,1] range for direct visualization
+            norm_data = (data + 1.0) * 0.5
+            
+            # Make sure we clamp the range to [0,1]
+            norm_data = np.clip(norm_data, 0, 1)
+            
+            # Convert to grayscale (0 = black, 1 = white)
+            # Create RGB with uniform values (grayscale)
+            grayscale = (norm_data * 255).astype(np.uint8)
+            colored_data = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
+            colored_data[..., 0] = grayscale  # R
+            colored_data[..., 1] = grayscale  # G
+            colored_data[..., 2] = grayscale  # B
+            colored_data[..., 3] = 255        # A (fully opaque)
+            
+            # Add debugging info
+            if t == 0 and c == 0:  # Log only for first frame of first channel
+                print(f"Raw value range: min={data.min():.4f}, max={data.max():.4f}")
+                print(f"Normalized range: min={norm_data.min():.4f}, max={norm_data.max():.4f}")
+            
+            # Create image
+            frame_img = Image.fromarray(colored_data)
+            
+            # Paste into column
+            y_pos = t * (height + spacing)
+            col_img.paste(frame_img, (0, y_pos))
+        
+        # Paste column into grid
+        x_pos = c * (width + spacing)
+        grid_img.paste(col_img, (x_pos, 0))
+    
+    # Save the grid
+    file_path = output_path / filename
+    grid_img.save(file_path)
+    
+    print(f"Saved latent grid to {file_path}")
+    
+    return str(file_path)

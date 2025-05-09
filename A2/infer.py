@@ -21,6 +21,7 @@ last_frame = "/workspace/finetrainers/A2/assets/last_frame.jpg"
 width = 832
 height = 480 
 seed = 42
+os.environ["A2_DEBUG_LATENTS"] = "1"
 
 # model parameters 
 device = "cuda"
@@ -128,7 +129,7 @@ video_pt = pipe(
     guidance_scale=5.0,
     generator=generator,
     output_type="pt",
-    num_inference_steps=50,
+    num_inference_steps=30,
     vae_combine="before",
     tea_cache_l1_thresh=tea_cache_l1_thresh,
     tea_cache_model_id=tea_cache_model_id,
@@ -142,7 +143,10 @@ batch_video_frames = []
 for batch_idx in range(batch_size):
     pt_image = video_pt[batch_idx]
     pt_image = torch.stack([pt_image[i] for i in range(pt_image.shape[0])])
-    pt_image = pt_image[12:]
+    if last_frame:
+        pt_image = pt_image[16:]
+    else:
+        pt_image = pt_image[12:]
     image_np = VaeImageProcessor.pt_to_numpy(pt_image)
     image_pil = VaeImageProcessor.numpy_to_pil(image_np)
     batch_video_frames.append(image_pil)
@@ -161,4 +165,13 @@ for q in range(len(video_generate)):
     result.paste(frame4, (width*3, 0)) 
     final_images.append(np.array(result))
 
-write_mp4(video_path, final_images, fps=15) 
+write_mp4(video_path, final_images, fps=16) 
+
+# Simply convert each frame to numpy array without creating side-by-side comparison
+final_images = []
+for frame in video_generate:
+    # Convert PIL Image to numpy array
+    frame_np = np.array(frame)
+    final_images.append(frame_np)
+# Write the video directly with just the generated frames
+write_mp4("simple.mp4", final_images, fps=16)

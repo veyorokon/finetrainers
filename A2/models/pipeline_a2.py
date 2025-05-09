@@ -1,4 +1,6 @@
 import html
+import os
+import pathlib
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import ftfy
@@ -19,6 +21,7 @@ from diffusers.utils import (is_torch_xla_available, logging,
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.video_processor import VideoProcessor
 from models.transformer_a2 import A2Model
+from models.utils import create_channel_frame_grid
 from transformers import (AutoTokenizer, CLIPImageProcessor, CLIPVisionModel,
                           UMT5EncoderModel)
 
@@ -414,26 +417,19 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
             
             latent_condition = (latent_condition - latents_mean) * latents_std
             
-            # Add separately encoded first frame if provided
-            if first_frame_latent is not None:
-                # Ensure normalization matches other latents
-                first_frame_latent = (first_frame_latent - latents_mean) * latents_std
+            # We no longer insert first frame in the control latents here
+            if os.environ.get("A2_DEBUG_LATENTS") == "1" and first_frame_latent is not None:
+                # Only create visualizations for debugging
+                debug_dir = os.path.join("debug_latents", "control_latents")
+                os.makedirs(debug_dir, exist_ok=True)
                 
-                # Instead of concatenating, we'll insert the first frame latent into 
-                # the existing control latents at the 3rd position
-                # Get the starting channel index for the 3rd control element (4 mask + 16 content = 20 channels total)
-                channel_start = 4  # Start after the mask channels
-                
-                # Copy the content from first_frame_latent to latent_condition's last 16 channels
-                # Expand first_frame_latent to match frame count if needed
-                if first_frame_latent.size(2) == 1 and latent_condition.size(2) > 1:
-                    # Expand frames to match latent_condition
-                    first_frame_latent = first_frame_latent.expand(-1, -1, latent_condition.size(2), -1, -1)
-                
-                # Copy the latent into the control channels (last 16 channels)
-                latent_condition[:, channel_start:channel_start+16, :, :, :] = first_frame_latent
-                
-                print(f"Inserted first frame latent into control latents at channels {channel_start}-{channel_start+15}")
+                # Visualize latent_condition
+                create_channel_frame_grid(
+                    latent_condition,
+                    debug_dir,
+                    filename="control_latents_before.png",
+                    group_sizes=[4, 16]  # 4 mask channels, 16 content channels
+                )
         else:
             image_vae[0] = retrieve_latents(self.vae.encode(image_vae[0].to(dtype)), generator)
             image_vae[1] = retrieve_latents(self.vae.encode(image_vae[1].to(dtype)), generator)
@@ -451,21 +447,67 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 # Ensure normalization matches other latents
                 first_frame_latent = (first_frame_latent - latents_mean) * latents_std
                 
-                # Instead of concatenating, we'll insert the first frame latent into 
-                # the existing control latents at the 3rd position
-                # Get the starting channel index for the 3rd control element (4 mask + 16 content = 20 channels total)
-                channel_start = 4  # Start after the mask channels
+                # Add debug info to understand shapes
+                print(f"AFTER case - first_frame_latent shape: {first_frame_latent.shape}")
+                print(f"AFTER case - latent_condition shape: {latent_condition.shape}")
                 
-                # Copy the content from first_frame_latent to latent_condition's last 16 channels
-                # Expand first_frame_latent to match frame count if needed
+                # Get the number of channels in first_frame_latent (usually 16)
+                num_channels = first_frame_latent.size(1)
+                
+                # Need to ensure we don't exceed the available channels in latent_condition
+                # Typically latent_condition has 20 channels (4 mask + 16 content)
+                total_channels = latent_condition.size(1)
+                
+                # Start after the mask channels, but verify we have enough room
+                channel_start = min(4, total_channels - num_channels)
+                channel_end = channel_start + num_channels
+                
+                print(f"Using channel_start={channel_start}, channel_end={channel_end}, total_channels={total_channels}")
+                
+                # Expand frames to match latent_condition if needed
                 if first_frame_latent.size(2) == 1 and latent_condition.size(2) > 1:
-                    # Expand frames to match latent_condition
                     first_frame_latent = first_frame_latent.expand(-1, -1, latent_condition.size(2), -1, -1)
+                    print(f"Expanded first_frame_latent to shape: {first_frame_latent.shape}")
                 
-                # Copy the latent into the control channels (last 16 channels)
-                latent_condition[:, channel_start:channel_start+16, :, :, :] = first_frame_latent
+                # Create visualization of first_frame_latent before insertion (after case)
+                if os.environ.get("A2_DEBUG_LATENTS") == "1":
+                    # Create debug directory if it doesn't exist
+                    debug_dir = os.path.join("debug_latents", "after_case_before_insertion")
+                    os.makedirs(debug_dir, exist_ok=True)
+                    
+                    # Visualize first_frame_latent
+                    create_channel_frame_grid(
+                        first_frame_latent,
+                        debug_dir,
+                        filename="first_frame_latent.png"
+                    )
+                    
+                    # Visualize latent_condition before insertion
+                    create_channel_frame_grid(
+                        latent_condition,
+                        debug_dir,
+                        filename="latent_condition_before.png",
+                        group_sizes=[4, 16]  # 4 mask channels, 16 content channels
+                    )
                 
-                print(f"Inserted first frame latent into control latents at channels {channel_start}-{channel_start+15}")
+                # We no longer insert first frame into control latents here (will insert into content latents later)
+                print(f"Skipping insertion of first frame into control latents - will be inserted into content latents later")
+                # else:
+                #     # Alternative: Resize first_frame_latent to fit available channels
+                #     print(f"Warning: first_frame_latent has {num_channels} channels but only have room for {total_channels-channel_start}")
+                #     # Use only as many channels as will fit
+                #     channels_to_use = total_channels - channel_start
+                #     latent_condition[:, channel_start:total_channels, :, :, :] = first_frame_latent[:, :channels_to_use]
+                #     print(f"Inserted partial first frame latent into control latents at channels {channel_start}-{total_channels-1}")
+                
+                # Create visualization of latent_condition after insertion
+                if os.environ.get("A2_DEBUG_LATENTS") == "1":
+                    create_channel_frame_grid(
+                        latent_condition,
+                        os.path.join("debug_latents", "after_case_after_insertion"),
+                        filename="latent_condition_after.png",
+                        group_sizes=[4, 16]  # 4 mask channels, 16 content channels
+                    )
 
         mask_lat_size = torch.ones(batch_size, 1, num_frames, latent_height, latent_width)
         mask_lat_size[:, :, list(range(1, num_frames))] = 0
@@ -488,8 +530,20 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
         mask_lat_size = mask_lat_size.view(batch_size, -1, self.vae_scale_factor_temporal, latent_height, latent_width)
         mask_lat_size = mask_lat_size.transpose(1, 2)
         mask_lat_size = mask_lat_size.to(latent_condition.device)
-
-        return latents, torch.concat([mask_lat_size, latent_condition], dim=1)
+        
+        # Concatenate mask and latent_condition
+        final_latents = torch.concat([mask_lat_size, latent_condition], dim=1)
+        
+        # Visualize final concatenated latents
+        if os.environ.get("A2_DEBUG_LATENTS") == "1":
+            create_channel_frame_grid(
+                final_latents,
+                os.path.join("debug_latents", "final"),
+                filename="final_concatenated_latents.png",
+                group_sizes=[4, 16, 16]  # 4 mask, 16 control content, 16 original content
+            )
+        
+        return latents, final_latents
 
     @property
     def guidance_scale(self):
@@ -699,6 +753,34 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
             first_frame_latent,  # Pass first frame latent to prepare_latents
         )
 
+        # Modify latents (content side) to use the first frame latent at the 4th frame position (index 3)
+        if first_frame_latent is not None:
+            frame_index = 3
+            # Make a copy of first_frame_latent to avoid modifying the original
+            first_frame_latent_copy = first_frame_latent.clone()
+            
+            # Ensure normalization matches the latents
+            first_frame_latent_copy = (first_frame_latent_copy - latents_mean) * latents_std
+            
+            # Get first frame as a single frame
+            first_frame = first_frame_latent_copy[:, :, 0:1, :, :] if first_frame_latent_copy.size(2) >= 1 else first_frame_latent_copy
+            
+            print(f"Content latents shape: {latents.shape}")
+            print(f"First frame shape: {first_frame.shape}")
+            
+            # Insert into content latents at frame_index
+            latents[:, :, frame_index:frame_index+1, :, :] = first_frame
+            
+            # Visualize if debugging is enabled
+            if os.environ.get("A2_DEBUG_LATENTS") == "1":
+                create_channel_frame_grid(
+                    latents,
+                    os.path.join("debug_latents", "content_latents_with_first_frame"),
+                    filename="content_latents_with_first_frame.png"
+                )
+
+            print(f"Inserted first frame into content latents at frame {frame_index}")
+        
         # TeaCache
         tea_cache_posi = {"tea_cache": TeaCache(num_inference_steps, rel_l1_thresh=tea_cache_l1_thresh, model_id=tea_cache_model_id) if tea_cache_l1_thresh is not None else None}
         tea_cache_nega = {"tea_cache": TeaCache(num_inference_steps, rel_l1_thresh=tea_cache_l1_thresh, model_id=tea_cache_model_id) if tea_cache_l1_thresh is not None else None}
@@ -714,6 +796,16 @@ class A2Pipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
                 self._current_timestep = t
                 latent_model_input = torch.cat([latents, condition], dim=1).to(transformer_dtype)
+                
+                # Visualize the combined latent input at the first step
+                if i == 0 and os.environ.get("A2_DEBUG_LATENTS") == "1":
+                    create_channel_frame_grid(
+                        latent_model_input,
+                        os.path.join("debug_latents", "model_input"),
+                        filename=f"latent_model_input_step{i}.png",
+                        group_sizes=[16, 4, 16]  # 16 content, 4 mask, 16 control
+                    )
+                
                 timestep = t.expand(latents.shape[0]) 
                 noise_pred = self.transformer(
                     hidden_states=latent_model_input,
